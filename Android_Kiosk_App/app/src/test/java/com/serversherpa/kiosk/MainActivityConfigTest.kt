@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk
 
+import android.app.Activity
 import android.app.Application
 import android.content.ComponentName
 import android.content.pm.ActivityInfo
@@ -8,6 +9,8 @@ import android.content.res.Configuration
 import android.os.Looper
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
@@ -16,18 +19,27 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.core.view.WindowCompat
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.SLED_FLASH_HOLD_MS
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.ui.components.LocalSledScanGuard
 import com.serversherpa.kiosk.ui.components.ScanInput
+import com.serversherpa.kiosk.ui.flash.SLED_FLASH_TAG
 import com.serversherpa.kiosk.ui.theme.StatusBarIcons
 import com.serversherpa.kiosk.ui.theme.uiModeNightChanged
 import java.time.Duration
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -38,6 +50,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowInputDevice
 import org.robolectric.shadows.ShadowLog
@@ -47,7 +60,8 @@ import org.robolectric.util.ReflectionHelpers
  * The activity and manifest (spec tests 26, 29 and 30; ruling 15): every configuration change of
  * ruling 15 is handled in place (a burst survives a keyboard attaching or the phone turning),
  * edge-to-edge and the status-bar icons follow only a night-mode change, the vendor's
- * READ_EXTERNAL_STORAGE is gone, and every key goes on to the screen.
+ * READ_EXTERNAL_STORAGE is gone, and every key goes on to the screen. Every activity a test here
+ * builds is destroyed before the test ends ([closeEveryActivity], task H8).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = TestKioskApplication::class)
@@ -55,6 +69,72 @@ class MainActivityConfigTest {
     private val app = ApplicationProvider.getApplicationContext<Application>()
 
     private fun idle(ms: Long = 0) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
+
+    /** Every activity a test here builds, for [closeEveryActivity]. */
+    private val built = mutableListOf<ActivityController<*>>()
+
+    /** Builds an activity for this test only: every test here builds its activities with this,
+     *  never with `Robolectric.buildActivity` itself, so the end of the test destroys them. */
+    private fun <A : Activity> build(type: Class<A>): ActivityController<A> = Robolectric.buildActivity(type).also { built += it }
+
+    /**
+     * Task H8: no activity outlives its test. Robolectric runs every test of a sandbox on one
+     * main thread and clears its looper between tests, so a composition left running (a built
+     * MainActivity runs the whole KioskApp) can post to the main looper after its test, lose
+     * that post at the reset, and leave Compose's AndroidUiDispatcher.Main wedged for every later
+     * Compose test in the sandbox ([aSledFlashShowingWhenATestEndsQueuesNothingAfterIt]).
+     * Destroying an activity cancels its compositions, and the idle runs those cancellations
+     * here, inside the test. The check fails a test that left an activity alive.
+     */
+    @After fun closeEveryActivity() {
+        built.forEach { it.close() }
+        built.clear()
+        idle()
+        val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+        val alive = Stage.values().filter { it != Stage.DESTROYED }.flatMap { monitor.getActivitiesInStage(it) }
+        assertTrue("activities left alive at the end of the test (build them with build()): $alive", alive.isEmpty())
+    }
+
+    /** Whether a node tagged [tag] is in this activity's composition. Read from the activity's own
+     *  roots: a compose rule would run the content on a test dispatcher, not on Compose's own. */
+    private fun Activity.shows(tag: String): Boolean {
+        fun roots(v: View): List<ViewRootForTest> = when (v) {
+            is ViewRootForTest -> listOf(v)
+            is ViewGroup -> (0 until v.childCount).flatMap { roots(v.getChildAt(it)) }
+            else -> emptyList()
+        }
+        fun SemanticsNode.has(): Boolean = config.getOrNull(SemanticsProperties.TestTag) == tag || children.any { it.has() }
+        return roots(window.decorView).any { it.semanticsOwner.unmergedRootSemanticsNode.has() }
+    }
+
+    /**
+     * Task H8: nothing a built activity started runs after its test. A built MainActivity runs
+     * the real KioskApp, whose sled flash holds for SLED_FLASH_HOLD_MS on the real clock (a
+     * `delay` on Compose's AndroidUiDispatcher is timed by kotlinx's DefaultExecutor) and then
+     * fades. Left alive past its test, that hold woke up during a later test and posted to the
+     * main looper; Robolectric's reset between tests dropped the post, and Compose's
+     * AndroidUiDispatcher.Main, whose "already scheduled" flags stayed set, never ran anything
+     * again in that sandbox. Every later Compose test then waited out its 60 s idle timeout
+     * (AppNotIdleException) and the full suite ran past its watchdog.
+     */
+    @Test fun aSledFlashShowingWhenATestEndsQueuesNothingAfterIt() {
+        val activity = build(MainActivity::class.java).setup().get()
+        val reader = (activity.application as TestKioskApplication).reader
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 80)) // a new connection, ready: the green flash
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!activity.shows(SLED_FLASH_TAG)) {
+            assertTrue("the ready flash never showed", System.currentTimeMillis() < deadline)
+            Thread.sleep(10)
+            idle(20)
+        }
+        idle() // the flash's hold has started
+
+        closeEveryActivity() // what the end of every test here runs
+        val mainLooper = shadowOf(Looper.getMainLooper())
+        assertTrue("work was left on the main thread at the end of the test", mainLooper.isIdle)
+        Thread.sleep(SLED_FLASH_HOLD_MS + 500L) // past the hold, on the real clock
+        assertTrue("the flash's hold queued work on the main thread after its test ended", mainLooper.isIdle)
+    }
 
     @Test fun mainActivityHandlesEveryConfigChangeOfRuling15() {
         val info = app.packageManager.getActivityInfo(ComponentName(app, MainActivity::class.java), 0)
@@ -103,7 +183,7 @@ class MainActivityConfigTest {
 
         // On the activity: an orientation change re-applies nothing (an icon color set by hand
         // stays); a night-mode change does.
-        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val controller = build(MainActivity::class.java).setup()
         idle(500)
         val activity = controller.get()
         val insets = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -122,7 +202,7 @@ class MainActivityConfigTest {
     }
 
     @Test fun statusBarIconsReapplyAfterANightModeChange() {
-        val activity = Robolectric.buildActivity(ComponentActivity::class.java).setup().get()
+        val activity = build(ComponentActivity::class.java).setup().get()
         val base = Configuration(activity.resources.configuration).apply {
             uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or Configuration.UI_MODE_NIGHT_NO
         }
@@ -145,7 +225,7 @@ class MainActivityConfigTest {
     }
 
     @Test fun aConfigurationChangeMidBurstKeepsTheSession() = runBlocking<Unit> {
-        val activityController = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activityController = build(MainActivity::class.java).setup()
         val activity = activityController.get()
         val testApp = activity.application as TestKioskApplication
         val container = testApp.container
@@ -175,7 +255,7 @@ class MainActivityConfigTest {
     }
 
     @Test fun dispatchKeyEventAlwaysPassesTheKeyOn() {
-        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val controller = build(MainActivity::class.java).setup()
         val activity = controller.get()
         val container = (activity.application as TestKioskApplication).container
         val sled = ShadowInputDevice.makeInputDeviceNamed("RFD4031")
