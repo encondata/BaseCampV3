@@ -2630,6 +2630,24 @@ export async function removeContainerAsset(
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/** Where a container is now (GET /containers/{id}/position): its truck's
+ *  last GPS report, the pin of the site it sits at, or nothing known.
+ *  A truck that has never reported comes back with null coordinates. */
+export interface ContainerPosition {
+  kind: 'truck' | 'site' | 'none';
+  name: string | null;
+  lat: number | null;
+  lng: number | null;
+  recorded_at: string | null;
+  approximate_address: string;
+}
+
+export async function getContainerPosition(id: string): Promise<ContainerPosition> {
+  const resp = await apiFetch(`/containers/${id}/position`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export interface ContainerBulkRow {
   row: number; action: 'create' | 'error';
   data: Record<string, unknown>; errors: string[];
