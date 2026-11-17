@@ -44,6 +44,7 @@ import com.serversherpa.kiosk.core.rfid.effectiveLayout
 import com.serversherpa.kiosk.core.rfid.scanSlotLine
 import com.serversherpa.kiosk.core.rfid.sledLine
 import com.serversherpa.kiosk.core.rfid.slotDropDuringVisit
+import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.Segmented
@@ -62,6 +63,7 @@ import kotlinx.coroutines.launch
  * force (RFID), not the saved one. A screen that already collects the saved
  * settings passes them ([saved], the RFID tab), so its hint and the option
  * lit always come from the same value; otherwise the control collects them.
+ * Both is offered only as [sledTriggerOptions] says (H6), dimmed or not.
  */
 @Composable
 fun SledTriggersControl(caption: Boolean, saved: RfidSettings? = null) {
@@ -71,17 +73,37 @@ fun SledTriggersControl(caption: Boolean, saved: RfidSettings? = null) {
     val collected by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
     val settings = saved ?: collected
     val info by container.rfid.info.collectAsStateWithLifecycle()
+    val auth by container.auth.state.collectAsStateWithLifecycle()
+    val offerBoth by container.prefs.offerSledBothToEveryone.collectAsStateWithLifecycle(initialValue = false)
+    val options = sledTriggerOptions(
+        developer = (auth as? AuthState.Authed)?.isDeveloper == true,
+        offerBothToEveryone = offerBoth,
+        saved = settings.triggerLayout,
+    )
     val enabled = !container.isZebraHost && info?.hasScanner != false
     val lit = if (enabled) settings.triggerLayout else effectiveLayout(settings.triggerLayout, container.isZebraHost, info?.hasScanner)
     Column {
         if (caption) Text(SledWords.SLED_TRIGGERS, style = MaterialTheme.typography.labelMedium, color = c.textMute)
-        Segmented(SledTriggerLayout.entries.map { it.wire to it.label }, lit.wire, enabled = enabled) { wire ->
+        Segmented(options.map { it.wire to it.label }, lit.wire, enabled = enabled) { wire ->
             SledTriggerLayout.fromWire(wire)?.let { layout ->
                 scope.launch { container.prefs.updateRfid { it.copy(triggerLayout = layout) } }
             }
         }
     }
 }
+
+/**
+ * The Sled triggers options a person sees (Jimmy, 2026-11-17, task H6). Both
+ * ([SledTriggerLayout.SPLIT]) shows only to a [developer] (the check that
+ * shows the Developer tab), to everyone while the Developer tab's switch
+ * offers it ([offerBothToEveryone]), or while it is the [saved] layout, so the
+ * control never hides the setting in force; once someone switches away it is
+ * gone for anyone else. What the sled does is unchanged: a saved Both keeps
+ * working for everyone.
+ */
+internal fun sledTriggerOptions(developer: Boolean, offerBothToEveryone: Boolean, saved: SledTriggerLayout): List<SledTriggerLayout> =
+    if (developer || offerBothToEveryone || saved == SledTriggerLayout.SPLIT) SledTriggerLayout.entries
+    else SledTriggerLayout.entries.filter { it != SledTriggerLayout.SPLIT }
 
 /**
  * The button that fixes a sled failure ([fix]), from the buttons the app

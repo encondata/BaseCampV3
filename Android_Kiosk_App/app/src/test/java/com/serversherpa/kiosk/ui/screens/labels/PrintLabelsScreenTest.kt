@@ -80,6 +80,6 @@ class PrintLabelsScreenTest {
             CompositionLocalProvider(LocalAppContainer provides container) { KioskTheme { PrintLabelsScreen(rememberNavController()) } }
         }
         compose.waitForIdle()
-        compose.onNodeWithText("Both").assertIsDisplayed()
+        compose.onNodeWithText("Barcode").assertIsDisplayed()
     }
 }

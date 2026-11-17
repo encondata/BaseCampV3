@@ -53,6 +53,7 @@ import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.settings.SETTINGS_TABS
 import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.core.settings.visibleTabs
+import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
@@ -571,6 +572,55 @@ class RfidPanelTest {
         compose.onNodeWithText("Both").assertIsNotSelected()
     }
 
+    // H6 (Jimmy, 2026-11-17): Both shows only to a developer, to everyone while the Developer
+    // tab's switch offers it, or while Both is the saved layout.
+    private fun signIn(c: AppContainer, developer: Boolean) =
+        c.auth.completePair(if (developer) fakeSession(roles = listOf("developer"), maxRank = 100) else fakeSession())
+
+    private fun count(text: String) = compose.onAllNodesWithText(text).fetchSemanticsNodes().size
+
+    @Test fun aNonDeveloperSeesRfidAndBarcodeOnly() {
+        val c = testContainer()
+        signIn(c, developer = false)
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText("Barcode").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("RFID").assertIsDisplayed()
+        // The setting and the saved layout reach the control a frame or so after it composes.
+        compose.waitForIdle(); Thread.sleep(200); compose.waitForIdle()
+        assertEquals(0, count("Both"))
+    }
+
+    @Test fun aDeveloperSeesAllThree() {
+        val c = testContainer()
+        signIn(c, developer = true)
+        compose.setRfidPanelContent(c)
+        compose.waitForText("Both")
+        for (label in listOf("RFID", "Barcode", "Both")) compose.onNodeWithText(label).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun withTheSettingOnANonDeveloperSeesAllThree() {
+        val c = testContainer()
+        signIn(c, developer = false)
+        runBlocking { c.prefs.setOfferSledBothToEveryone(true) }
+        compose.setRfidPanelContent(c)
+        compose.waitForText("Both")
+        for (label in listOf("RFID", "Barcode", "Both")) compose.onNodeWithText(label).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun aNonDeveloperWithBothSavedSeesItSelectedUntilSwitchingAway() {
+        val c = testContainer()
+        signIn(c, developer = false)
+        runBlocking { c.prefs.setRfid(RfidSettings(triggerLayout = SledTriggerLayout.SPLIT)) }
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.hint(SledTriggerLayout.SPLIT))
+        compose.onNodeWithText("Both").performScrollTo().assertIsSelected()
+        compose.onNodeWithText("RFID").performClick()
+        compose.waitUntilIdlingMain { saved(c).triggerLayout == SledTriggerLayout.RFID }
+        compose.waitUntilIdlingMain { count("Both") == 0 }
+        compose.onNodeWithText("RFID").performScrollTo().assertIsSelected()
+        assertEquals(0, count("Both"))
+    }
+
     /** The spec puts the Sled triggers row where "Trigger drives" was: right under the
      *  RFID reader row, above Trigger. */
     @Test fun sledTriggersSitsAboveTrigger() {
@@ -588,6 +638,7 @@ class RfidPanelTest {
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
         reader.setInfo(SledInfo(generation = reader.generation, name = "Fake RFD40", hasScanner = false))
         val c = testContainer(reader)
+        signIn(c, developer = true)   // so Both is there to be dimmed (H6)
         compose.setRfidPanelContent(c)
         compose.onNodeWithText(SledWords.NO_SCANNER).performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Both").performScrollTo().assertIsNotEnabled()
@@ -833,12 +884,20 @@ class RfidPanelTest {
         assertEquals("one disconnect, from the setting's edge", 1, reader.disconnectCalls)
     }
 
-    /** Native graphics: the legacy mode measures text at almost no width, so nothing would overflow. */
-    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun theChooserAndFixButtonsFitAt320dp() {
+    /** Native graphics: the legacy mode measures text at almost no width, so nothing would overflow.
+     *  With three options (a developer) and with two (anyone else, H6). */
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun theChooserAndFixButtonsFitAt320dp() =
+        chooserAndFixButtonsFitAt320dp(developer = true)
+
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun theChooserAndFixButtonsFitAt320dpWithTwoOptions() =
+        chooserAndFixButtonsFitAt320dp(developer = false)
+
+    private fun chooserAndFixButtonsFitAt320dp(developer: Boolean) {
         grantRequired()
         val reader = FakeRfidReader().apply { paired = listOf(sledA, sledB) }
         reader.setConnection(RfidConnection.Failed(SledWords.BLUETOOTH_OFF, fix = SledFix.TURN_ON_BLUETOOTH))
         val c = testContainer(reader)
+        signIn(c, developer)
         runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
         compose.setRfidPanelContent(c, inShellPadding = true)
         compose.waitForText("Turn on Bluetooth")
@@ -859,6 +918,8 @@ class RfidPanelTest {
         // The options' own scroll parent is the control's row, so the page is scrolled to the
         // row below them instead, which leaves the control just above it in view.
         compose.onNodeWithText("Trigger").performScrollTo()
-        for (text in listOf("RFID", "Barcode", "Both")) fits(text, scroll = false)
+        val options = if (developer) listOf("RFID", "Barcode", "Both") else listOf("RFID", "Barcode")
+        for (text in options) fits(text, scroll = false)
+        if (!developer) assertEquals(0, count("Both"))
     }
 }

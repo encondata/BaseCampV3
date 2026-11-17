@@ -147,4 +147,17 @@ class KioskPrefsTest {
             assertEquals(beeper, s.beeper)
         }
     }
+
+    /** H6 (Jimmy, 2026-11-17): the Developer tab's "Offer Both in Sled triggers to everyone"
+     *  switch is its own device-local key, off by default, and never part of the RFID settings
+     *  (so never part of a sled push). */
+    @Test fun offerSledBothToEveryoneIsOffByDefaultAndRoundTripsOnItsOwnKey() = runBlocking {
+        assertEquals(false, prefs.offerSledBothToEveryone.first())
+        val rfidBefore = prefs.rfid.first()
+        prefs.setOfferSledBothToEveryone(true)
+        assertEquals(true, prefs.offerSledBothToEveryone.first())
+        assertEquals("the RFID settings are untouched", rfidBefore, prefs.rfid.first())
+        prefs.setOfferSledBothToEveryone(false)
+        assertEquals(false, prefs.offerSledBothToEveryone.first())
+    }
 }

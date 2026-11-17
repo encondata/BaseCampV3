@@ -182,24 +182,24 @@ class ScanScreenTest {
         val reader = FakeRfidReader()
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
         show(rig(reader))
-        val both = compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
-        val before = both.fetchSemanticsNode().positionInRoot.y
+        val control = compose.onNodeWithText("Barcode").performScrollTo().assertIsDisplayed()
+        val before = control.fetchSemanticsNode().positionInRoot.y
 
         reader.setScanner(SledScannerState.Opening)
         waitFor("sled-slot-muted", SledWords.SCANNER_STARTING)
-        assertEquals("the control stays put", before, both.fetchSemanticsNode().positionInRoot.y, 0.5f)
+        assertEquals("the control stays put", before, control.fetchSemanticsNode().positionInRoot.y, 0.5f)
         val slot = compose.onNodeWithText(SledWords.SCANNER_STARTING).fetchSemanticsNode().positionInRoot.y
         assertTrue("the slot line is under the tool row", slot > before)
 
         reader.setScanner(SledScannerState.Ready)
         compose.waitUntilIdlingMain { compose.onAllNodesWithText(SledWords.SCANNER_STARTING).fetchSemanticsNodes().isEmpty() }
-        assertEquals(before, both.fetchSemanticsNode().positionInRoot.y, 0.5f)
+        assertEquals(before, control.fetchSemanticsNode().positionInRoot.y, 0.5f)
     }
 
     @Test fun theSledControlsShowWhileTheSledIsConnected() {
         val reader = FakeRfidReader()
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
         show(rig(reader))
-        compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Barcode").performScrollTo().assertIsDisplayed()
     }
 }

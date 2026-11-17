@@ -574,7 +574,7 @@ class AssetLookupScreenTest {
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
         show(rig(FakeKioskApi(), reader = reader))
         waitReady()
-        compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Barcode").performScrollTo().assertIsDisplayed()
         missing("Scan")
         reader.setScanner(SledScannerState.Ready)
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("sled-scan").fetchSemanticsNodes().isNotEmpty() }
