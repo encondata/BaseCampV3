@@ -15,6 +15,8 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -25,6 +27,7 @@ import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -619,6 +622,34 @@ class RfidPanelTest {
         compose.waitUntilIdlingMain { count("Both") == 0 }
         compose.onNodeWithText("RFID").performScrollTo().assertIsSelected()
         assertEquals(0, count("Both"))
+    }
+
+    // H7 (Jimmy, 2026-11-17): the full-screen sled flashes have one switch, right under the RFID
+    // reader row, on by default, on its own device-local key.
+    @Test fun theSledFlashSwitchIsOnByDefaultAndWritesTheSetting() {
+        val c = testContainer()
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.ROW_SLED_FLASH)
+        compose.onNodeWithText(SledWords.HINT_SLED_FLASH).performScrollTo().assertIsDisplayed()
+        val switch = compose.onNodeWithTag("sled-flash")
+        switch.performScrollTo().assertIsOn()
+        val rfidBefore = saved(c)
+        switch.performClick()
+        compose.waitUntilIdlingMain { runBlocking { !c.prefs.sledFlash.first() } }
+        switch.assertIsOff()
+        assertEquals("the RFID settings are untouched", rfidBefore, saved(c))
+        switch.performClick()
+        compose.waitUntilIdlingMain { runBlocking { c.prefs.sledFlash.first() } }
+        switch.assertIsOn()
+    }
+
+    @Test fun theSledFlashRowSitsRightUnderTheRfidReaderRow() {
+        val c = testContainer()
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.ROW_SLED_FLASH)
+        val top = { text: String -> compose.onNodeWithText(text).fetchSemanticsNode().positionInRoot.y }
+        assertTrue("RFID reader, then the flash row", top("RFID reader") < top(SledWords.ROW_SLED_FLASH))
+        assertTrue("the flash row, then Sled triggers", top(SledWords.ROW_SLED_FLASH) < top(SledWords.SLED_TRIGGERS))
     }
 
     /** The spec puts the Sled triggers row where "Trigger drives" was: right under the

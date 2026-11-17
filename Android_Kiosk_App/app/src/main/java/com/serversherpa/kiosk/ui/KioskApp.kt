@@ -26,6 +26,7 @@ import com.serversherpa.kiosk.core.features.FeatureId
 import com.serversherpa.kiosk.core.features.feature
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.flash.ScanFlash
+import com.serversherpa.kiosk.ui.flash.SledFlashOverlay
 import com.serversherpa.kiosk.ui.guards.AdminGate
 import com.serversherpa.kiosk.ui.guards.KioskGuard
 import com.serversherpa.kiosk.ui.guards.SetupGate
@@ -84,6 +85,7 @@ fun KioskApp() {
                 composable(Routes.ROLODEX) { KioskGuard(nav) { AdminGate(nav) { KioskShell(nav, scroll = false) { RolodexScreen(nav) } } } }
             }
             ScanFlash(container.flash)
+            SledFlashOverlay(container.rfid.sledFlashes, container.prefs.appearance)
             SledEffects(container, nav, lastTouch)
             EnrollOfferHost(container.enrollOffer)
             SetupClearedRedirect(nav, container.heartbeat.setupCleared)

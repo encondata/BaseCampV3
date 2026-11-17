@@ -206,7 +206,9 @@ class AppContainer(
     // constructs the real Zebra reader. Nothing above the interface can tell
     // the difference between this and the fake.
     val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope, isZebraHost)
-    val rfid = RfidController(rfidReader, prefs.rfid, scope, zebraHost = isZebraHost, printerBusy = { printerLock.isLocked })
+    val rfid = RfidController(
+        rfidReader, prefs.rfid, scope, zebraHost = isZebraHost, printerBusy = { printerLock.isLocked }, sledFlashesOn = prefs.sledFlash,
+    )
 
     /** Delivers each sled scan once, typed or through the sled's scanner, whichever comes first
      *  (ruling 3). MainActivity provides it to the scan boxes; typing counts as sled activity. */

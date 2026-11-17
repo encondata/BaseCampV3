@@ -160,4 +160,17 @@ class KioskPrefsTest {
         prefs.setOfferSledBothToEveryone(false)
         assertEquals(false, prefs.offerSledBothToEveryone.first())
     }
+
+    /** H7 (Jimmy, 2026-11-17): the RFID tab's "Flash when the sled connects or drops" switch is
+     *  its own device-local key, on by default, and never part of the RFID settings (so never
+     *  part of a sled push). */
+    @Test fun sledFlashIsOnByDefaultAndRoundTripsOnItsOwnKey() = runBlocking {
+        assertEquals(true, prefs.sledFlash.first())
+        val rfidBefore = prefs.rfid.first()
+        prefs.setSledFlash(false)
+        assertEquals(false, prefs.sledFlash.first())
+        assertEquals("the RFID settings are untouched", rfidBefore, prefs.rfid.first())
+        prefs.setSledFlash(true)
+        assertEquals(true, prefs.sledFlash.first())
+    }
 }
