@@ -341,6 +341,9 @@ class Deployment(Base):
     # LAN Blue/Green (migration 0012): its plan is a LAN Blue/Green plan;
     # `slot` and `go_live` mean what they mean on DigitalOcean.
     bluegreen: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # Force delete (migration 0019, teardown only): a step that fails is
+    # skipped, and the environment goes from Sirdar anyway. Retries keep it.
+    force: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]

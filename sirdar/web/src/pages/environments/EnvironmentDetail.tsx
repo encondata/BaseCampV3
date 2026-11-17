@@ -98,13 +98,13 @@ function EnvironmentPage({ name }: { name: string }) {
     void load();
   };
 
-  const crumb = <div className="eyebrow"><Link to="/deploy?tab=environments">Deploy</Link></div>;
+  const crumb = <div className="eyebrow"><Link to="/deploy?tab=environments">Environments</Link></div>;
   if (gone) {
     return (
       <div className="portal-page">
         {crumb}
         <p className="page-hint" role="status">{name} was deleted.</p>
-        <Link to="/deploy?tab=environments">Back to Deploy</Link>
+        <Link to="/deploy?tab=environments">Back to Environments</Link>
       </div>
     );
   }

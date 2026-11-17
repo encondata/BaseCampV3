@@ -374,3 +374,64 @@ async def test_retry_a_reset_needs_change_and_the_typed_name(client, db, ready, 
     assert await _audits(db, "deploy.deployment_retry") == [{
         "environment": "uat", "mode": "reset", "git_ref": "main", "sha": SHA,
         "retry_of": first["id"], "from_step": 7}]
+
+
+# ---- Force delete --------------------------------------------------------------------
+
+async def test_force_is_only_for_delete(client, db, ready, fake_runner, leak_guard):
+    h = await auth_headers(client, db)
+    for body in ({"force": True}, {"mode": "reset", "confirm_name": "uat", "force": True},
+                 {"mode": "cleanup", "confirm_name": "uat", "force": True}):
+        resp = await client.post(START, headers=h, json=body)
+        assert (resp.status_code, resp.json()) == (422, {"detail": {
+            "code": "force_not_allowed"}}), body
+
+
+async def test_force_delete_needs_change_and_the_typed_name(client, db, ready, fake_runner,
+                                                            leak_guard):
+    adder = await _headers_without_change(client, db)
+    resp = await client.post(START, headers=adder, json={"mode": "teardown",
+                                                         "confirm_name": "uat", "force": True})
+    assert resp.status_code == 403
+    h = await auth_headers(client, db)
+    resp = await client.post(START, headers=h, json={"mode": "teardown", "force": True})
+    assert resp.json() == {"detail": {"code": "confirm_name_mismatch"}}
+
+
+async def test_force_delete_of_a_host_sirdar_can_t_reach(client, db, ready, fake_runner,
+                                                         leak_guard):
+    """No host check up front (the host may be gone for good): the host
+    step is skipped and the environment goes anyway."""
+    await db.execute(delete(SshKnownHost))
+    await db.commit()
+    h = await auth_headers(client, db)
+    normal = await client.post(START, headers=h, json={"mode": "teardown", "confirm_name": "uat"})
+    assert normal.status_code == 409                        # a normal Delete checks the host
+    resp = await client.post(START, headers=h, json={"mode": "teardown", "confirm_name": "uat",
+                                                     "force": True})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["force"] is True
+    assert [s["key"] for s in body["steps"]] == ["teardown", "unproxy", "undns"]
+    await _finish(body)
+    assert fake_runner.requests == []
+    assert await environments.get_by_name(db, "uat") is None
+    assert (await _audits(db, "deploy.deployment_start"))[-1]["force"] is True
+    delete_audit = (await _audits(db, "deploy.environment_delete"))[-1]
+    assert (delete_audit["force"], delete_audit["left_behind"]) == (
+        True, ["Step 15 (Remove environment) was skipped."])
+
+
+async def test_a_failed_delete_can_be_forced(client, db, ready, fake_runner, leak_guard):
+    fake_runner.results["teardown"] = RunResult(status="failed", rc=2)
+    h = await auth_headers(client, db)
+    failed = (await client.post(START, headers=h, json={"mode": "teardown",
+                                                        "confirm_name": "uat"})).json()
+    await _finish(failed)
+    assert (await environments.get_by_name(db, "uat")) is not None
+    resp = await client.post(START, headers=h, json={"mode": "teardown", "confirm_name": "uat",
+                                                     "force": True})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["retry_of"] is None                  # a new deployment, not a retry
+    await _finish(resp.json())
+    assert await environments.get_by_name(db, "uat") is None

@@ -24,7 +24,7 @@ from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
-from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host
+from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host, read_host_os
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
 from edge.labels.runner import LabelRunner
@@ -150,6 +150,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
             f"portalUrl: {json.dumps(settings.portal_url)}, "
             '"mode": "laptop", '
             f'"lanAccess": {json.dumps(lan)}, '
+            f'"hostOs": {json.dumps(read_host_os(settings.data_dir))}, '
             f'"identity": {json.dumps({"serial": ident.serial, "name": ident.name})} }};\n'
         )
         return PlainTextResponse(body, media_type="application/javascript",

@@ -19,3 +19,8 @@ it('drops items and empty sections the user cannot view', () => {
   expect(out.map((s) => s.label)).toEqual(['Dashboard', 'Administration']);
   expect(out[1].items.map((i) => i.label)).toEqual(['Users']);
 });
+
+it('Deployments holds Environments at /deploy, gated on deploy', () => {
+  const deploy = SIRDAR_NAV.find((s) => s.label === 'Deployments')!;
+  expect(deploy.items.map((i) => [i.label, i.to, i.resource])).toEqual([['Environments', '/deploy', 'deploy']]);
+});

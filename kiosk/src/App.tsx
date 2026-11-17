@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { KioskAuthProvider, useKioskAuth } from './auth/KioskAuthContext';
 import KioskGuard from './components/KioskGuard';
+import LockdownLayer from './components/lockdown/LockdownLayer';
 import SetupGate from './components/SetupGate';
 import StationRoot from './components/StationRoot';
 import KioskShell from './layout/KioskShell';
@@ -198,6 +199,8 @@ export default function App() {
           ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        {/* Linux laptop only: Esc → PIN → desktop (renders nothing elsewhere). */}
+        <LockdownLayer />
       </BrowserRouter>
     </KioskAuthProvider>
   );

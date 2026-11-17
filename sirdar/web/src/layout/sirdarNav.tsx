@@ -21,7 +21,7 @@ export const SIRDAR_NAV: NavSection[] = [
     { to: '/', label: 'Dashboard', resource: 'dashboard', icon: I.dash, end: true },
   ] },
   { label: 'Deployments', icon: I.deploy, items: [
-    { to: '/deploy', label: 'Deploy', resource: 'deploy', icon: I.deploy },
+    { to: '/deploy', label: 'Environments', resource: 'deploy', icon: I.deploy },
   ] },
   { label: 'Seed Data', icon: I.db, items: [
     { to: '/seed/db', label: 'DB', resource: 'seed_data', icon: I.db },
@@ -39,7 +39,8 @@ export const SIRDAR_NAV: NavSection[] = [
 
 export const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
-  '/deploy': 'Deploy',
+  '/deploy': 'Environments',
+  '/deploy/new': 'New deployment',
   '/seed/db': 'DB',
   '/seed/spaces': 'Spaces',
   '/admin/users': 'Users',
@@ -49,6 +50,11 @@ export const PAGE_TITLES: Record<string, string> = {
   '/me': 'My profile',
   '/me/preferences': 'My preferences',
   '/me/history': 'My history',
+};
+
+/** Pages that sit under another in the topbar's trail (Sirdar / parent / page). */
+export const PAGE_PARENTS: Record<string, { label: string; to: string }> = {
+  '/deploy/new': { label: 'Environments', to: '/deploy' },
 };
 
 export function visibleSections(can: (resource: string, action: 'view') => boolean): NavSection[] {
