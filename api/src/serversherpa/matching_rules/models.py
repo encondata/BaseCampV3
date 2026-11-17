@@ -1,4 +1,4 @@
-"""Matching rules ORM models; the schema of record is migration 0126."""
+"""Matching rules ORM models; the schema of record is migration 0130."""
 
 import uuid
 from datetime import datetime

@@ -1,4 +1,4 @@
-"""Migration 0126: matching rules tables, seeded with v1 and the test set."""
+"""Migration 0130: matching rules tables, seeded with v1 and the test set."""
 
 import pytest
 from sqlalchemy import text
@@ -63,8 +63,8 @@ def test_downgrade_drops_every_table():
     from pathlib import Path
     from unittest.mock import patch
 
-    path = Path(__file__).resolve().parents[1] / "migrations/versions/0126_matching_rules.py"
-    spec = spec_from_file_location("migration_0126", path)
+    path = Path(__file__).resolve().parents[1] / "migrations/versions/0130_matching_rules.py"
+    spec = spec_from_file_location("migration_0130", path)
     mod = module_from_spec(spec)
     spec.loader.exec_module(mod)
     with patch.object(mod.op, "drop_table") as drop:

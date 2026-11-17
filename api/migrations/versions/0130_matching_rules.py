@@ -9,8 +9,8 @@
 Seeds v1 of each place as Live (today's kiosk matching) and the starting test
 set from `serversherpa.matching_rules.seed`, which is the record of these rows.
 
-Revision ID: 0126
-Revises: 0125
+Revision ID: 0130
+Revises: 0129
 Create Date: 2026-11-10
 """
 from collections.abc import Sequence
@@ -21,8 +21,8 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from serversherpa.matching_rules.seed import seed_statements
 
-revision: str = "0126"
-down_revision: str | None = "0125"
+revision: str = "0130"
+down_revision: str | None = "0129"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

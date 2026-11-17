@@ -1,10 +1,10 @@
-"""Migration 0126's rows: the v1 flows and the starting test set.
+"""Migration 0130's rows: the v1 flows and the starting test set.
 
 v1 of each place is today's web kiosk (`kiosk/src/lib/scanMatch.ts`), quirks
 included: Printing is `matchAssetOrSerial` (RFID is never tried) and Scanning
 is `matchScan`. The test set covers the cases that are easy to get wrong.
 
-This file is the record of what 0126 inserted. After merge, never change it: a
+This file is the record of what 0130 inserted. After merge, never change it: a
 later change goes in a new migration. It imports nothing heavy, so the
 migration can import it.
 """
@@ -202,7 +202,7 @@ _INSERT_ROW = (
 
 
 def seed_statements() -> list[tuple[str, dict]]:
-    """Plain-SQL inserts with bind params; migration 0126 and the test reset both run them."""
+    """Plain-SQL inserts with bind params; migration 0130 and the test reset both run them."""
     out: list[tuple[str, dict]] = [
         (_INSERT_VERSION, {"place": place, "flow": json.dumps(flow)})
         for place, flow in V1_FLOWS.items()
@@ -213,7 +213,7 @@ def seed_statements() -> list[tuple[str, dict]]:
 
 
 async def reset_matching_seed(session: "AsyncSession") -> None:
-    """Empty the matching tables and put 0126's rows back (the test DB reset)."""
+    """Empty the matching tables and put 0130's rows back (the test DB reset)."""
     from sqlalchemy import text  # here, so the migration's import stays light
 
     await session.execute(

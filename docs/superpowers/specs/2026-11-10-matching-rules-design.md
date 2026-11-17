@@ -256,7 +256,7 @@ with the flow.
 - **Look:** follows the portal's light and dark themes with tokens. No default
   scrollbars. Modals use the report-generate header with rounded corners.
 - **No invented sample content:** placeholder names like "Test asset 1".
-- **Database:** migration at the next free number (0126 today).
+- **Database:** migration at the next free number (0126 when written; renumbered to 0130 at merge, after main took 0126-0129).
 
 ## Left to the builder
 
