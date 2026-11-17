@@ -1726,10 +1726,7 @@ class ZebraRfidReaderTest {
 
             assertTrue("Try again while Ready", r.retryScanner().isSuccess)
             withContext(Dispatchers.IO) { worker.submit {}.get(5, TimeUnit.SECONDS) }
-            assertEquals(
-                ZebraBarcodeEngineTest.CLOSE_CALLS + listOf("mode DISABLED", "mode BT_NORMAL", "establish 10"),
-                r.scannerCalls,
-            )
+            assertEquals(ZebraBarcodeEngineTest.CLOSE_CALLS + ZebraBarcodeEngineTest.REOPEN_CALLS, r.scannerCalls)
             assertEquals(SledScannerState.Ready, r.scanner.value)
         } finally {
             worker.shutdown()
@@ -1924,6 +1921,29 @@ class ZebraRfidReaderTest {
 
         assertEquals(SledScannerState.Unavailable(SledScannerFault.DID_NOT_START), r.scanner.value)
         assertEquals("no beam means not ready", listOf(4, 28), sled.writes.toList())
+        assertEquals(28, r.info.value?.trigger?.raw)
+
+        assertTrue(r.retryScanner().isSuccess)
+
+        realWait { r.info.first { it?.trigger?.raw == 10 } }
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+        r.disconnect()
+        assertEquals(listOf(4, 28, 10), sled.writes.toList())
+    }
+
+    @Test fun aScannerWhoseScanEnableIsNeverAcknowledgedKeepsTheNoBeamLayoutUntilTryAgainBringsItUp() = runTest {
+        // Hardware 2026-11-17: an establish that returns SUCCESS is not proof the
+        // sled can scan, so the real keys wait for the acknowledged scan enable.
+        val rig = ZebraBarcodeEngineTest.Rig()
+        rig.sdk.scanEnableResults += ScannerResult.FAILURE
+        rig.sdk.scanEnableResults += ScannerResult.FAILURE
+        val (r, sled) = layoutReader(backgroundScope, rig)
+        assertTrue(r.connect(request).isSuccess)
+
+        assertEquals(decodeKeyLayout(28), r.setTriggerLayout(SledTriggerLayout.BARCODE).getOrNull())
+
+        assertEquals(SledScannerState.Unavailable(SledScannerFault.DID_NOT_START), r.scanner.value)
+        assertEquals("an established session the sled never acknowledged is not ready", listOf(4, 28), sled.writes.toList())
         assertEquals(28, r.info.value?.trigger?.raw)
 
         assertTrue(r.retryScanner().isSuccess)

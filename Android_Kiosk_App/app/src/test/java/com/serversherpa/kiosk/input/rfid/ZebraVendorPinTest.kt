@@ -118,6 +118,22 @@ class ZebraVendorPinTest {
         check("$VENDOR_READER_THREAD is a Thread") {
             if (Thread::class.java.isAssignableFrom(vendorClass(VENDOR_READER_THREAD))) null else "is not a Thread subclass"
         }
+        // The engine's checked scan enable after each establish (hardware,
+        // 2026-11-17): the vendor maps only opcode 2014 to its scan enable, and
+        // only the four-argument call takes the scanner id.
+        val opcode = vendorClass(SCANNER + "DCSSDKDefs\$DCSSDK_COMMAND_OPCODE")
+        check("DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE.value == 2014") {
+            // Its static initializer builds the enum's constants, nothing Android.
+            val constant = opcode.enumConstants.orEmpty().firstOrNull { (it as Enum<*>).name == "DCSSDK_DEVICE_SCAN_ENABLE" }
+                ?: return@check "no such constant"
+            val actual = opcode.getField("value").getInt(constant)
+            if (actual == 2014) null else "was $actual"
+        }
+        check("SDKHandler.dcssdkExecuteCommandOpCodeInXMLForScanner(DCSSDK_COMMAND_OPCODE, String, StringBuilder, int)") {
+            vendorClass(SCANNER + "SDKHandler")
+                .getMethod("dcssdkExecuteCommandOpCodeInXMLForScanner", opcode, String::class.java, StringBuilder::class.java, Int::class.javaPrimitiveType)
+                .returns(vendorClass(SCANNER + "DCSSDKDefs\$DCSSDK_RESULT"))
+        }
         check("DCSSDK_MODE.DCSSDK_OPMODE_DISABLED") { enumConstant(SCANNER + "DCSSDKDefs\$DCSSDK_MODE", "DCSSDK_OPMODE_DISABLED") }
         listOf(
             "DCSSDK_RESULT_SCANNER_ALREADY_ACTIVE",

@@ -52,6 +52,13 @@ internal interface ScannerSdk {
 
     fun terminate(scannerId: Int): ScannerResult
 
+    /**
+     * The sled's scan enable, which lets its imager decode. `SUCCESS` only on
+     * the sled's acknowledgment, which comes back over this session's socket;
+     * blocks up to 8 s for it.
+     */
+    fun scanEnable(scannerId: Int): ScannerResult
+
     fun pullTrigger(scannerId: Int): ScannerResult
 
     fun releaseTrigger(scannerId: Int): ScannerResult
@@ -91,7 +98,8 @@ internal class ScannerCommandFailed(val result: ScannerResult) : Exception()
  * classic-Bluetooth mode: off is `Unavailable(BLUETOOTH_OFF)` with no vendor
  * call, since the vendor would switch Bluetooth on itself or wait for it),
  * resets the mode, sets the classic-Bluetooth mode, lists the scanners only to
- * find the sled's id ([chooseScanner], cached per sled), and establishes.
+ * find the sled's id ([chooseScanner], cached per sled), and establishes, then
+ * sends its own scan enable and waits for the sled's acknowledgment.
  * `ALREADY_ACTIVE` is never a session this engine can use: terminate,
  * establish once more, and a second `ALREADY_ACTIVE` or any other result is
  * `Unavailable(DID_NOT_START)`. Ruling 40's one exception, a session this
@@ -102,13 +110,27 @@ internal class ScannerCommandFailed(val result: ScannerResult) : Exception()
  * `NOT_AVAILABLE` drops the cached id, lists once and establishes once. A
  * failed open resets the mode when the Bluetooth mode went in.
  *
- * **Ready** comes only once establish returned `SUCCESS` and
+ * **Ready** comes only once establish returned `SUCCESS`, the checked scan
+ * enable returned `SUCCESS` (the sled acknowledged it), and
  * [STALE_WINDOW_MS] passed since the established callback (the vendor's
  * barcode queue is static and outlives sessions). Each turn to `Ready` is
  * told to [onReady] with its generation, outside the lock: the reader writes
  * the sled's real trigger keys only then. A barcode is emitted only
  * while [state] shows `Ready`; one before that, inside the window or while not
  * Ready is dropped and logged with its length, never its value.
+ *
+ * **The checked scan enable.** The vendor's establish sends its own scan
+ * enable. But it writes its setup before its Bluetooth manager has wired the
+ * new socket's output stream, a static field it never clears. In the first
+ * session of a process every setup write is dropped; in later ones they land
+ * by about a millisecond. Establish returns `SUCCESS` either way (hardware
+ * 2026-11-17). So after every establish that returned `SUCCESS`, while the
+ * request is current, the engine sends `DCSSDK_DEVICE_SCAN_ENABLE` itself
+ * ([ScannerSdk.scanEnable]). Its `SUCCESS` means the sled acknowledged it on
+ * this session. One that fails is sent once more after
+ * [SCAN_ENABLE_RETRY_MS]; a second failure terminates, resets the mode and
+ * shows `Unavailable(DID_NOT_START)`. The engine never re-establishes for it;
+ * Try again does.
  *
  * **Closing** (not wanted, a termination this engine did not ask for, a link
  * loss, Bluetooth turning off) queues terminate, then the mode reset in a
@@ -146,6 +168,7 @@ internal class ZebraBarcodeEngine(
     private val watchdog: (timeoutMs: Long, onTimeout: () -> Unit) -> () -> Unit,
     private val log: (String) -> Unit,
     private val reap: () -> ReapResult = { reapLeakedReaderThreads() },
+    private val pause: (ms: Long) -> Unit = { ms -> pauseOnWorker(ms, log) },
 ) : ScannerEvents {
 
     private val _state = MutableStateFlow<SledScannerState>(SledScannerState.Off)
@@ -495,8 +518,16 @@ internal class ZebraBarcodeEngine(
             if (!stillWanted(d)) return
             when (val established = establishFor(sdk, d)) {
                 is Established.Up -> {
-                    up = true
-                    sessionUp(d, established.id)
+                    val enabled = if (stillWanted(d)) checkedScanEnable(sdk, d, established.id) else ScanEnabled.MOVED_ON
+                    if (enabled == ScanEnabled.NO) {
+                        // Inside `terminating`, so its callback is ignored; the finally resets the mode, then reaps.
+                        terminate(sdk, established.id)
+                        publish(d, DID_NOT_START)
+                    } else {
+                        // YES: Ready once the window has passed. MOVED_ON: recorded, then closed by the pump.
+                        up = true
+                        sessionUp(d, established.id)
+                    }
                 }
                 Established.Failed -> publish(d, DID_NOT_START)
                 Established.Superseded -> Unit
@@ -507,6 +538,31 @@ internal class ZebraBarcodeEngine(
                 reapLeaked()
             }
         }
+    }
+
+    /** What [checkedScanEnable] found: the sled acknowledged it, it did not twice, or the request moved on first. */
+    private enum class ScanEnabled { YES, NO, MOVED_ON }
+
+    /**
+     * The engine's own scan enable on the session just established on
+     * scanner [id], by the class doc's checked scan enable: up to
+     * [SCAN_ENABLE_TRIES] on this one session, [SCAN_ENABLE_RETRY_MS] apart,
+     * while [d] is current. No reap and no other vendor call in between.
+     */
+    private fun checkedScanEnable(sdk: ScannerSdk, d: Desire, id: Int): ScanEnabled {
+        for (attempt in 1..SCAN_ENABLE_TRIES) {
+            if (attempt > 1) {
+                log("Scanner: scanner $id did not acknowledge the scan enable; sending it once more in $SCAN_ENABLE_RETRY_MS ms.")
+                pause(SCAN_ENABLE_RETRY_MS)
+                if (!stillWanted(d)) return ScanEnabled.MOVED_ON
+            }
+            val result = guarded("scan enable on scanner $id", COMMAND_WATCHDOG_MS) { sdk.scanEnable(id) } ?: ScannerResult.FAILURE
+            log("Scanner: scan enable on scanner $id: $result.")
+            if (result == ScannerResult.SUCCESS) return ScanEnabled.YES
+            if (!stillWanted(d)) return ScanEnabled.MOVED_ON
+        }
+        log("Scanner: scanner $id did not acknowledge the scan enable twice, so its scans would not arrive; closing, and showing that it did not start.")
+        return ScanEnabled.NO
     }
 
     /** Finds the sled's id and establishes, by the establish rules in the class doc. */
@@ -819,6 +875,12 @@ internal class ZebraBarcodeEngine(
         /** Barcodes this soon after the established callback are left over from before; dropped. */
         const val STALE_WINDOW_MS = 250L
 
+        /** Scan enables an open sends, at most, all on its one session. */
+        const val SCAN_ENABLE_TRIES = 2
+
+        /** The pause before a scan enable that was not acknowledged is sent once more. */
+        const val SCAN_ENABLE_RETRY_MS = 250L
+
         /** A vendor command that has not returned after this shows `STOPPED_RESPONDING`. */
         const val COMMAND_WATCHDOG_MS = 10_000L
 
@@ -831,6 +893,20 @@ internal class ZebraBarcodeEngine(
         private val DID_NOT_START = SledScannerState.Unavailable(SledScannerFault.DID_NOT_START)
         private val STOPPED_RESPONDING = SledScannerState.Unavailable(SledScannerFault.STOPPED_RESPONDING)
         private val BLUETOOTH_OFF = SledScannerState.Unavailable(SledScannerFault.BLUETOOTH_OFF)
+    }
+}
+
+/**
+ * The engine's own pause, on its worker: a [Thread.sleep] that never throws.
+ * Nothing interrupts the worker; an interrupt anyway ends the pause early, is
+ * logged, and leaves the flag clear on purpose: set, it would end every later
+ * vendor wait at once.
+ */
+private fun pauseOnWorker(ms: Long, log: (String) -> Unit) {
+    try {
+        Thread.sleep(ms)
+    } catch (_: InterruptedException) {
+        log("Scanner: a pause on the worker was interrupted; going on.")
     }
 }
 
@@ -865,9 +941,9 @@ internal fun vendorScannerEngine(appContext: Context, bluetoothOn: () -> Boolean
  * The only holder of the vendor's `SDKHandler`: one for the life of the
  * process, built with `SDKHandler(appContext, false)` (no scan-to-connect), its
  * delegate and event subscription set once. The delegate forwards to the
- * [ScannerEvents] of the latest instance. The trigger commands use the
- * four-argument `dcssdkExecuteCommandOpCodeInXMLForScanner` with
- * [scanCommandInXml]; each blocks up to 8 s for the scanner's answer.
+ * [ScannerEvents] of the latest instance. The trigger commands and the scan
+ * enable use the four-argument `dcssdkExecuteCommandOpCodeInXMLForScanner`
+ * with [scanCommandInXml]; each blocks up to 8 s for the scanner's answer.
  */
 internal class VendorScannerSdk(appContext: Context, events: ScannerEvents) : ScannerSdk {
     private val handler: SDKHandler = processHandler(appContext, events)
@@ -899,6 +975,8 @@ internal class VendorScannerSdk(appContext: Context, events: ScannerEvents) : Sc
     override fun terminate(scannerId: Int): ScannerResult = vendorResult("dcssdkTerminateCommunicationSession($scannerId)") {
         handler.dcssdkTerminateCommunicationSession(scannerId)
     }
+
+    override fun scanEnable(scannerId: Int): ScannerResult = command(DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE, scannerId)
 
     override fun pullTrigger(scannerId: Int): ScannerResult = command(DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_PULL_TRIGGER, scannerId)
 
@@ -1084,9 +1162,9 @@ internal fun chooseScanner(candidates: List<ScannerCandidate>, target: SledIdent
 }
 
 /**
- * The XML body of the trigger commands: empty, since the pull and release
- * opcodes take no parameters and the scanner is addressed by its id
- * argument. One name, so a test can pin it.
+ * The XML body of the trigger commands and the scan enable: empty, since the
+ * pull, release and scan-enable opcodes take no parameters and the scanner is
+ * addressed by its id argument. One name, so a test can pin it.
  */
 internal fun scanCommandInXml(): String = ""
 
