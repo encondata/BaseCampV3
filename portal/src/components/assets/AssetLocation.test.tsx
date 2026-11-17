@@ -94,5 +94,6 @@ it('link clicks still stop propagation with mapPreview on', () => {
     </MemoryRouter>,
   );
   fireEvent.click(screen.getByRole('link', { name: 'ATL1-W1M-DC-01' }));
+  fireEvent.click(screen.getByRole('link', { name: 'ATL1-T01 (Wave 1)' }));
   expect(onRow).not.toHaveBeenCalled();
 });

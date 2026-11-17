@@ -11,6 +11,7 @@ import type { ContainerPosition } from './api';
 const getContainerPosition = vi.fn();
 vi.mock('./api', () => ({
   getContainerPosition: (id: string) => getContainerPosition(id),
+  onLocalSessionCleared: () => {},
 }));
 
 const {

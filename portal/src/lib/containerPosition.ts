@@ -8,7 +8,7 @@
  * again.
  */
 
-import { getContainerPosition, type ContainerPosition } from './api';
+import { getContainerPosition, onLocalSessionCleared, type ContainerPosition } from './api';
 import { relativeTime } from './format';
 
 export const POSITION_TTL_MS = 60_000;
@@ -30,10 +30,13 @@ export function loadContainerPosition(
   return promise;
 }
 
-/** For tests. */
 export function clearPositionCache(): void {
   cache.clear();
 }
+
+// Sign-out does not reload the page: drop the answers so the next user
+// never sees a position the previous one could view.
+onLocalSessionCleared(clearPositionCache);
 
 function hhmm(iso: string): string {
   return new Date(iso).toLocaleTimeString([], {

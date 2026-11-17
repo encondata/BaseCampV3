@@ -39,12 +39,14 @@ import { PREVIEW_DELAY_MS, previewPosition } from '../PhotoPreview';
 
 import '../../styles/location-map-preview.css';
 
-/** Card box before it has been measured: the 280 px map + 8 px padding
- *  and 1 px border either side, with the title and detail lines. Only
+/** Card outer box before it has been measured (border-box): the 280 px
+ *  map + 8 px padding and 1 px border either side = 298 wide; 160 px map
+ *  + 16 padding + 2 border + 6 px gaps x2 + 18 px title + 17 px detail
+ *  = 225 high. Only
  *  decides which side to open on for the first paint; the measured size
  *  replaces it as soon as the card is laid out. */
-const EST_W = 296;
-const EST_H = 230;
+const EST_W = 298;
+const EST_H = 225;
 
 type Load =
   | { state: 'loading' }
