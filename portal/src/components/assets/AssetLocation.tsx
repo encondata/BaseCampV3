@@ -3,8 +3,10 @@
  * when that container is on a truck, the truck — each a link. Without a
  * container it is the plain location text (or '—'). The text always equals
  * placementText(), which every Location column sorts, filters and exports by.
- * With mapPreview, each link also shows a hover map of the container's
- * position (container and truck links both preview the container).
+ * Each link also shows a hover map of the container's position (container
+ * and truck links both preview the container: the truck's last GPS report,
+ * else the container's site pin). Every asset list and asset page shows
+ * Location through this component, so they all get the map (SS-531).
  */
 import type { MouseEvent, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
@@ -22,8 +24,8 @@ export interface AssetLocationAsset {
 // List rows expand on click — following a link must not also toggle the row.
 const stop = (e: MouseEvent) => e.stopPropagation();
 
-export default function AssetLocation({ asset, className, mapPreview }: {
-  asset: AssetLocationAsset; className?: string; mapPreview?: boolean;
+export default function AssetLocation({ asset, className }: {
+  asset: AssetLocationAsset; className?: string;
 }) {
   const { container_id, container_name, truck_id, truck_name } = asset;
   const text = placementText(asset) || '—';
@@ -31,7 +33,7 @@ export default function AssetLocation({ asset, className, mapPreview }: {
     return <span className={className} title={titleFor(text)}>{text}</span>;
   }
   const preview = (node: ReactNode) =>
-    mapPreview ? <LocationMapPreview containerId={container_id}>{node}</LocationMapPreview> : node;
+    <LocationMapPreview containerId={container_id}>{node}</LocationMapPreview>;
   return (
     <span className={className} title={text}>
       {preview(<Link to={`/logistics/containers?open=${container_id}`} className="asset-loc-link" onClick={stop}>{container_name}</Link>)}
