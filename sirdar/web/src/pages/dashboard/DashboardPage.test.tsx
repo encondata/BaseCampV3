@@ -67,14 +67,14 @@ it('shows a loading skeleton, then content', async () => {
   expect(container.querySelector('.sd-skeleton')).toBeNull();
 });
 
-it('cards with no environment yet offer Set up, which opens the Deploy page', async () => {
+it('cards with no environment yet offer Set up, which opens New deployment', async () => {
   show();
   const dev = await screen.findByRole('region', { name: 'Development' });
   expect(within(dev).getByText('Not built yet')).toBeTruthy();
   expect(within(dev).getByText('No releases yet')).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Qa East' })).toBeTruthy();
   await userEvent.click(within(dev).getByRole('button', { name: 'Set up Development' }));
-  expect(path).toBe('/deploy');
+  expect(path).toBe('/deploy/new');
 });
 
 it('environment cards show the type, version, state and last release', async () => {
@@ -194,7 +194,7 @@ it('Production is the first card; without one the spotlight says Not built yet w
   expect(within(spot()).getByRole('heading', { name: 'Production' })).toBeTruthy();
   expect(within(spot()).getAllByText('Not built yet').length).toBeGreaterThan(0);
   await userEvent.click(within(spot()).getByRole('button', { name: 'Set up' }));
-  expect(path).toBe('/deploy');
+  expect(path).toBe('/deploy/new');
 });
 
 it('selects the production environment by default and shows its flow and certificate', async () => {

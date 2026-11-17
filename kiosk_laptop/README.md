@@ -10,7 +10,8 @@ the cloud is reachable again.
 ## Requirements
 
 - Windows 10 22H2 (build 19045) or Windows 11, macOS 13 or later, or a Linux
-  system that runs systemd.
+  system that runs systemd. The guided setup (see Install) needs Ubuntu 22.04
+  or newer (amd64) and 10 GB free on `/var/lib`.
 - Docker. On Windows and macOS the installer installs Docker Desktop for you.
   On Linux it installs Docker Engine if it is missing.
 - Chrome or Edge (WebUSB label printing does not work in other browsers).
@@ -20,6 +21,56 @@ the cloud is reachable again.
   has no such limit.
 
 ## Install
+
+### Ubuntu (recommended)
+
+On Ubuntu 22.04 or newer, run the guided setup:
+
+```
+wget -qO- https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/setup.sh | bash
+```
+
+It uses `wget` because a fresh Ubuntu has no `curl`. It asks for your password
+(it needs `sudo`) and then shows three screens:
+
+1. **What this laptop has.** A checklist, each row marked `[ OK ]` (nothing to
+   do), `[ ADD ]` (the setup installs it) or `[ FIX ]` (a problem you must fix
+   first, such as too little disk space; fix it, then choose Check again).
+2. **Environment.** Pick where this kiosk connects:
+
+   | Environment | Servers | Channel |
+   | --- | --- | --- |
+   | Prod | Production | `stable` (released versions) |
+   | RC | Production | `beta` (release candidates) |
+   | Dev | Dev | `beta` (release candidates) |
+   | Edge | Dev | `edge` (every build of `main`) |
+   | Custom (keep current settings) | This laptop's current settings | Unchanged |
+
+   A new laptop starts on Prod. Custom keeps whatever server addresses and
+   channel are already in `config.env`.
+3. **Installing.** Each step shows its progress. If one fails, choose
+   **Try again** (re-runs only that step), **Show details** (the end of the
+   log) or **Quit**. The log is `/var/log/serversherpa-kiosk-setup.log`.
+   Quit after a failed switch puts the laptop back on its previous
+   environment.
+
+Run the same command again to update in place: it preselects the laptop's
+current environment.
+
+To run it without questions, name the environment and add `--yes`; it stops on
+any problem:
+
+```
+wget -qO- https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/setup.sh | bash -s -- --env edge --yes
+```
+
+The setup also puts a **Set up kiosk** icon on the desktop. It downloads and
+runs the newest setup each time.
+
+`install.sh` (below) remains the command for macOS and other Linux, and has
+the flags for per-laptop settings.
+
+### Windows, macOS and other Linux
 
 Windows (PowerShell):
 
@@ -48,9 +99,17 @@ flags.
 | --- | --- | --- |
 | `--api-url URL` | `-ApiUrl URL` | Cloud API (default `https://api.serversherpa.com`). |
 | `--portal-url URL` | `-PortalUrl URL` | Portal address (default: the API URL with `api.` replaced by `portal.`). |
-| `--channel NAME` | `-Channel NAME` | `stable` (default) or `edge`. `edge` is for test laptops. |
+| `--channel NAME` | `-Channel NAME` | The release channel (see below): `stable` (default), `beta` or `edge`. Windows takes `stable` or `edge` only for now. |
 | `--yes` | `-Yes` | Never prompt. |
 | `--start-fresh` | `-StartFresh` | Don't copy an earlier (manually installed) kiosk's data; this laptop gets a new identity. |
+
+Channels (each moves when the `kiosk-laptop-image` workflow publishes):
+
+| Channel | Image tag | What it gets |
+| --- | --- | --- |
+| `stable` (default) | `:stable` | Releases only: a `kiosk-laptop-vX.Y.Z` tag. |
+| `beta` | `:beta` | Release candidates (a `kiosk-laptop-vX.Y.Z-rcN` tag) and every release, so it is never older than `stable`. For laptops that try a release first. macOS and Linux only for now. |
+| `edge` | `:edge` | Every build of `main`. For test laptops. |
 
 What it does: installs Docker if needed, saves your settings in
 `config.env`, writes `docker-compose.yml`, downloads the kiosk image, starts
@@ -187,22 +246,82 @@ and the kiosk points the reader's tag data at this laptop.
 - Linux starts the kiosk at boot (Docker starts it); the browser opens when
   someone signs in to the desktop.
 
+## Kiosk lockdown (Linux)
+
+On Linux the kiosk takes over the screen. Windows and macOS are unchanged:
+the kiosk opens in a Chrome app window there.
+
+- At sign-in a **Connecting to ServerSherpa…** screen shows until the cloud
+  answers. It tries every 15 seconds and never gives up, and it shows the time
+  of the last try and the network (Wi-Fi name, wired, or no network).
+- Then Chrome opens the kiosk full screen (`--kiosk`): no address bar, no
+  tabs, and F11 does nothing. If Chrome closes (Alt+F4, a crash), it opens
+  again within a few seconds.
+- While the kiosk runs, these GNOME shortcuts are off for the desktop user:
+  - the Super key and the overview;
+  - Alt+Tab and the other window switchers;
+  - the Activities hot corner;
+  - workspace switching (there is one workspace).
+- **Esc** opens a PIN pad (when no dialog is open; Esc closes a dialog
+  first). The PIN **csg** closes the kiosk and turns the shortcuts back on.
+- **Start Kiosk** on the desktop, signing in again, or a reboot brings the
+  kiosk back.
+- The kiosk's top bar shows the battery and the Wi-Fi network. Tap the
+  network to see the wired connection or join a Wi-Fi network.
+
+How it works:
+- `kiosk_session.py` is installed next to `launch.sh`, and `launch.sh` runs
+  it as the desktop user at sign-in.
+- It serves the waiting page and a small helper on `127.0.0.1:8092`.
+  - The helper only answers the kiosk page: the page must come from
+    `http://localhost:8090` and carry a token that changes every session.
+  - A Wi-Fi password goes to NetworkManager (`nmcli`) and is never logged.
+- The kiosk Chrome has its own profile: `~/.local/share/serversherpa-kiosk/chrome`,
+  or `~/snap/chromium/common/serversherpa-kiosk` for snap Chromium. The first
+  time, sign in to the kiosk again and pick the label printer once.
+- The shortcut values from before the lock are saved in
+  `~/.local/state/serversherpa-kiosk/desktop-lock.json`. The session's log is
+  `session.log`, next to it.
+
+Getting it: run the install command once (an existing laptop's nightly update
+can't add a new file). From then on the nightly update keeps `kiosk_session.py`
+current.
+
+Not blocked:
+- Ctrl+Alt+F1–F12 (text consoles), the power button, and Ctrl+Alt+Del;
+- the touchpad's three-finger swipe to the overview.
+
+If the shortcuts stay off: sign in, wait for the kiosk, press Esc and type
+`csg`. A crash or power loss can't lose them, because the next session puts
+the saved values back on exit. Uninstalling puts them back too: right away if
+the desktop user is signed in, otherwise at their next sign-in.
+
 ## Updates
 
 - The kiosk updates itself every night at 03:00 local time, to the newest
-  image on its channel (`stable` by default; `edge` follows every build of
-  `main`).
+  image on its channel (`stable` by default; `beta` adds release candidates;
+  `edge` follows every build of `main`).
 - It skips the update while scans are uploading, and tries again the next
   night.
 - It waits up to 2 minutes for the new version to be healthy. If it isn't, the
   previous version is put back. A version that failed its health check isn't
-  tried again until a newer one is published.
+  tried again until a newer one is published, or (macOS and Linux) until
+  the installer is run again.
+- The nightly helper refresh doesn't include `setup.sh`: the Set up kiosk icon
+  downloads it fresh each run.
 - The nightly update also refreshes the helper scripts (`hostnet` and
-  `launch`, `.sh` or `.ps1`) from the version of the installer the laptop was
-  installed from (recorded as `KIOSK_INSTALLER_REF` in `config.env`, `main`
-  by default; only a plain git ref is accepted, else `main`). A download that
-  isn't a sound script is skipped and logged, and never changes the update's
-  result.
+  `launch`, `.sh` or `.ps1`, and on Linux `kiosk_session.py`). A download
+  that isn't a sound script is skipped and logged, and never changes the
+  update's result.
+  - Where from, on macOS and Linux: the exact commit the running kiosk
+    image was built from (the image's `org.opencontainers.image.revision`
+    label), read after the image update or rollback, so the scripts always
+    match the app the laptop runs on its channel. An image without that label (built before
+    it existed, or a local build) means `main`. A developer can pin another
+    ref with `KIOSK_INSTALLER_REF` in `config.env`; any value but `main`
+    (the default the installer writes) wins over the label. Only a plain git
+    ref is accepted, else `main`. `update.log` says which ref was used and
+    why.
   - Linux: the update job (root) does it, each night.
   - macOS: the update job runs as the desktop user, who owns only `hostnet.sh`
     and `launch.sh` in the install folder; the installer sets that, so it
@@ -212,7 +331,8 @@ and the kiosk points the reader's tag data at this laptop.
     host-network task (which runs as SYSTEM) does it, at most once a day
     (`helpers-refresh.json` in the install folder records the last attempt),
     from the next installer run on. A refreshed `hostnet.ps1` takes effect on
-    its next run, within a minute.
+    its next run, within a minute. Windows refreshes from
+    `KIOSK_INSTALLER_REF` (`main` by default), not from the image's commit.
   - Laptops installed before this change need one run of the install command
     on macOS and Windows.
 - It logs to `update.log` in the install folder.
@@ -245,6 +365,33 @@ and the kiosk points the reader's tag data at this laptop.
   the cloud refuses outright is marked failed, and Edge settings can retry
   it.
 
+## Docker and Chrome on Ubuntu
+
+- Docker comes from Docker's apt repository. When Docker doesn't serve a new
+  Ubuntu release yet, the install falls back to Ubuntu's `docker.io` and
+  `docker-compose-v2`.
+- Chrome comes from Google's apt repository (amd64 only). Snap Chromium is
+  left installed.
+
+## Label printers on Linux
+
+Nothing needs doing by hand. So Chrome can print to USB Zebra label printers,
+the installer:
+
+- adds a udev rule that lets Chrome open Zebra printers
+  (`/etc/udev/rules.d/60-serversherpa-label-printers.rules`);
+- blocks the `usblp` printer driver, which otherwise claims the printers
+  (`/etc/modprobe.d/serversherpa-no-usblp.conf`);
+- removes the system printer queues Ubuntu sets up for USB Zebras, and the
+  `system-config-printer-udev` package that makes them (other printers are
+  left alone);
+- lets snap Chromium use USB devices (`snap connect chromium:raw-usb`) when
+  that is the browser.
+
+The host network job checks all of this every minute and puts back anything
+that changed. Uninstalling removes the two files; it doesn't reinstall the
+package.
+
 ## Windows label printers
 
 Label printers need the WinUSB driver. Chrome can only print to a USB printer
@@ -273,6 +420,16 @@ on the laptop, not a Docker volume. It holds:
 - `edge.db` — settings, cached data and scans waiting to upload.
 - `host-network.json` — the laptop's network addresses, rewritten every minute
   (see [RFID station](#rfid-station)); nothing to back up.
+
+On Ubuntu the setup keeps production and dev data apart:
+
+- production data: `/var/lib/serversherpa-kiosk`;
+- dev data (the Dev and Edge environments): `/var/lib/serversherpa-kiosk-dev`.
+
+Switching between server sets keeps both folders. A laptop that was already
+on the dev servers has its data moved, once, from the production folder to
+the dev folder; production data is never moved. A custom `KIOSK_DATA_DIR` is
+never moved.
 
 Back this folder up. Deleting it creates a brand-new kiosk, and any scans that
 had not uploaded are lost. Stop the kiosk first so the copy of `edge.db` is
@@ -303,11 +460,15 @@ Windows:
 
 (Or run `install.ps1 -Uninstall` from a checkout.)
 
-It removes the update job, the host network job and the launcher first, then
+It removes the update job, the host network job, the launcher and the Set up
+kiosk icon first, then
 stops the kiosk. If
 Docker isn't running, it stops and asks you to start Docker and run the
 command again. It keeps the data folder, `install.log` and `update.log`, and
 it never uninstalls Docker.
+
+On the Ubuntu test laptop, its own `update-kiosk.sh` and `install-kiosk.sh`
+are left alone.
 
 To delete the data folder too, add `--purge-data` (Windows: `-PurgeData`). It
 asks you to type `DELETE`. For a scripted run, set `KIOSK_CONFIRM_PURGE=DELETE`
@@ -317,6 +478,18 @@ instead.
 
 - Install log: `install.log` in the install folder. Update log: `update.log`
   in the same folder.
+- Linux, "error while creating mount source path ... read-only file system":
+  snap Docker was installed next to Docker Engine. The installer and the host
+  network job remove snap Docker and restart Docker Engine on their own; if
+  only snap Docker was there, the installer installs Docker Engine first.
+  Removing the snap deletes a kiosk container it ran, so the host network job
+  then starts the kiosk on Docker Engine from the image already there, or
+  starts the update job when the image has to be downloaded.
+- macOS and Linux, "skipping ... it failed its health check before" in
+  `update.log`: re-running the installer tries that version again. If it
+  still isn't healthy, the installer goes back to the previous version (or
+  starts the kept previous image when no kiosk was running), rejects the
+  version again, and exits with an error.
 - Kiosk logs: `docker compose -f <install folder>/docker-compose.yml logs -f edge`
 - Health: `docker compose -f <install folder>/docker-compose.yml ps` shows the
   container as healthy once the kiosk answers.
@@ -369,9 +542,18 @@ Images are published to `ghcr.io/encondata/serversherpa-kiosk-laptop` by the
 
 - `main` builds publish `:edge` (and `:sha-<sha7>`). Only a release tag moves
   `:stable`, the installers' default channel.
-- Cut a release:
+- A release candidate tag `kiosk-laptop-vX.Y.Z-rcN` (N from 1) publishes
+  `:X.Y.Z-rcN` and moves `:beta`. A release tag `kiosk-laptop-vX.Y.Z`
+  publishes `:X.Y.Z` and moves both `:stable` and `:beta`. Any other
+  `kiosk-laptop-v*` tag fails the workflow.
+- Every image is labeled `org.opencontainers.image.revision` with the full
+  commit it was built from (the Dockerfile's `KIOSK_REVISION` build arg sets
+  it for a local build too), and the macOS and Linux nightly update refreshes
+  the helper scripts from that commit.
+- Cut a release candidate, then the release:
 
   ```
+  git tag kiosk-laptop-vX.Y.Z-rc1 && git push origin kiosk-laptop-vX.Y.Z-rc1
   git tag kiosk-laptop-vX.Y.Z && git push origin kiosk-laptop-vX.Y.Z
   ```
 

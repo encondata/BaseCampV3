@@ -383,6 +383,7 @@ const MESSAGES: Record<string, string> = {
   signing_digest_invalid: 'Each kiosk signing digest is a SHA-256: 64 hex characters, colons allowed.',
   digests_not_allowed: 'An adopted environment keeps the signing digests its own .env has (SS_KIOSK_SIGNING_DIGESTS).',
   seed_content_not_allowed: 'Only the first deploy of an environment that starts empty can seed starter content.',
+  force_not_allowed: 'Only Delete environment can be forced.',
   mailpit_required: 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.',
   mail_invalid: 'Choose Mailpit or SMTP for mail.',
   apps_not_allowed: "An adopted environment runs the apps its own .env lists (STACK_APPS).",
@@ -569,6 +570,8 @@ export interface DeploymentSummary {
   cloud: boolean; slot: string | null; go_live: boolean;
   /** A LAN Blue/Green deployment: `slot` and `go_live` as on DigitalOcean. */
   bluegreen: boolean;
+  /** A Force delete (teardown only): steps that failed were skipped. Absent from older API answers. */
+  force?: boolean;
   /** Its plan has step 11, Create the first admin. */
   first_admin: boolean;
 }
@@ -727,6 +730,8 @@ export interface DeploymentBody {
   confirm_production?: string;
   /** A first Update that starts empty: end with step 20 Seed starter content. */
   seed_content?: boolean;
+  /** Delete only: Force delete. Every step that fails is skipped, the environment goes anyway; never a snapshot. */
+  force?: boolean;
 }
 export interface RetryBody { from_step?: number; confirm_name?: string; confirm_production?: string }
 export type SnapshotStatus = 'pending' | 'ready' | 'failed';

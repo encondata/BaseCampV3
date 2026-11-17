@@ -1,6 +1,8 @@
 /** One environment card (Production first). Clicking the card (or Enter /
  *  Space on it) puts it in the spotlight; its small Deploy (or Set up) button
- *  doesn't change the selection. Demo cards' actions are inert. */
+ *  doesn't change the selection. Demo cards' actions are inert. `opens`: the
+ *  card opens something (the Environments page opens its environment page)
+ *  rather than selecting it, so it reads "Open …" and is no toggle. */
 import { useId, type ReactNode } from 'react';
 
 import type { DashEnvironment } from '../../lib/sirdarApi';
@@ -20,8 +22,8 @@ function State({ env }: { env: DashEnvironment }) {
   return <div className="sd-env-state sd-caps">{env.environment ? 'No active deployment' : 'Not built yet'}</div>;
 }
 
-export default function EnvCard({ env, demo, canDeploy, selected, onSelect, onDeploy, onSetUp }: {
-  env: DashEnvironment; demo: boolean; canDeploy: boolean; selected: boolean;
+export default function EnvCard({ env, demo, canDeploy, selected, opens = false, onSelect, onDeploy, onSetUp }: {
+  env: DashEnvironment; demo: boolean; canDeploy: boolean; selected: boolean; opens?: boolean;
   onSelect: () => void; onDeploy: (name: string) => void; onSetUp: () => void;
 }) {
   const headingId = useId();
@@ -48,8 +50,8 @@ export default function EnvCard({ env, demo, canDeploy, selected, onSelect, onDe
   return (
     <section className={`sd-card sd-env${selected ? ' is-selected' : ''}${env.primary ? ' is-production' : ''}`}
              aria-labelledby={headingId}>
-      <button type="button" className="sd-env-select" aria-pressed={selected} aria-label={`Show ${env.label}`}
-              onClick={onSelect} />
+      <button type="button" className="sd-env-select" aria-pressed={opens ? undefined : selected}
+              aria-label={`${opens ? 'Open' : 'Show'} ${env.label}`} onClick={onSelect} />
       <h3 id={headingId}>{env.label}</h3>
       {env.sub && <div className="sd-muted">{env.sub}</div>}
       <div className="sd-env-body">

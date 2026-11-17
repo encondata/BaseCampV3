@@ -63,6 +63,26 @@ def test_merge_defaults_and_rejects_bad_channel(sh, tmp_path):
     assert bad.returncode != 0 and "channel" in bad.stderr.lower()
 
 
+@pytest.mark.parametrize("channel", ["stable", "beta", "edge"])
+def test_every_channel_is_accepted_and_names_its_image(sh, tmp_path, channel):
+    out = sh(f'load_config "{tmp_path}/none"; OPT_CHANNEL={channel}; merge_config; '
+             f'echo "$CFG_CHANNEL"; image_ref').stdout.splitlines()
+    assert out == [channel, f"ghcr.io/encondata/serversherpa-kiosk-laptop:{channel}"]
+
+
+@pytest.mark.parametrize("channel", ["nightly", "Beta", "rc", "stable "])
+def test_an_unknown_channel_is_rejected_naming_all_three(sh, tmp_path, channel):
+    bad = sh(f'load_config "{tmp_path}/none"; OPT_CHANNEL="{channel}"; merge_config', check=False)
+    assert bad.returncode != 0
+    assert "use stable, beta or edge" in bad.stderr
+
+
+def test_channel_flag_and_usage_know_beta(sh, tmp_path):
+    out = sh(f'load_config "{tmp_path}/none"; parse_args --channel beta; merge_config; echo "$CFG_CHANNEL"').stdout
+    assert out.strip().splitlines()[-1] == "beta"
+    assert "stable (default), beta or edge" in sh('usage').stdout
+
+
 def test_write_config_rejects_unsafe_values(sh, tmp_path):
     bad = sh(f'CFG_API_URL=\'https://x.com/$(id)\' CFG_PORTAL_URL= CFG_CHANNEL=stable CFG_DATA_DIR=/d; '
              f'write_config "{tmp_path}/c.env"', check=False)
@@ -153,7 +173,8 @@ def test_shellcheck_clean():
     if sc is None:
         pytest.skip("shellcheck not installed")
     for script in (INSTALL_SH, INSTALL_SH.parent / "update.sh", INSTALL_SH.parent / "launch.sh",
-                   INSTALL_SH.parent / "hostnet.sh", INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
+                   INSTALL_SH.parent / "hostnet.sh", INSTALL_SH.parent / "setup.sh",
+                   INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
         r = subprocess.run([sc, "-s", "bash", str(script)], capture_output=True, text=True)
         assert r.returncode == 0, (script.name, r.stdout)
 
@@ -792,18 +813,78 @@ def _start(sh, tmp_path, fake, extra=""):
 STABLE = "ghcr.io/encondata/serversherpa-kiosk-laptop:stable"
 
 
-def test_start_kiosk_keeps_current_version_when_pulled_image_was_rejected(sh, tmp_path):
+def test_start_kiosk_retries_a_version_that_was_rejected(sh, tmp_path):
+    """Running the installer is an explicit retry: the version the nightly
+    update set aside is started again and rejected_image is forgotten."""
     _write_state(tmp_path, previous_image="sha256:older", rejected_image="sha256:bad")
     fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:bad")
     r = _start(sh, tmp_path, fake)
     assert r.returncode == 0, r.stderr
-    assert ("The newest version failed its health check on this laptop before; "
-            "keeping the current one.") in r.stderr
+    assert "failed its health check on this laptop before" not in r.stderr
+    assert "retries" in r.stdout
     calls = (tmp_path / "docker.log").read_text().splitlines()
-    i_tag = calls.index(f"tag sha256:old {STABLE}")
-    assert i_tag < next(i for i, c in enumerate(calls) if c.endswith(" up -d"))
+    assert f"tag sha256:old {STABLE}" not in calls and any(c.endswith(" up -d") for c in calls)
     st = _state_of(tmp_path)
-    assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "sha256:bad", "sha256:older")
+    assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "", "sha256:older")
+
+
+def test_start_kiosk_failed_retry_without_a_container_rejects_it_again_in_place(sh, tmp_path):
+    _write_state(tmp_path, previous_image="sha256:older", rejected_image="sha256:bad", phase="updating")
+    st_file = tmp_path / "update-state.json"
+    ino = st_file.stat().st_ino
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "didn't become healthy in time" in r.stderr
+    st = _state_of(tmp_path)
+    assert (st["rejected_image"], st["phase"], st["previous_image"]) == ("sha256:bad", "updating", "sha256:older")
+    assert st_file.stat().st_ino == ino   # rewritten in place: owner and mode stay
+
+
+def test_start_kiosk_clears_the_rejection_in_the_file_before_starting(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad")
+    _start(sh, tmp_path, fake, extra=f'compose() {{ cat "{tmp_path}/update-state.json" > "{tmp_path}/seen"; }}; ')
+    import json
+    assert json.loads((tmp_path / "seen").read_text())["rejected_image"] == ""
+
+
+def test_start_kiosk_failed_retry_without_a_container_starts_the_kept_previous(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:prev",
+                         health=("unhealthy", "healthy"))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0
+    assert "started the previous version, which is running" in r.stderr, r.stderr
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    i_tag = calls.index(f"tag serversherpa-kiosk-laptop:previous {STABLE}")
+    assert any(c.endswith(" up -d") for c in calls[i_tag:])
+    st = _state_of(tmp_path)
+    assert (st["rejected_image"], st["phase"]) == ("sha256:bad", "done")
+
+
+def test_start_kiosk_kept_previous_that_fails_too_says_so(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:prev",
+                         health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "isn't healthy either" in r.stderr
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+def test_start_kiosk_kept_previous_that_is_the_failed_image_is_not_tried(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:bad",
+                         health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "didn't become healthy in time" in r.stderr
+    assert not any(c.startswith("tag ") for c in (tmp_path / "docker.log").read_text().splitlines())
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+def test_start_kiosk_without_a_rejected_version_says_nothing_about_it(sh, tmp_path):
+    fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0 and "retries" not in r.stdout
 
 
 def test_start_kiosk_rolls_back_when_the_new_version_is_unhealthy(sh, tmp_path):
@@ -840,7 +921,7 @@ def test_start_kiosk_resets_a_stale_updating_phase(sh, tmp_path):
     r = _start(sh, tmp_path, fake)
     assert r.returncode == 0, r.stderr
     st = _state_of(tmp_path)
-    assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "sha256:x", "sha256:older")
+    assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "", "sha256:older")
     assert st_file.stat().st_ino == ino   # rewritten in place: owner and mode stay
 
 
@@ -999,33 +1080,23 @@ def test_start_fresh_skips_even_a_readable_legacy_folder(sh, tmp_path):
     assert not list(data.iterdir())
 
 
-def test_rollback_without_a_pulled_image_id_keeps_rejected_image(sh, tmp_path):
+def test_rollback_without_a_pulled_image_id_rejects_nothing(sh, tmp_path):
     _write_state(tmp_path, rejected_image="sha256:bad")
     fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="", health=("unhealthy", "healthy"))
     r = _start(sh, tmp_path, fake)
     assert r.returncode != 0 and "rolled back to the previous version" in r.stderr
-    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+    assert _state_of(tmp_path)["rejected_image"] == ""
 
 
-def test_rejected_image_without_container_prefers_previous_tag(sh, tmp_path):
+@pytest.mark.parametrize("previous_tag", ["sha256:prev", ""])
+def test_rejected_image_without_container_is_retried(sh, tmp_path, previous_tag):
     _write_state(tmp_path, rejected_image="sha256:bad")
-    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:prev")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag=previous_tag)
     r = _start(sh, tmp_path, fake)
     assert r.returncode == 0, r.stderr
-    assert "starting the kept previous version" in r.stderr
-    calls = (tmp_path / "docker.log").read_text().splitlines()
-    i_tag = calls.index(f"tag serversherpa-kiosk-laptop:previous {STABLE}")   # by name
-    assert i_tag < next(i for i, c in enumerate(calls) if c.endswith(" up -d"))
-    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
-
-
-def test_rejected_image_without_container_or_previous_tag_starts_it_anyway(sh, tmp_path):
-    _write_state(tmp_path, rejected_image="sha256:bad")
-    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad")
-    r = _start(sh, tmp_path, fake)
-    assert r.returncode == 0, r.stderr
-    assert "no earlier version is kept, so starting it anyway" in r.stderr
+    assert "failed its health check on this laptop before" not in r.stderr
     assert not any(c.startswith("tag ") for c in (tmp_path / "docker.log").read_text().splitlines())
+    assert _state_of(tmp_path)["rejected_image"] == ""
 
 
 # ── fix round 3: containerd image store ──────────────────────────────
@@ -1059,26 +1130,38 @@ def test_store_installer_rollback_tags_from_previous(sh, tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", ["containerd", "classic"])
-def test_store_installer_rejected_skip_repoints_from_previous(sh, tmp_path, mode):
+def test_store_installer_retries_a_rejected_version(sh, tmp_path, mode):
     _write_state(tmp_path, rejected_image="sha256:bad")
     fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old"}, running="sha256:old",
                                pulled="sha256:bad")
     r = _start(sh, tmp_path, fake)
     assert r.returncode == 0, r.stderr
-    assert f"tag {PREV_TAG} {STABLE}" in (tmp_path / "docker.log").read_text().splitlines()
+    assert f"tag {PREV_TAG} {STABLE}" not in (tmp_path / "docker.log").read_text().splitlines()
     tags, running = store()
-    assert tags[STABLE] == "sha256:old" and running == "sha256:old"
+    assert tags[STABLE] == "sha256:bad" and running == "sha256:bad" and tags[PREV_TAG] == "sha256:old"
 
 
 @pytest.mark.parametrize("mode", ["containerd", "classic"])
-def test_store_installer_no_container_rejected_uses_previous(sh, tmp_path, mode):
+def test_store_installer_no_container_failed_retry_falls_back_to_previous(sh, tmp_path, mode):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old", PREV_TAG: "sha256:prev"},
+                               running="", pulled="sha256:bad", bad=("sha256:bad",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "started the previous version, which is running" in r.stderr, r.stderr
+    tags, running = store()
+    assert running == "sha256:prev" and tags[STABLE] == "sha256:prev"
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_installer_no_container_retries_a_rejected_version(sh, tmp_path, mode):
     _write_state(tmp_path, rejected_image="sha256:bad")
     fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old", PREV_TAG: "sha256:old"},
                                running="", pulled="sha256:bad")
     r = _start(sh, tmp_path, fake)
     assert r.returncode == 0, r.stderr
     tags, running = store()
-    assert running == "sha256:old"
+    assert running == "sha256:bad"
 
 
 # ── RFID station Task 7: host-network helper job ──────────────────────
@@ -1241,3 +1324,389 @@ def test_config_records_installer_ref_for_the_nightly_update(sh, tmp_path):
     out = sh(f'load_config "{cfg}"; echo "$CFG_INSTALLER_REF"; {base}; write_config "{cfg}"').stdout.strip()
     assert out == "feature-x"                                       # a re-run without the env keeps it
     assert "KIOSK_INSTALLER_REF=feature-x\n" in cfg.read_text()
+
+
+# ── Linux USB label printers, snap Docker, snap Chromium ──────────────
+
+from conftest import LPSTAT_V, ZEBRA_QUEUES, lp_calls, lp_stubs  # noqa: E402
+
+LP_BEGIN = "# >>> USB label printers"
+LP_END = "# <<< USB label printers"
+
+
+def _lp_block(path):
+    text = path.read_text()
+    assert text.count(LP_BEGIN) == 1 and text.count(LP_END) == 1, path.name
+    return text[text.index(LP_BEGIN):text.index(LP_END)]
+
+
+def test_label_printer_block_is_the_same_in_install_and_hostnet():
+    assert _lp_block(INSTALL_SH_DIR / "install.sh") == _lp_block(INSTALL_SH_DIR / "hostnet.sh")
+
+
+def test_both_scripts_write_the_same_udev_and_modprobe_files(sh, tmp_path):
+    import subprocess
+    from conftest import BASH
+    body = 'lp_udev_rule; echo ---; lp_modprobe_conf; echo ---; echo "$LP_UDEV_RULES"; echo "$LP_MODPROBE_CONF"'
+    mine = sh(body).stdout
+    env = {**os.environ, "KIOSK_HOSTNET_LIB": "1", "KIOSK_DIR": str(tmp_path)}
+    theirs = subprocess.run([BASH, "-c", f'source "{INSTALL_SH_DIR / "hostnet.sh"}"; {body}'],
+                            capture_output=True, text=True, env=env).stdout
+    assert mine == theirs
+    rule, conf, paths = mine.split("---\n")
+    assert 'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", TAG+="uaccess"' in rule.splitlines()
+    assert "blacklist usblp" in conf.splitlines()
+    assert paths.splitlines() == ["/etc/udev/rules.d/60-serversherpa-label-printers.rules",
+                                  "/etc/modprobe.d/serversherpa-no-usblp.conf"]
+
+
+def test_lp_zebra_queues_picks_only_usb_zebras(sh):
+    assert sh("printf '' | lp_zebra_queues").stdout == ""
+    out = sh(f"printf '%s' '{LPSTAT_V}' | lp_zebra_queues").stdout.splitlines()
+    assert out == ZEBRA_QUEUES
+
+
+def test_setup_label_printers_fixes_everything_once(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, snaps=("chromium",))
+    r = sh(stubs + "OS=Linux; setup_label_printers")
+    calls = lp_calls(tmp_path)
+    assert "apt-get -o DPkg::Lock::Timeout=120 remove -y system-config-printer-udev" in calls
+    assert "DEBIAN_FRONTEND=noninteractive" in calls
+    assert "modprobe -r usblp" in calls
+    assert [c for c in calls if c.startswith("lpadmin")] == [f"lpadmin -x {q}" for q in ZEBRA_QUEUES]
+    assert "udevadm control --reload" in calls
+    assert "udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f" in calls
+    assert "snap connect chromium:raw-usb" in calls
+    rule = (tmp_path / "udev" / "60-serversherpa-label-printers.rules").read_text()
+    assert 'ATTR{idVendor}=="0a5f", TAG+="uaccess"' in rule
+    assert "0666" not in rule
+    assert "blacklist usblp" in (tmp_path / "modprobe" / "serversherpa-no-usblp.conf").read_text()
+    # one info line per change: package, modprobe file, usblp, 2 queues, udev rule, chromium
+    assert r.stdout.count("==>") == 7, r.stdout
+    assert r.stderr == ""
+
+
+def test_setup_label_printers_is_quiet_when_nothing_is_off(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, usblp=False, lpstat="device for HP: usb://HP/x\n", pkg=False,
+                     snaps=("chromium",), raw_usb=True)
+    sh(stubs + "OS=Linux; setup_label_printers")
+    (tmp_path / "lp.calls").unlink()
+    r = sh(stubs + "OS=Linux; setup_label_printers")
+    assert r.stdout == "" and r.stderr == ""
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.split()[0] in ("udevadm", "modprobe", "lpadmin", "apt-get")]
+    assert "snap connect chromium:raw-usb" not in calls
+
+
+def test_setup_label_printers_package_removal_failure_is_a_warning(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, fail="apt-get")
+    r = sh(stubs + "OS=Linux; setup_label_printers; echo rc=$?")
+    assert "rc=0" in r.stdout and "Warning:" in r.stderr and "system-config-printer-udev" in r.stderr
+    assert (tmp_path / "udev" / "60-serversherpa-label-printers.rules").exists()
+
+
+def test_setup_label_printers_failing_tools_never_stop_the_install(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, snaps=("chromium",), fail="modprobe udevadm lpadmin")
+    stubs += f'LP_UDEV_RULES="{tmp_path}/notadir/x.rules"; : > "{tmp_path}/notadir"; '
+    r = sh(stubs + 'OS=Linux; setup_label_printers; echo rc=$?; '
+                   'snap() { return 1; }; setup_label_printers; echo rc=$?')
+    assert r.stdout.count("rc=0") == 2, r.stderr
+    assert "Couldn't write" in r.stderr and "Couldn't unload the usblp driver" in r.stderr
+
+
+def test_setup_label_printers_without_cups_tools(sh, tmp_path):
+    stubs = lp_stubs(tmp_path)
+    r = sh(stubs + 'unset -f lpstat lpadmin; PATH=/nonexistent; OS=Linux; setup_label_printers; echo rc=$?')
+    assert "rc=0" in r.stdout
+    assert not [c for c in lp_calls(tmp_path) if c.startswith(("lpstat", "lpadmin"))]
+
+
+def test_setup_label_printers_does_nothing_on_macos(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, snaps=("chromium", "docker"))
+    r = sh(stubs + "OS=Darwin; setup_label_printers")
+    assert r.stdout == "" and lp_calls(tmp_path) == []
+    assert not (tmp_path / "udev" / "60-serversherpa-label-printers.rules").exists()
+
+
+def _ensure_docker_linux(sh, tmp_path, **kw):
+    stubs = lp_stubs(tmp_path, **kw)
+    dockerd = tmp_path / "dockerd"
+    return sh(stubs + f'curl() {{ echo "curl $*" >> "{tmp_path}/lp.calls"; '
+                      f'printf "touch \\"%s\\"; chmod 755 \\"%s\\"\\n" "{dockerd}" "{dockerd}"; }}; '
+                      'OS=Linux; ensure_docker', env={"SUDO_USER": ""}), lp_calls(tmp_path)
+
+
+def test_ensure_docker_with_only_snap_docker_installs_engine_then_removes_the_snap(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, snaps=("docker",), engine=False)
+    i_curl = next(i for i, c in enumerate(calls) if c.startswith("curl ") and "get.docker.com" in c)
+    i_rm = calls.index("snap remove --purge docker")
+    assert i_curl < i_rm
+    assert calls.index("systemctl restart docker.socket docker.service") > i_rm
+    assert "Installing Docker Engine" in r.stdout and "Removed snap Docker" in r.stdout
+    assert "Docker is installed" not in r.stdout
+    assert not (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").exists()
+
+
+def test_ensure_docker_with_snap_and_engine_only_removes_the_snap(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, snaps=("docker",), engine=True)
+    assert not any(c.startswith("curl ") for c in calls)
+    assert "snap remove --purge docker" in calls
+    assert "systemctl restart docker.socket docker.service" in calls
+    assert "Removed snap Docker" in r.stdout
+
+
+def test_ensure_docker_snap_removal_failure_is_a_warning_and_restarts_nothing(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, snaps=("docker",))
+    marker = tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed"
+    marker.write_text("")
+    r = sh(stubs + f'snap() {{ echo "snap $*" >> "{tmp_path}/lp.calls"; '
+                   'case "$1" in list) [ "$2" = docker ];; *) return 1;; esac; }; '
+                   'OS=Linux; lp_remove_snap_docker; echo rc=$?')
+    assert "rc=0" in r.stdout and "Couldn't remove snap Docker" in r.stderr
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("systemctl restart")]
+    assert marker.exists()
+
+
+def test_install_failed_engine_restart_is_a_warning_and_clears_the_marker(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, snaps=("docker",), engine=True, restart_fails=True)
+    assert "systemctl restart docker.socket docker.service" in calls
+    assert "Couldn't restart Docker Engine (systemctl restart docker.socket docker.service)." in r.stderr
+    assert not (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").exists()
+
+
+def test_install_starts_no_kiosk_from_the_label_printer_block(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, snaps=("docker",), engine=True)
+    assert not any(c.startswith(("docker", "systemctl start")) for c in calls)
+
+
+def test_ensure_docker_with_engine_only_touches_no_snap(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, engine=True)
+    assert "Docker Engine is installed." in r.stdout
+    assert not any(c.startswith(("curl ", "snap remove", "systemctl restart")) for c in calls)
+
+
+def test_engine_present_from_a_non_snap_systemd_unit(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, engine=False)
+    unit = '[Service]\nExecStart=/usr/local/bin/dockerd -H fd://\n'
+    snap_unit = '[Service]\nExecStart=/usr/bin/snap run docker.dockerd\nX=/snap/docker/1\n'
+    out = sh(stubs + f'systemctl() {{ printf "%s" "$UNIT"; }}; lp_engine_present && echo yes || echo no',
+             env={"UNIT": unit}).stdout
+    assert out.strip() == "yes"
+    out = sh(stubs + f'systemctl() {{ printf "%s" "$UNIT"; }}; lp_engine_present && echo yes || echo no',
+             env={"UNIT": snap_unit}).stdout
+    assert out.strip() == "no"
+    out = sh(stubs + 'lp_engine_present && echo yes || echo no').stdout   # systemctl cat fails
+    assert out.strip() == "no"
+
+
+def test_uninstall_removes_the_label_printer_files_on_linux(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir()
+    stubs = lp_stubs(tmp_path)
+    (tmp_path / "udev" / "60-serversherpa-label-printers.rules").write_text("x")
+    (tmp_path / "modprobe" / "serversherpa-no-usblp.conf").write_text("x")
+    (tmp_path / "udev" / "other.rules").write_text("keep")
+    sh(stubs + f'OS=Linux; DOCKER=(true); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
+               f'remove_login_items() {{ :; }}; uninstall')
+    assert not (tmp_path / "udev" / "60-serversherpa-label-printers.rules").exists()
+    assert not (tmp_path / "modprobe" / "serversherpa-no-usblp.conf").exists()
+    assert (tmp_path / "udev" / "other.rules").read_text() == "keep"
+    assert not any(c.startswith(("apt-get", "snap")) for c in lp_calls(tmp_path))
+
+
+def test_main_sets_up_label_printers_after_docker_and_before_the_kiosk_starts():
+    text = (INSTALL_SH_DIR / "install.sh").read_text()
+    body = text[text.index("\nmain() {"):]
+    assert body.index("check_compose") < body.index("setup_label_printers") < body.index("start_kiosk")
+
+
+# ── kiosk lockdown (Linux) ────────────────────────────────────────────
+# A runner with xdg-user-dirs installed would answer for its own HOME.
+NO_XDG = 'xdg-user-dir() { return 1; }; '
+
+
+def _session_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ks_drift", INSTALL_SH_DIR / "kiosk_session.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("kiosk_dir", ["/opt/serversherpa-kiosk", "/opt/Server Sherpa/50%"])
+def test_start_icon_matches_kiosk_session(sh, tmp_path, kiosk_dir):
+    f = tmp_path / "icon.desktop"
+    sh(f'KIOSK_DIR="{kiosk_dir}"; render_start_icon "{f}"')
+    from pathlib import Path
+    assert f.read_text() == _session_module().start_icon_text(Path(kiosk_dir) / "launch.sh")
+
+
+def test_install_login_items_linux_adds_the_session_and_the_start_icon(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    auto = home / ".config" / "autostart"; auto.mkdir(parents=True)
+    (auto / "serversherpa-kiosk-restore.desktop").write_text("x")       # left by an earlier uninstall
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    assert (inst / "kiosk_session.py").stat().st_mode & 0o777 == 0o755
+    icon = home / "Desktop" / "serversherpa-start-kiosk.desktop"
+    assert f"Exec={inst}/launch.sh" in icon.read_text() and "Name=Start Kiosk" in icon.read_text()
+    assert icon.stat().st_mode & 0o777 == 0o755
+    assert not (auto / "serversherpa-kiosk-restore.desktop").exists()
+
+
+def test_install_login_items_macos_has_no_session(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items')
+    assert not (inst / "kiosk_session.py").exists() and not (home / "Desktop").exists()
+
+
+def test_ensure_python3_installs_it_when_missing(sh, tmp_path):
+    calls = tmp_path / "calls"
+    sh(f'have_python3() {{ return 1; }}; apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; ensure_python3')
+    assert "install -y python3" in calls.read_text()
+    calls.unlink()
+    sh(f'have_python3() {{ :; }}; apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; ensure_python3')
+    assert not calls.exists()
+
+
+def _locked(home):
+    state = home / ".local" / "state" / "serversherpa-kiosk"; state.mkdir(parents=True)
+    (state / "desktop-lock.json").write_text('{"version": 1, "saved": []}')
+    return state
+
+
+def test_remove_login_items_linux_restores_in_the_users_session(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    restore = (f'pkill() {{ echo "pkill $*" >> "{calls}"; }}; SESSION_STOP_WAIT_S=0; '
+               f'session_restore() {{ echo "restore $*" >> "{calls}"; rm -f "{state}/desktop-lock.json"; }}; ')
+    sh(stubs + NO_XDG + restore + 'OS=Linux; remove_login_items')
+    log = calls.read_text()
+    assert f"pkill -TERM -u alice -f {inst}/kiosk_session.py" in log and "restore alice 501" in log
+    assert not (home / "Desktop" / "serversherpa-start-kiosk.desktop").exists()
+    assert not (home / ".config/autostart/serversherpa-kiosk-restore.desktop").exists()
+
+
+def test_remove_login_items_linux_leaves_a_one_shot_restore_when_signed_out(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    sh(stubs + NO_XDG + 'pkill() { :; }; SESSION_STOP_WAIT_S=0; have_python3() { :; }; session_restore() { return 1; }; '
+               'OS=Linux; remove_login_items')
+    entry = (home / ".config/autostart/serversherpa-kiosk-restore.desktop").read_text()
+    assert f"Exec=python3 {state}/kiosk_session.py restore --cleanup" in entry
+    assert (state / "kiosk_session.py").read_text() == (inst / "kiosk_session.py").read_text()
+
+
+def test_uninstall_removes_the_session_file(sh, tmp_path):
+    inst = tmp_path / "inst"; inst.mkdir()
+    (inst / "kiosk_session.py").write_text("x")
+    sh(f'KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{tmp_path / "data"}"; OS=Linux; '
+       'remove_login_items() { :; }; remove_label_printer_files() { :; }; check_rm_target() { :; }; uninstall')
+    assert not (inst / "kiosk_session.py").exists()
+
+
+# session_restore runs restore on the user's real session bus. Without it,
+# gsettings could fall back to its memory backend, "succeed" and save nothing.
+def _bus_dir():
+    """A RUN_USER_DIR holding 501/bus as a real socket (a short path: a Unix
+    socket path is limited to about 100 bytes)."""
+    import socket
+    import tempfile
+    d = tempfile.mkdtemp(prefix="ks")
+    os.mkdir(os.path.join(d, "501"))
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(os.path.join(d, "501", "bus"))
+    return d, s
+
+
+def test_session_restore_runs_as_the_user_on_their_session_bus(sh, tmp_path):
+    import shutil
+    d, s = _bus_dir()
+    try:
+        calls = tmp_path / "calls"
+        r = sh(f'KIOSK_DIR=/k; RUN_USER_DIR="{d}"; as_user() {{ echo "$*" >> "{calls}"; return 1; }}; '
+               'rc=0; session_restore alice 501 || rc=$?; echo rc=$rc')
+        assert calls.read_text().splitlines() == [
+            f"alice env DBUS_SESSION_BUS_ADDRESS=unix:path={d}/501/bus XDG_RUNTIME_DIR={d}/501 "
+            "python3 /k/kiosk_session.py restore"]
+        assert "rc=1" in r.stdout       # restore's exit 1 ("couldn't confirm") is passed on
+    finally:
+        s.close()
+        shutil.rmtree(d)
+
+
+def test_session_restore_without_the_session_bus_does_nothing(sh, tmp_path):
+    calls = tmp_path / "calls"
+    (tmp_path / "run" / "501").mkdir(parents=True)
+    (tmp_path / "run" / "501" / "bus").write_text("")   # a plain file is not the bus
+    r = sh(f'KIOSK_DIR=/k; RUN_USER_DIR="{tmp_path / "run"}"; as_user() {{ echo "$*" >> "{calls}"; }}; '
+           'rc=0; session_restore alice 501 || rc=$?; echo rc=$rc')
+    assert "rc=1" in r.stdout and not calls.exists()
+
+
+def test_remove_login_items_linux_without_the_session_bus_leaves_a_one_shot_restore(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    # No bus socket under RUN_USER_DIR: restore never runs; the entry does it at sign-in.
+    sh(stubs + NO_XDG + f'pkill() {{ :; }}; SESSION_STOP_WAIT_S=0; have_python3() {{ :; }}; '
+       f'RUN_USER_DIR="{tmp_path / "no-run"}"; python3() {{ echo "python3 $*" >> "{calls}"; }}; '
+       'OS=Linux; remove_login_items')
+    assert "kiosk_session.py restore" not in calls.read_text()
+    entry = (home / ".config/autostart/serversherpa-kiosk-restore.desktop").read_text()
+    assert f"Exec=python3 {state}/kiosk_session.py restore --cleanup" in entry
+    assert (state / "desktop-lock.json").exists()
+
+
+def test_remove_login_items_linux_keeps_the_one_shot_restore_when_restore_cant_confirm(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    auto = home / ".config" / "autostart"
+    (auto / "serversherpa-kiosk-restore.desktop").write_text("from an earlier uninstall")
+    # restore exits 1 and even removes the save file: still not confirmed.
+    sh(stubs + NO_XDG + f'pkill() {{ :; }}; SESSION_STOP_WAIT_S=0; have_python3() {{ :; }}; '
+       f'session_restore() {{ rm -f "{state}/desktop-lock.json"; return 1; }}; OS=Linux; remove_login_items')
+    entry = (auto / "serversherpa-kiosk-restore.desktop").read_text()
+    assert f"Exec=python3 {state}/kiosk_session.py restore --cleanup" in entry
+
+
+def test_remove_login_items_linux_waits_for_the_stopped_session(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    # The SIGTERMed session restores (removes the save file): no direct restore, no entry.
+    sh(stubs + NO_XDG + f'pkill() {{ rm -f "{state}/desktop-lock.json"; }}; SESSION_STOP_WAIT_S=5; '
+       f'session_restore() {{ echo "restore $*" >> "{calls}"; }}; OS=Linux; remove_login_items')
+    assert "restore alice" not in calls.read_text()
+    assert not (home / ".config/autostart/serversherpa-kiosk-restore.desktop").exists()
+
+
+def _icon_env(run_dir, calls):
+    return (f'RUN_USER_DIR="{run_dir}"; START_ICON_FILE=icon.desktop; '
+            'user_desktop_dir() { printf /d; }; render_start_icon() { :; }; '
+            'write_as_user() { :; }; id() { echo 501; }; '
+            f'as_user() {{ echo "$*" >> "{calls}"; }}; ')
+
+
+def test_start_icon_is_trusted_as_the_user_on_their_session_bus(sh, tmp_path):
+    import shutil
+    d, s = _bus_dir()
+    try:
+        calls = tmp_path / "calls"
+        sh(_icon_env(d, calls) + 'install_start_icon alice /home/alice')
+        gio = [l for l in calls.read_text().splitlines() if " gio " in l]
+        assert gio == [f"alice env DBUS_SESSION_BUS_ADDRESS=unix:path={d}/501/bus XDG_RUNTIME_DIR={d}/501 "
+                       "gio set /d/icon.desktop metadata::trusted true"]
+    finally:
+        s.close()
+        shutil.rmtree(d)
+
+
+def test_start_icon_is_not_trusted_without_the_session_bus(sh, tmp_path):
+    calls = tmp_path / "calls"
+    (tmp_path / "run" / "501").mkdir(parents=True)
+    (tmp_path / "run" / "501" / "bus").write_text("")   # a plain file is not the bus
+    sh(_icon_env(tmp_path / "run", calls) + 'install_start_icon alice /home/alice')
+    assert " gio " not in calls.read_text()

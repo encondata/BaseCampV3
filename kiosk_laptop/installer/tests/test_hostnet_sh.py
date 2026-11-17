@@ -555,3 +555,282 @@ def test_main_on_macos_lists_every_owned_address(tmp_path):
     out = json.loads((data / "host-network.json").read_text())
     assert {"192.168.64.1", "10.99.0.1", "192.168.1.20", "192.168.7.7", "10.8.0.2",
             "10.10.48.57"} <= set(out["self_addresses"])
+
+
+# ── USB label-printer upkeep (Linux, root) ────────────────────────────
+from conftest import ZEBRA_QUEUES, lp_calls, lp_stubs  # noqa: E402
+
+UDEV = "udev/60-serversherpa-label-printers.rules"
+MODPROBE = "modprobe/serversherpa-no-usblp.conf"
+
+
+def _upkeep(tmp_path, os_name="Linux", uid="0", extra="", **kw):
+    stubs = lp_stubs(tmp_path, **kw)
+    return hn(tmp_path, stubs + extra + f'OS={os_name}; id() {{ echo {uid}; }}; label_upkeep; echo rc=$?')
+
+
+def test_upkeep_as_root_on_linux_fixes_what_is_off(tmp_path):
+    r = _upkeep(tmp_path, snaps=("docker", "chromium"))
+    assert r.stdout == "rc=0\n" and r.stderr == ""   # silent
+    calls = lp_calls(tmp_path)
+    assert (tmp_path / UDEV).exists() and (tmp_path / MODPROBE).exists()
+    assert "modprobe -r usblp" in calls
+    assert [c for c in calls if c.startswith("lpadmin")] == [f"lpadmin -x {q}" for q in ZEBRA_QUEUES]
+    assert "udevadm control --reload" in calls
+    assert "snap connect chromium:raw-usb" in calls
+    assert "snap remove --purge docker" in calls
+    assert "systemctl restart docker.socket docker.service" in calls
+    assert not any(c.startswith(("apt-get", "dpkg-query")) for c in calls)   # no packages from hostnet
+
+
+def test_upkeep_with_everything_in_place_only_checks(tmp_path):
+    _upkeep(tmp_path, usblp=False, lpstat="device for HP: usb://HP/x\n", snaps=("chromium",), raw_usb=True)
+    (tmp_path / "lp.calls").unlink()
+    r = _upkeep(tmp_path, usblp=False, lpstat="device for HP: usb://HP/x\n", snaps=("chromium",), raw_usb=True)
+    assert r.stdout == "rc=0\n"
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.split()[0] in ("udevadm", "modprobe", "lpadmin", "systemctl")]
+    assert "snap connect chromium:raw-usb" not in calls
+    assert not [c for c in calls if c.startswith("snap remove")]
+
+
+def test_upkeep_rewrites_a_missing_udev_rule_and_reloads(tmp_path):
+    _upkeep(tmp_path, usblp=False)
+    (tmp_path / UDEV).unlink()
+    (tmp_path / "lp.calls").unlink()
+    _upkeep(tmp_path, usblp=False)
+    calls = lp_calls(tmp_path)
+    assert (tmp_path / UDEV).exists() and "udevadm control --reload" in calls
+    assert "udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f" in calls
+
+
+def test_upkeep_leaves_snap_docker_alone_without_docker_engine(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), engine=False)
+    assert not any(c.startswith(("snap remove", "systemctl restart")) for c in lp_calls(tmp_path))
+
+
+def test_upkeep_finishes_an_interrupted_snap_docker_removal(tmp_path):
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").write_text("")
+    _upkeep(tmp_path, snaps=())
+    assert "systemctl restart docker.socket docker.service" in lp_calls(tmp_path)
+    assert not (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").exists()
+
+
+@pytest.mark.parametrize("os_name,uid", [("Linux", "1000"), ("Darwin", "0"), ("Darwin", "501")])
+def test_upkeep_does_nothing_off_linux_or_without_root(tmp_path, os_name, uid):
+    r = _upkeep(tmp_path, os_name=os_name, uid=uid, snaps=("docker", "chromium"))
+    assert r.stdout == "rc=0\n" and lp_calls(tmp_path) == []
+    assert not (tmp_path / UDEV).exists()
+
+
+def test_script_run_survives_every_upkeep_failure_and_still_writes_the_file(tmp_path):
+    """As root on Linux with every upkeep tool failing and /etc unwritable:
+    exit 0, no output, host-network.json written."""
+    data = tmp_path / "data"; data.mkdir()
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    calls = tmp_path / "calls"
+
+    def tool(name, body):
+        (bindir / name).write_text(f'#!/bin/sh\necho "{name} $*" >> "{calls}"\n{body}\n')
+        (bindir / name).chmod(0o755)
+    (tmp_path / "ip.json").write_text(IP_JSON)
+    tool("ip", f"cat '{tmp_path / 'ip.json'}'")
+    tool("uname", "echo Linux")
+    tool("id", "echo 0")
+    tool("lsmod", "echo 'usblp 1 0'")
+    tool("lpstat", "echo 'device for Z: usb://Zebra%20Technologies/ZD421'; exit 1")
+    for t in ("modprobe", "udevadm", "lpadmin", "systemctl"):
+        tool(t, "echo boom >&2; exit 1")
+    tool("snap", 'case "$1" in list) exit 0;; esac; echo boom >&2; exit 1')
+    (tmp_path / "etc").write_text("not a folder")
+    env = {**os.environ, "KIOSK_DIR": str(tmp_path), "KIOSK_DATA_DIR": str(data),
+           "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path)), "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KIOSK_UDEV_RULES_DIR": str(tmp_path / "etc" / "udev"),
+           "KIOSK_MODPROBE_DIR": str(tmp_path / "etc" / "modprobe"),
+           "KIOSK_RUN_DIR": str(tmp_path / "etc" / "run"), "KIOSK_DOCKERD_BIN": "/bin/sh"}
+    r = subprocess.run([BASH, str(HOSTNET_SH)], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    assert json.loads((data / "host-network.json").read_text())["interfaces"]
+    log = calls.read_text()
+    assert "modprobe -r usblp" in log and "lpadmin -x Z" in log and "snap remove --purge docker" in log
+
+
+def test_script_run_keeps_mains_exit_code(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    for name, body in (("ip", "exit 1"), ("uname", "echo Linux"), ("id", "echo 0")):
+        (bindir / name).write_text(f"#!/bin/sh\n{body}\n"); (bindir / name).chmod(0o755)
+    env = {**os.environ, "KIOSK_DIR": str(tmp_path), "KIOSK_DATA_DIR": str(tmp_path),
+           "PATH": f"{bindir}:{os.environ['PATH']}", "KIOSK_UDEV_RULES_DIR": str(tmp_path / "u"),
+           "KIOSK_MODPROBE_DIR": str(tmp_path / "m"), "KIOSK_RUN_DIR": str(tmp_path / "r"),
+           "KIOSK_DOCKERD_BIN": str(tmp_path / "none")}
+    r = subprocess.run([BASH, str(HOSTNET_SH)], capture_output=True, text=True, env=env)
+    assert r.returncode == 1 and r.stdout == "" and r.stderr == ""
+    assert (tmp_path / "u" / "60-serversherpa-label-printers.rules").exists()   # upkeep still ran
+
+
+# ── snap Docker removal: no restart loop, kiosk back up ──────────────
+MARKER = "run/serversherpa-kiosk-snap-docker-removed"
+RESTART = "systemctl restart docker.socket docker.service"
+
+
+def _marker(tmp_path):
+    (tmp_path / "run").mkdir(exist_ok=True)
+    (tmp_path / MARKER).write_text("")
+
+
+def test_upkeep_failed_restart_is_not_retried_on_the_next_run(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), restart_fails=True)
+    calls = lp_calls(tmp_path)
+    assert "snap remove --purge docker" in calls and RESTART in calls
+    assert not (tmp_path / MARKER).exists()   # gone before the restart was tried
+    (tmp_path / "lp.calls").unlink()
+    _upkeep(tmp_path, snaps=(), restart_fails=True)
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("systemctl restart")]
+
+
+def test_upkeep_marker_with_engine_already_running_only_clears_the_marker(tmp_path):
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), active=True)
+    calls = lp_calls(tmp_path)
+    assert "systemctl is-active --quiet docker.service" in calls
+    assert not [c for c in calls if c.startswith("systemctl restart")]
+    assert not (tmp_path / MARKER).exists()
+
+
+def test_upkeep_restarts_right_after_the_purge_even_when_engine_is_active(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), active=True)
+    assert RESTART in lp_calls(tmp_path)
+
+
+def test_upkeep_restarts_only_the_units_that_exist(tmp_path):
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), units=("docker.service",))
+    calls = lp_calls(tmp_path)
+    assert "systemctl restart docker.service" in calls and RESTART not in calls
+    (tmp_path / "lp.calls").unlink()
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), units=())
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("systemctl restart")]
+    assert not (tmp_path / MARKER).exists()
+
+
+def test_upkeep_failed_snap_removal_with_the_marker_never_restarts_engine(tmp_path):
+    _marker(tmp_path)
+    snap_fails = (f'snap() {{ echo "snap $*" >> "{tmp_path}/lp.calls"; '
+                  'case "$1" in list) [ "$2" = docker ];; *) return 1;; esac; }; ')
+    for _ in range(2):
+        r = _upkeep(tmp_path, snaps=("docker",), extra=snap_fails)
+        assert r.stdout == "rc=0\n"
+    calls = lp_calls(tmp_path)
+    assert calls.count("snap remove --purge docker") == 2
+    assert not [c for c in calls if c.startswith("systemctl restart")]
+    assert (tmp_path / MARKER).exists()   # the purge is still owed
+
+
+def test_upkeep_detects_engine_from_its_systemd_unit(tmp_path):
+    unit = "# /lib/systemd/system/docker.service\n[Service]\nExecStart=/usr/bin/dockerd -H fd://\n"
+    _upkeep(tmp_path, snaps=("docker",), engine=False, unit=unit)
+    calls = lp_calls(tmp_path)
+    assert "systemctl cat docker.service" in calls
+    assert "snap remove --purge docker" in calls and RESTART in calls
+
+
+def test_upkeep_leaves_snap_docker_when_the_unit_is_the_snaps(tmp_path):
+    unit = "[Service]\nExecStart=/usr/bin/snap run docker.dockerd\nX=/snap/docker/1\n"
+    _upkeep(tmp_path, snaps=("docker",), engine=False, unit=unit)
+    assert "snap remove --purge docker" not in lp_calls(tmp_path)
+
+
+IMAGE = "ghcr.io/encondata/serversherpa-kiosk-laptop:stable"
+
+
+def _docker_stub(tmp_path, running=False, image=True, up_ok=True):
+    """docker and timeout stubs for the kiosk start after the purge."""
+    (tmp_path / "docker-compose.yml").write_text(f"name: serversherpa-kiosk\nservices:\n  edge:\n    image: {IMAGE}\n")
+    c = tmp_path / "lp.calls"
+    return (f'timeout() {{ echo "timeout $1" >> "{c}"; shift; "$@"; }}; '
+            f'docker() {{ echo "docker $*" >> "{c}"; case "$1 $2" in '
+            f'"inspect -f") echo {"true" if running else "false"};; '
+            f'"image inspect") return {0 if image else 1};; '
+            f'"compose -f") return {0 if up_ok else 1};; esac; return 0; }}; ')
+
+
+UP = f"compose -f {{}}/docker-compose.yml up -d --pull never"
+KICK = "systemctl start --no-block serversherpa-kiosk-update.service"
+
+
+def test_after_the_purge_a_stopped_kiosk_starts_from_the_image_it_has(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path))
+    calls = lp_calls(tmp_path)
+    assert f"docker image inspect {IMAGE}" in calls
+    assert "docker " + UP.format(tmp_path) in calls
+    assert "timeout 15" in calls   # bounded, inside the 30 s budget
+    assert calls.index(RESTART) < calls.index("docker " + UP.format(tmp_path))
+    assert KICK not in calls and not any("pull" in c and "--pull never" not in c for c in calls)
+
+
+def test_after_the_purge_a_missing_image_is_left_to_the_update_job(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path, image=False))
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.startswith("docker compose")]
+    assert KICK in calls
+
+
+def test_after_the_purge_a_failed_start_is_left_to_the_update_job(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path, up_ok=False))
+    calls = lp_calls(tmp_path)
+    assert "docker " + UP.format(tmp_path) in calls and KICK in calls
+
+
+def test_after_the_purge_a_running_kiosk_is_left_alone(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path, running=True))
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.startswith(("docker compose", "docker image"))]
+    assert KICK not in calls
+
+
+def test_interrupted_removal_also_brings_the_kiosk_back(tmp_path):
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), active=True, extra=_docker_stub(tmp_path))
+    assert "docker " + UP.format(tmp_path) in lp_calls(tmp_path)
+
+
+def test_no_kiosk_start_without_a_snap_removal(tmp_path):
+    _upkeep(tmp_path, snaps=(), extra=_docker_stub(tmp_path))
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("docker")]
+
+
+# ── host_os: which OS the laptop runs (Linux only) ────────────────────
+def test_to_json_with_host_os(tmp_path):
+    r = hn(tmp_path, 'to_json 2026-10-01T18:00:00Z 10.10.48.1 "10.10.48.57" linux',
+           stdin="en0\t10.10.48.57\t24\n")
+    data = json.loads(r.stdout)
+    assert list(data) == ["updated_at", "interfaces", "gateway", "self_addresses", "host_os"]
+    assert data["host_os"] == "linux"
+
+
+def test_host_os_is_linux_only(tmp_path):
+    assert hn(tmp_path, "OS=Linux; host_os").stdout == "linux"
+    assert hn(tmp_path, "OS=Darwin; host_os").stdout == ""
+
+
+def test_main_on_linux_writes_host_os(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
+    r = hn(tmp_path, f'OS=Linux; ip() {{ [ "$*" = "-j -4 addr" ] && cat "{ipj}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert json.loads((data / "host-network.json").read_text())["host_os"] == "linux"
+    assert _edge_reader().read_host_os(data) == "linux"
+
+
+def test_main_on_macos_writes_no_host_os(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ifc = tmp_path / "ifconfig.txt"; ifc.write_text(IFCONFIG)
+    ports = tmp_path / "ports.txt"; ports.write_text(PORTS)
+    r = hn(tmp_path, f'OS=Darwin; ifconfig() {{ cat "{ifc}"; }}; '
+                     f'networksetup() {{ cat "{ports}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data)})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert "host_os" not in json.loads((data / "host-network.json").read_text())

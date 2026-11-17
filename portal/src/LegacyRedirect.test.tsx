@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 // App.tsx pulls in every page; mock the heavy bits the module imports at load.
-vi.mock('./lib/api', () => ({ apiFetch: vi.fn(), onSessionEnded: vi.fn(() => () => {}), onSystemStatusRefresh: vi.fn(() => () => {}) }));
+vi.mock('./lib/api', () => ({ apiFetch: vi.fn(), onSessionEnded: vi.fn(() => () => {}), onSystemStatusRefresh: vi.fn(() => () => {}), onLocalSessionCleared: vi.fn() }));
 
 const { LegacyRedirect } = await import('./App');
 

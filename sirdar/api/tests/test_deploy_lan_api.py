@@ -410,3 +410,16 @@ async def test_an_update_stuck_in_its_switch_retries_from_step_14(client, db, re
     env = await db.scalar(select(Environment).where(Environment.name == "lan9")
                           .execution_options(populate_existing=True))
     assert (env.active_slot, env.current_sha) == ("purple", NEWER)
+
+
+async def test_a_forced_delete_skips_the_snapshot(client, db, ready, fake_provisioner):
+    h = await auth_headers(client, db)
+    env = await _deployed(client, db, h)
+    fake_provisioner.fail["destroy"] = "ESXi didn't answer."
+    resp = await client.post(f"{URL}/lan9/deployments", headers=h,
+                             json={"mode": "teardown", "confirm_name": "lan9", "force": True})
+    assert resp.status_code == 201, resp.text
+    assert [s["key"] for s in resp.json()["steps"]] == ["destroy", "unproxy", "undns"]
+    assert resp.json()["snapshot"] is None
+    await _wait(resp)
+    assert await db.get(Environment, env.id, populate_existing=True) is None

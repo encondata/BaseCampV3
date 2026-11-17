@@ -271,10 +271,21 @@ function storeSession(data: SessionData): void {
   sessionExpiresAt = data.session_expires_at;
 }
 
+const sessionClearedHooks = new Set<() => void>();
+
+/** Register clean-up that must run whenever the local session is
+ *  cleared (sign-out is a soft reset, so module state such as caches
+ *  would otherwise outlive the user). Modules register at init, which
+ *  keeps api.ts free of imports back into them. */
+export function onLocalSessionCleared(fn: () => void): void {
+  sessionClearedHooks.add(fn);
+}
+
 export function clearLocalSession(): void {
   accessToken = null;
   accessTokenExpiresAt = 0;
   sessionExpiresAt = null;
+  sessionClearedHooks.forEach((fn) => fn());
 }
 
 export function getSessionExpiresAt(): string | null {
@@ -2628,6 +2639,24 @@ export async function removeContainerAsset(
   const resp = await apiFetch(`/containers/${id}/assets/${assetId}`,
     { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Where a container is now (GET /containers/{id}/position): its truck's
+ *  last GPS report, the pin of the site it sits at, or nothing known.
+ *  A truck that has never reported comes back with null coordinates. */
+export interface ContainerPosition {
+  kind: 'truck' | 'site' | 'none';
+  name: string | null;
+  lat: number | null;
+  lng: number | null;
+  recorded_at: string | null;
+  approximate_address: string;
+}
+
+export async function getContainerPosition(id: string): Promise<ContainerPosition> {
+  const resp = await apiFetch(`/containers/${id}/position`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 export interface ContainerBulkRow {

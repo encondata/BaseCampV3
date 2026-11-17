@@ -620,3 +620,37 @@ it('retrying a production cleanup needs the name and the production phrase, as a
   await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d9', {
     from_step: 15, confirm_name: 'prod', confirm_production: 'delete production prod' }));
 });
+
+const FAILED_DELETE = { ...FAILED, mode: 'teardown' as const };
+
+it('a failed Delete offers Force delete: the Delete dialog opens with force on', async () => {
+  api.getDeployment.mockResolvedValue(FAILED_DELETE);
+  api.startDeployment.mockResolvedValue({ ...TEARDOWN, force: true });
+  const { onRetried } = show();
+  expect(await screen.findByRole('heading', { name: 'Force delete' })).toBeTruthy();
+  expect(screen.getByText("If Sirdar can't reach uat, force delete removes it from Sirdar anyway.")).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Force delete…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Delete uat' });
+  expect((within(dialog).getByRole('checkbox', { name: 'Force delete' }) as HTMLInputElement).checked).toBe(true);
+  await user.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+  await user.click(within(dialog).getByRole('button', { name: 'Force delete' }));
+  await waitFor(() => expect(onRetried).toHaveBeenCalledWith({ ...TEARDOWN, force: true }));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat', { mode: 'teardown', confirm_name: 'uat', force: true });
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Force delete is offered only for the latest failed Delete, not forced already, with deploy:change', async () => {
+  const none = async (dep: object, props: Parameters<typeof show>[0] = {}) => {
+    api.getDeployment.mockResolvedValue(dep);
+    show(props);
+    await screen.findByText(/Started/);
+    expect(screen.queryByRole('heading', { name: 'Force delete' })).toBeNull();
+    cleanup();
+  };
+  await none(FAILED);
+  await none({ ...FAILED_DELETE, force: true });
+  await none(FAILED_DELETE, { isLatest: false });
+  perms.change = false;
+  await none(FAILED_DELETE);
+});
