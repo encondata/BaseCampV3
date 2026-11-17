@@ -52,6 +52,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val rfid = stringPreferencesKey("ss.kiosk.rfid")
         val labels = stringPreferencesKey("ss.kiosk.labels")
         val devMode = booleanPreferencesKey("ss.kiosk.devMode")
+        val offerSledBothToEveryone = booleanPreferencesKey("ss.kiosk.offerSledBothToEveryone")
         val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
         val serial = stringPreferencesKey("ss.kiosk.serial")
@@ -164,6 +165,12 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
 
     val devMode: Flow<Boolean> = store.data.map { it[Keys.devMode] ?: false }
     suspend fun setDevMode(on: Boolean) { store.edit { it[Keys.devMode] = on } }
+
+    /** The Developer tab's "Offer Both in Sled triggers to everyone" (H6): off, only developers see
+     *  the Both option (a sled already set to Both keeps it). Its own key, never part of [rfid], so
+     *  it is never part of a sled push. */
+    val offerSledBothToEveryone: Flow<Boolean> = store.data.map { it[Keys.offerSledBothToEveryone] ?: false }
+    suspend fun setOfferSledBothToEveryone(on: Boolean) { store.edit { it[Keys.offerSledBothToEveryone] = on } }
 
     /** How the person signed in here last ("password" | "link" | "biometric"), as the last sign-in heartbeat
      *  told the portal; a restored session is that same sign-in. */

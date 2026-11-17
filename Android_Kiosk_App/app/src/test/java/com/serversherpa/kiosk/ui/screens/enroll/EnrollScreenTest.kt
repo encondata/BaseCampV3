@@ -96,12 +96,12 @@ class EnrollScreenTest {
         val c = rig()
         val vm = show(c)
         compose.onNodeWithText(SledWords.SLED_TRIGGERS).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Barcode").performScrollTo().assertIsDisplayed()
 
         pickTheAsset(vm)
         assertEquals("A-1", vm().state.value.asset?.assetId)
         compose.onNodeWithText(SledWords.SLED_TRIGGERS).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Barcode").performScrollTo().assertIsDisplayed()
     }
 
     /** The MC2200: its own scanner reads barcodes, so neither step shows a sled control. */
@@ -111,12 +111,12 @@ class EnrollScreenTest {
         assertTrue(c.isZebraHost)
         val vm = show(c)
         assertEquals(0, count(SledWords.SLED_TRIGGERS))
-        assertEquals(0, count("Both"))
+        assertEquals(0, count("Barcode"))
         assertEquals(0, compose.onAllNodesWithTag("sled-scan").fetchSemanticsNodes().size)
 
         pickTheAsset(vm)
         assertEquals(0, count(SledWords.SLED_TRIGGERS))
-        assertEquals(0, count("Both"))
+        assertEquals(0, count("Barcode"))
         assertEquals(0, compose.onAllNodesWithTag("sled-scan").fetchSemanticsNodes().size)
     }
 }

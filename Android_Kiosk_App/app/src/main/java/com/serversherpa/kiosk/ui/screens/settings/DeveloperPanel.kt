@@ -134,6 +134,16 @@ fun DeveloperPanel(goHome: () -> Unit = {}) {
         SettingsRow("Zebra SDK logging", SledWords.VENDOR_LOGGING_HINT) {
             Switch(checked = vendorLogging, onCheckedChange = { on -> container.rfidReader.setVendorLogging(on) }, modifier = Modifier.testTag("vendor-logging"))
         }
+        // H6 (Jimmy, 2026-11-17): Both in Sled triggers is for developers unless this offers it to
+        // everyone. A device setting, saved on this kiosk only; never part of a sled push.
+        val offerSledBoth by container.prefs.offerSledBothToEveryone.collectAsStateWithLifecycle(initialValue = false)
+        SettingsRow("Offer Both in Sled triggers to everyone", "Off: only developers see Both. A sled already set to Both keeps it.") {
+            Switch(
+                checked = offerSledBoth,
+                onCheckedChange = { on -> scope.launch { container.prefs.setOfferSledBothToEveryone(on) } },
+                modifier = Modifier.testTag("offer-sled-both"),
+            )
+        }
         LocalDataInspector()
     }
 }

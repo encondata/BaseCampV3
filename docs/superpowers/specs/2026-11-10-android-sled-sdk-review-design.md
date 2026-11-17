@@ -1088,3 +1088,7 @@ B4:
 - **Test fix in the same task (H3).** `InternetTestUiTest` flaked under load. `createComposeRule()`'s `UnconfinedTestDispatcher` resumed `collectAsStateWithLifecycle` collectors on the DataStore IO thread, and a long-lived composition could stop following the settings.
   - The class now composes on `StandardTestDispatcher()`, with a 100-switch test. That test failed 3 of 3 on the old rule and passed 9 of 9 on the new one.
   - The two typing tests moved to `InternetTestCustomBoxesTest` on the default rule.
+
+### Hardware session 2026-11-17
+
+- **Both for developers only (task H6, Jimmy).** The Sled triggers control (RFID tab and scan screens) shows Both only to a developer (`AuthState.Authed.isDeveloper`), to everyone while the Developer tab's "Offer Both in Sled triggers to everyone" switch is on (`KioskPrefs.offerSledBothToEveryone`, device-local, default off, not part of `RfidSettings`), or while Both is the saved layout (shown selected; once switched away it is gone for anyone else); what the sled does is unchanged, and a saved Both keeps working for everyone.
