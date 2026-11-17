@@ -5,6 +5,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import AssetLocation from './AssetLocation';
 
+vi.mock('./LocationMapPreview', () => ({
+  default: ({ children }: { children: React.ReactNode }) => <span data-testid="lmp">{children}</span>,
+}));
+
 afterEach(cleanup);
 
 const mount = (asset: React.ComponentProps<typeof AssetLocation>['asset'], className?: string) =>
@@ -60,5 +64,35 @@ it('a click on a link does not bubble to a row handler', () => {
   );
   fireEvent.click(screen.getByRole('link', { name: 'Crate A' }));
   fireEvent.click(screen.getByRole('link', { name: 'T1' }));
+  expect(onRow).not.toHaveBeenCalled();
+});
+
+const located = {
+  location_detail: 'Bay 3', container_id: 'c1', container_name: 'ATL1-W1M-DC-01',
+  truck_id: 't1', truck_name: 'ATL1-T01 (Wave 1)',
+};
+
+it('wraps the container and truck links when mapPreview is on', () => {
+  const { container } = render(<MemoryRouter><AssetLocation asset={located} mapPreview /></MemoryRouter>);
+  expect(screen.getAllByTestId('lmp')).toHaveLength(2);
+  expect(container.textContent).toBe('ATL1-W1M-DC-01 · on ATL1-T01 (Wave 1)');
+});
+
+it('adds no preview without the prop or without a container', () => {
+  render(<MemoryRouter><AssetLocation asset={located} /></MemoryRouter>);
+  expect(screen.queryAllByTestId('lmp')).toHaveLength(0);
+  cleanup();
+  render(<MemoryRouter><AssetLocation asset={{ location_detail: 'Rack 3' }} mapPreview /></MemoryRouter>);
+  expect(screen.queryAllByTestId('lmp')).toHaveLength(0);
+});
+
+it('link clicks still stop propagation with mapPreview on', () => {
+  const onRow = vi.fn();
+  render(
+    <MemoryRouter>
+      <div onClick={onRow}><AssetLocation asset={located} mapPreview /></div>
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole('link', { name: 'ATL1-W1M-DC-01' }));
   expect(onRow).not.toHaveBeenCalled();
 });
