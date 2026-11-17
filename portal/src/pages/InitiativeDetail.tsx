@@ -741,7 +741,7 @@ export default function InitiativeDetail() {
         );
       }
     }
-    if (key === 'location') return <AssetLocation asset={a.asset} className="cell-top cell-line" mapPreview />;
+    if (key === 'location') return <AssetLocation asset={a.asset} className="cell-top cell-line" />;
     const text = moveAssetCellText(a, key);
     return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
   };

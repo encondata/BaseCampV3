@@ -72,25 +72,27 @@ const located = {
   truck_id: 't1', truck_name: 'ATL1-T01 (Wave 1)',
 };
 
-it('wraps the container and truck links when mapPreview is on', () => {
-  const { container } = render(<MemoryRouter><AssetLocation asset={located} mapPreview /></MemoryRouter>);
+it('wraps the container and truck links in the hover map everywhere it is used', () => {
+  const { container } = render(<MemoryRouter><AssetLocation asset={located} /></MemoryRouter>);
   expect(screen.getAllByTestId('lmp')).toHaveLength(2);
   expect(container.textContent).toBe('ATL1-W1M-DC-01 · on ATL1-T01 (Wave 1)');
 });
 
-it('adds no preview without the prop or without a container', () => {
-  render(<MemoryRouter><AssetLocation asset={located} /></MemoryRouter>);
-  expect(screen.queryAllByTestId('lmp')).toHaveLength(0);
-  cleanup();
-  render(<MemoryRouter><AssetLocation asset={{ location_detail: 'Rack 3' }} mapPreview /></MemoryRouter>);
+it('wraps only the container link when there is no truck', () => {
+  render(<MemoryRouter><AssetLocation asset={{ container_id: 'c1', container_name: 'Crate A' }} /></MemoryRouter>);
+  expect(screen.getAllByTestId('lmp')).toHaveLength(1);
+});
+
+it('adds no hover map to a plain-text location', () => {
+  render(<MemoryRouter><AssetLocation asset={{ location_detail: 'Rack 3' }} /></MemoryRouter>);
   expect(screen.queryAllByTestId('lmp')).toHaveLength(0);
 });
 
-it('link clicks still stop propagation with mapPreview on', () => {
+it('link clicks still stop propagation inside the hover map wrapper', () => {
   const onRow = vi.fn();
   render(
     <MemoryRouter>
-      <div onClick={onRow}><AssetLocation asset={located} mapPreview /></div>
+      <div onClick={onRow}><AssetLocation asset={located} /></div>
     </MemoryRouter>,
   );
   fireEvent.click(screen.getByRole('link', { name: 'ATL1-W1M-DC-01' }));
