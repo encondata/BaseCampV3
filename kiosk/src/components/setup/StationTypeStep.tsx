@@ -12,7 +12,7 @@ const CHOICES: { type: StationType; title: string; meta: string }[] = [
   {
     type: 'rfid',
     title: 'RFID Station',
-    meta: 'Pairs a Zebra FX reader on this network. Next: Select reader → Connect → Pair, then the move.',
+    meta: 'Pairs a Zebra FX reader on this network. Next: RFID type → Move → Reader → Site.',
   },
   {
     type: 'dock',

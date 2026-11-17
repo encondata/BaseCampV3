@@ -30,6 +30,22 @@ export interface KioskSetupSelection {
   stationType?: StationType;
   /** The paired reader, for an RFID station or a Dock. */
   reader?: ReaderSummary;
+  /** What kind of RFID Station it is; only an RFID Station has one. An RFID
+   *  Station saved before RFID types existed reads as a Doorway. */
+  rfidType?: RfidType;
+}
+
+/** An RFID Station at a doorway (it reads with the scan type picked in
+ *  setup), or a Dock Portal (it always scans RFID 10 - Dock to Truck). */
+export type RfidType = 'doorway' | 'dock_portal';
+
+export function isRfidType(value: unknown): value is RfidType {
+  return value === 'doorway' || value === 'dock_portal';
+}
+
+/** "Doorway" / "Dock Portal" */
+export function rfidTypeLabel(rfidType: RfidType): string {
+  return rfidType === 'dock_portal' ? 'Dock Portal' : 'Doorway';
 }
 
 export type StationType = 'label' | 'rfid' | 'timeclock' | 'dock';
@@ -64,14 +80,16 @@ function isReader(value: unknown): value is ReaderSummary {
   return typeof v.ip === 'string' && typeof v.serial === 'string' && typeof v.model === 'string';
 }
 
-/** Drops a stored station type or reader this build doesn't understand,
- *  keeping the rest of the selection. */
+/** Drops a stored station type, reader or RFID type this build doesn't
+ *  understand, keeping the rest of the selection. An RFID Station with no
+ *  (or an unknown) RFID type is a Doorway; any other station has none. */
 function normalize(selection: KioskSetupSelection): KioskSetupSelection {
-  const { stationType, reader, ...rest } = selection;
+  const { stationType, reader, rfidType, ...rest } = selection;
   const out: KioskSetupSelection = { ...rest };
   if (stationType === 'label' || stationType === 'rfid' || stationType === 'timeclock'
       || stationType === 'dock') out.stationType = stationType;
   if (isReaderStation(out.stationType) && isReader(reader)) out.reader = reader;
+  if (out.stationType === 'rfid') out.rfidType = isRfidType(rfidType) ? rfidType : 'doorway';
   return out;
 }
 

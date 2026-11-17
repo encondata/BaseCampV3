@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-/** Kiosk Setup's Dock path (laptop only): the RFID Station's path — Select
- *  reader → Connect → Pair → Network check → Move → Site → Scan type →
- *  Confirm & verify — with only RFID scan types, ending on the Dock screen. */
+/** Kiosk Setup's Dock path (laptop only): Select reader → Connect → Pair →
+ *  Network check → Move → Site → Scan type → Confirm & verify (the reader
+ *  first, unlike the RFID Station), with only RFID scan types, ending on
+ *  the Dock screen. */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';

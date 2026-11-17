@@ -9,6 +9,7 @@ import {
   isReaderStation,
   stationLabel,
   readKioskSetup,
+  rfidTypeLabel,
   useKioskSetup,
   writeKioskSetup,
 } from './kioskSetup';
@@ -91,7 +92,8 @@ it('a selection with a station type and reader round-trips; an old one without t
     reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
   };
   writeKioskSetup(rfid);
-  expect(readKioskSetup()).toEqual(rfid);
+  // an RFID station saved before RFID types existed counts as a Doorway
+  expect(readKioskSetup()).toEqual({ ...rfid, rfidType: 'doorway' });
   localStorage.setItem('ss.kiosk.setup', JSON.stringify(SELECTION));
   expect(readKioskSetup()).toEqual(SELECTION);
 });
@@ -151,4 +153,27 @@ it('isReaderStation is true for an RFID Station and a Dock only', () => {
   expect(isReaderStation('timeclock')).toBe(false);
   expect(isReaderStation('')).toBe(false);
   expect(isReaderStation(undefined)).toBe(false);
+});
+
+it('an RFID station keeps its RFID type; a missing or unknown one reads as Doorway', () => {
+  const portal = { ...SELECTION, stationType: 'rfid' as const, rfidType: 'dock_portal' as const };
+  writeKioskSetup(portal);
+  expect(readKioskSetup()).toEqual(portal);
+  const doorway = { ...SELECTION, stationType: 'rfid' as const, rfidType: 'doorway' as const };
+  writeKioskSetup(doorway);
+  expect(readKioskSetup()).toEqual(doorway);
+  localStorage.setItem('ss.kiosk.setup', JSON.stringify({ ...SELECTION, stationType: 'rfid', rfidType: 'truck_portal' }));
+  expect(readKioskSetup()?.rfidType).toBe('doorway');
+});
+
+it('an RFID type on a station that is not an RFID station is dropped', () => {
+  for (const stationType of ['dock', 'label', undefined]) {
+    localStorage.setItem('ss.kiosk.setup', JSON.stringify({ ...SELECTION, stationType, rfidType: 'dock_portal' }));
+    expect(readKioskSetup()).not.toHaveProperty('rfidType');
+  }
+});
+
+it('rfidTypeLabel names the RFID type', () => {
+  expect(rfidTypeLabel('doorway')).toBe('Doorway');
+  expect(rfidTypeLabel('dock_portal')).toBe('Dock Portal');
 });

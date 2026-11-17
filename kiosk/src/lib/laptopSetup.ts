@@ -12,7 +12,7 @@ import { useSyncExternalStore } from 'react';
 
 import { getEdgeSetup, type EdgeSetup } from './api';
 import {
-  isReaderStation, readKioskSetup, writeKioskSetup, type KioskSetupSelection,
+  isReaderStation, isRfidType, readKioskSetup, writeKioskSetup, type KioskSetupSelection,
 } from './kioskSetup';
 import { isLaptop } from './platform';
 import { isSetupComplete, readSetupState, writeSetupState } from './setupState';
@@ -55,7 +55,7 @@ function timeclockSelection(setup: EdgeSetup): KioskSetupSelection | null {
 export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection | null {
   if (!setup || typeof setup !== 'object') return null;
   const { initiative_id, initiative_name, site_id, site_name, site_role, scan_status,
-    scan_status_label, station_type, reader } = setup;
+    scan_status_label, station_type, reader, rfid_type } = setup;
   if (station_type === 'timeclock') return timeclockSelection(setup);
   if (!str(initiative_id) || !str(initiative_name) || !str(site_id) || !str(site_name)
       || (site_role !== 'source' && site_role !== 'destination')
@@ -70,6 +70,10 @@ export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection 
   if (isReaderStation(selection.stationType) && reader && str(reader.ip) && str(reader.serial)
       && str(reader.model)) {
     selection.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
+  }
+  // an edge older than RFID types keeps none: that RFID Station is a Doorway
+  if (selection.stationType === 'rfid') {
+    selection.rfidType = isRfidType(rfid_type) ? rfid_type : 'doorway';
   }
   return selection;
 }

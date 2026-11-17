@@ -368,11 +368,13 @@ export async function getSetupOptions(): Promise<SetupOptions> {
 
 /** `station_type` is sent only by a laptop (Kiosk Setup's first step); for
  *  `rfid` and `dock` the edge adds the paired reader itself — the browser
- *  never sends reader details. A `timeclock` station may leave out the move,
- *  the site, and the scan type. */
+ *  never sends reader details. An `rfid` station also sends its `rfid_type`,
+ *  which the edge keeps with the shared setup (the cloud never sees it). A
+ *  `timeclock` station may leave out the move, the site, and the scan type. */
 export async function submitKioskSetup(body: {
   serial: string; initiative_id: string | null; site_id: string | null; scan_status?: string;
   station_type?: 'label' | 'rfid' | 'timeclock' | 'dock';
+  rfid_type?: 'doorway' | 'dock_portal';
 }): Promise<KioskSetupResult> {
   const resp = await apiFetch('/kiosk/setup', {
     method: 'POST',
@@ -1170,6 +1172,9 @@ export interface EdgeSetup {
   scan_status_label: string | null;
   station_type: 'label' | 'rfid' | 'timeclock' | 'dock' | null;
   reader: { ip: string; serial: string; model: string; versions: Partial<ReaderVersions> } | null;
+  /** An RFID Station's RFID type; absent from an edge older than RFID types
+   *  (that station is a Doorway), null for any other station. */
+  rfid_type?: 'doorway' | 'dock_portal' | null;
   /** A Label Station's saved printer settings; null until step 5 saves them. */
   label_station?: LabelStationSettings | null;
   updated_at: string;
