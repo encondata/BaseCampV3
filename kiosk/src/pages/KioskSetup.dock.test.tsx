@@ -132,7 +132,7 @@ async function toScanStep(user: ReturnType<typeof userEvent.setup>) {
   await user.click(cardFor('NAP22 Hall'));
 }
 
-it('step 1 offers a fourth card, Dock Station, with its next steps', async () => {
+it('step 1 offers the Dock Station card, third, with its next steps', async () => {
   renderPage();
   const card = await screen.findByRole('option', { name: /Dock Station/ });
   expect(within(card).getByText('Dock Station')).toBeTruthy();
@@ -141,7 +141,7 @@ it('step 1 offers a fourth card, Dock Station, with its next steps', async () =>
   )).toBeTruthy();
   const titles = within(screen.getByRole('listbox', { name: 'Station types' }))
     .getAllByRole('option').map((o) => o.querySelector('.setup-card-title')?.textContent);
-  expect(titles).toEqual(['Label Station', 'RFID Station', 'Time Clock', 'Dock Station']);
+  expect(titles).toEqual(['Label Station', 'RFID Station', 'Dock Station', 'Timeclock Station']);
 });
 
 it('the Dock path walks Select reader first, counted out of 9 like the RFID path', async () => {

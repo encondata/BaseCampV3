@@ -2,11 +2,12 @@
 
 import type { StationType } from '../../lib/kioskSetup';
 
+// Order and names decided with Jimmy (2026-11-17).
 const CHOICES: { type: StationType; title: string; meta: string }[] = [
   {
     type: 'label',
     title: 'Label Station',
-    meta: 'Prints and scans labels. Next: Move → Site → Scan type.',
+    meta: 'Prints and scans labels. Next: Move → Site → Label type → Printer.',
   },
   {
     type: 'rfid',
@@ -14,14 +15,14 @@ const CHOICES: { type: StationType; title: string; meta: string }[] = [
     meta: 'Pairs a Zebra FX reader on this network. Next: Select reader → Connect → Pair, then the move.',
   },
   {
-    type: 'timeclock',
-    title: 'Time Clock',
-    meta: 'Workers clock in and out here. Next: Move (optional) → Site.',
-  },
-  {
     type: 'dock',
     title: 'Dock Station',
     meta: 'Packs crates read at an RFID curtain. Next: Select reader → Connect → Pair, then the move.',
+  },
+  {
+    type: 'timeclock',
+    title: 'Timeclock Station',
+    meta: 'Workers clock in and out here. Next: Move (optional) → Site.',
   },
 ];
 
