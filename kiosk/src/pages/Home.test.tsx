@@ -170,12 +170,12 @@ it('an RFID Station shows only RFID Reader, Kiosk Setup and Settings', () => {
   expect(tileTitles()).toEqual(['RFID Reader', 'Kiosk Setup', 'Settings']);
 });
 
-it('a Label Station shows only Kiosk Setup, Label Printing and Settings', () => {
+it('a Label Station shows Label Printing first, then Kiosk Setup and Settings', () => {
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   writeSetupState('complete');
   saveSetup('label');
   renderRouted();
-  expect(tileTitles()).toEqual(['Kiosk Setup', 'Label Printing', 'Settings']);
+  expect(tileTitles()).toEqual(['Label Printing', 'Kiosk Setup', 'Settings']);
 });
 
 it('a Time Clock station shows only Time Clock, Kiosk Setup and Settings, Time Clock linking to its start page', () => {
@@ -252,5 +252,5 @@ it('a laptop Label Station keeps Label Printing whatever the web kiosk answer sa
   writeWebLabelPrintingOff();
   saveSetup('label');
   renderRouted();
-  expect(tileTitles()).toEqual(['Kiosk Setup', 'Label Printing', 'Settings']);
+  expect(tileTitles()).toEqual(['Label Printing', 'Kiosk Setup', 'Settings']);
 });
