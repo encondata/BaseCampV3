@@ -4,8 +4,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ApiError, type LabelStationSettings } from './api';
 import {
-  readWebLabelKind, readWebLabelSettings, subscribeWebLabelSettings, useWebLabelSettings,
-  writeWebLabelKind, writeWebLabelSettings,
+  readWebLabelKind, readWebLabelPrinting, readWebLabelSettings, subscribeWebLabelSettings,
+  useWebLabelPrinting, useWebLabelSettings, writeWebLabelKind, writeWebLabelPrintingOff,
+  writeWebLabelSettings,
 } from './webLabelSettings';
 
 const KEY = 'ss.kiosk.labelPrinting';
@@ -18,6 +19,44 @@ const SETTINGS: LabelStationSettings = {
 
 beforeEach(() => localStorage.clear());
 afterEach(() => cleanup());
+
+it('a kiosk prints labels until a No is saved, including one saved before the question existed', () => {
+  expect(readWebLabelPrinting()).toBe(true);
+  localStorage.setItem(KEY, JSON.stringify({ label_kind: 'front' }));   // an older kiosk's record
+  expect(readWebLabelPrinting()).toBe(true);
+});
+
+it('a No keeps the kind and the printer, and a kind turns printing back on', () => {
+  writeWebLabelSettings(SETTINGS);
+  writeWebLabelPrintingOff();
+  expect(readWebLabelPrinting()).toBe(false);
+  expect(readWebLabelKind()).toBe('front');
+  expect(readWebLabelSettings()).toEqual(SETTINGS);
+  writeWebLabelKind('top');
+  expect(readWebLabelPrinting()).toBe(true);
+  expect(readWebLabelSettings()).toEqual({ ...SETTINGS, label_kind: 'top' });
+});
+
+it('a No over garbage starts the record fresh, and blocked storage reads as printing', () => {
+  localStorage.setItem(KEY, '{not json');
+  writeWebLabelPrintingOff();
+  expect(readWebLabelPrinting()).toBe(false);
+  const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+  try {
+    expect(readWebLabelPrinting()).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it('useWebLabelPrinting follows a No and a Yes', () => {
+  const { result } = renderHook(() => useWebLabelPrinting());
+  expect(result.current).toBe(true);
+  act(() => writeWebLabelPrintingOff());
+  expect(result.current).toBe(false);
+  act(() => writeWebLabelKind('top'));
+  expect(result.current).toBe(true);
+});
 
 it('the label kind defaults to top', () => {
   expect(readWebLabelKind()).toBe('top');

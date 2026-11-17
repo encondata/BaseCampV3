@@ -7,6 +7,7 @@ import { writeDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
+import { writeWebLabelKind, writeWebLabelPrintingOff } from '../lib/webLabelSettings';
 import SetupGate from './SetupGate';
 
 const scan = FEATURES.find((f) => f.id === 'scan')!;
@@ -96,6 +97,32 @@ describe('Label Printing on a laptop station', () => {
   it('web mode is unchanged', () => {
     delete window.__KIOSK_CONFIG__;
     writeKioskSetup({ ...SETUP, stationType: 'rfid' });
+    renderLabels('/labels/station');
+    expect(screen.getByText('Printing Station')).toBeTruthy();
+  });
+
+  it('a web kiosk set up not to print labels goes home, developer mode or not', () => {
+    delete window.__KIOSK_CONFIG__;
+    writeKioskSetup(SETUP);
+    writeWebLabelPrintingOff();
+    writeDevMode(true);
+    renderLabels('/labels/station');
+    expect(screen.getByText('Home')).toBeTruthy();
+    expect(screen.queryByText('Printing Station')).toBeNull();
+  });
+
+  it('a web kiosk that says Yes again opens it', () => {
+    delete window.__KIOSK_CONFIG__;
+    writeKioskSetup(SETUP);
+    writeWebLabelPrintingOff();
+    writeWebLabelKind('front');
+    renderLabels('/labels/station');
+    expect(screen.getByText('Printing Station')).toBeTruthy();
+  });
+
+  it('a laptop ignores the web kiosk answer', () => {
+    writeKioskSetup({ ...SETUP, stationType: 'label' });
+    writeWebLabelPrintingOff();
     renderLabels('/labels/station');
     expect(screen.getByText('Printing Station')).toBeTruthy();
   });

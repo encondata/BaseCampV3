@@ -186,9 +186,6 @@
 .kiosk-tile svg { width: 40px; height: 40px; color: var(--accent); }
 .kiosk-tile-title { font-size: 22px; font-weight: 600; }
 .kiosk-tile-blurb { font-size: 14px; color: var(--text-mute); }
-.kiosk-tile.is-disabled { opacity: .45; filter: grayscale(1); cursor: not-allowed; pointer-events: auto; }
-.kiosk-tile.is-disabled:hover { transform: none; box-shadow: none; border-color: var(--paper-line); }
-.kiosk-tile-lock { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; color: var(--text-mute); }
 .kiosk-setup-banner { margin-top: 18px; border-left: 3px solid var(--accent); }
 .kiosk-setup-banner.is-dev { border-left-color: var(--c-amber); }
 .kiosk-placeholder { max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px; padding: 22px 24px; background: var(--paper); border: 1px dashed var(--paper-line); border-radius: 14px; color: var(--text-mute); display: grid; gap: 14px; justify-items: start; }
