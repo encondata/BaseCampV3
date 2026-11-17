@@ -1799,6 +1799,17 @@ class AssetMoveRow(BaseModel):
     added_at: datetime
 
 
+class ContainerPositionOut(BaseModel):
+    """Where a container is on a map: its truck's newest GPS report, its
+    site's pin, or nothing (kind "none")."""
+    kind: Literal["truck", "site", "none"]
+    name: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    recorded_at: datetime | None = None
+    approximate_address: str = ""
+
+
 class ContainerItem(BaseModel):
     id: uuid.UUID
     name: str
