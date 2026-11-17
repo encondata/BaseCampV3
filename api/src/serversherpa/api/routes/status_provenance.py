@@ -20,7 +20,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.scope import is_restricted_at, roster_row_condition, scope_conditions
 from serversherpa.api.deps import CurrentUser, DbSession
 from serversherpa.api.schemas import StatusProvenanceOut
 from serversherpa.db.models import (
@@ -135,6 +135,23 @@ async def status_provenance(
             if visible is None:
                 raise _err(404, "not_found")
 
+    # client groups: a roster row also passes the row rule (an `asset` gets
+    # the asset rule through scope_conditions above). For a login restricted
+    # at the row's client, the scan trail is this row's move only, so a
+    # scan from another move can't speak for this row.
+    scan_initiative_id: uuid.UUID | None = None
+    if entity_type == "initiative_asset":
+        row_cond = roster_row_condition(user.access)
+        if row_cond is not None:
+            visible = await db.scalar(select(InitiativeAsset.id).where(
+                InitiativeAsset.id == entity_id, row_cond))
+            if visible is None:
+                raise _err(404, "not_found")
+            row_client = await db.scalar(select(Initiative.client_id).where(
+                Initiative.id == assoc.initiative_id))
+            if is_restricted_at(user.access, row_client):
+                scan_initiative_id = assoc.initiative_id
+
     # candidate 1: the latest audited edit that set this status
     edit_at = None
     edit_actor_id = None
@@ -155,12 +172,15 @@ async def status_provenance(
     # candidate 2: the latest matched scan that reported this status
     scan = None
     if asset_id is not None:
-        scan = await db.scalar(
+        query = (
             select(ProcessedScan)
             .where(ProcessedScan.asset_id == asset_id,
                    ProcessedScan.status == status)
             .order_by(ProcessedScan.scanned_at.desc())
             .limit(1))
+        if scan_initiative_id is not None:
+            query = query.where(ProcessedScan.initiative_id == scan_initiative_id)
+        scan = await db.scalar(query)
 
     use_scan = scan is not None and (edit_at is None or scan.scanned_at >= edit_at)
 

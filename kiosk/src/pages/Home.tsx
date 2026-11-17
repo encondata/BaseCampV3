@@ -1,5 +1,9 @@
 /** Home launcher — a tile per kiosk feature. The identity facts that used
- *  to live here now live in the shell's footer (KioskShell). */
+ *  to live here now live in the shell's footer (KioskShell).
+ *
+ *  Until kiosk setup is complete only Kiosk Setup and Settings show (the
+ *  other tiles are hidden, not greyed out); developer mode shows them all.
+ *  A web kiosk set up not to print labels has no Label Printing tile. */
 
 import { Link } from 'react-router-dom';
 
@@ -8,6 +12,7 @@ import { featureAvailable, homeFeatures, type KioskFeature } from '../lib/featur
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
 import { useKioskSetupState } from '../lib/setupState';
+import { useWebLabelPrinting } from '../lib/webLabelSettings';
 
 const CLOCK_ICON = (
   <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -138,9 +143,13 @@ export default function Home() {
   const [setupState] = useKioskSetupState();
   const [devMode] = useDevMode();
   const [kioskSetup] = useKioskSetup();
+  const printsLabels = useWebLabelPrinting();
   const complete = setupState === 'complete';
   const failed = setupState === 'failed';
-  const tiles = homeFeatures(isLaptop(), kioskSetup?.stationType);
+  const laptop = isLaptop();
+  const tiles = homeFeatures(laptop, kioskSetup?.stationType)
+    .filter((f) => laptop || printsLabels || f.id !== 'labels')
+    .filter((f) => featureAvailable(f, setupState, devMode));
 
   return (
     <div className="portal-page">
@@ -159,41 +168,13 @@ export default function Home() {
         </div>
       )}
       <nav className="kiosk-launcher" aria-label="Kiosk features">
-        {tiles.map((f) => {
-          const available = featureAvailable(f, setupState, devMode);
-          const tile = (
-            <>
-              {ICONS[f.id]}
-              <span className="kiosk-tile-title">{f.title}</span>
-              <span className="kiosk-tile-blurb">{f.blurb}</span>
-              {!available && (
-                <span className="kiosk-tile-lock">
-                  {failed ? 'Kiosk setup failed — open Kiosk Setup.' : 'Finish Kiosk Setup first.'}
-                </span>
-              )}
-            </>
-          );
-          if (!available) {
-            return (
-              <a
-                key={f.id}
-                className="kiosk-tile is-disabled"
-                aria-disabled="true"
-                role="link"
-                tabIndex={-1}
-                href={f.path}
-                onClick={(e) => e.preventDefault()}
-              >
-                {tile}
-              </a>
-            );
-          }
-          return (
-            <Link key={f.id} className="kiosk-tile" to={f.path}>
-              {tile}
-            </Link>
-          );
-        })}
+        {tiles.map((f) => (
+          <Link key={f.id} className="kiosk-tile" to={f.path}>
+            {ICONS[f.id]}
+            <span className="kiosk-tile-title">{f.title}</span>
+            <span className="kiosk-tile-blurb">{f.blurb}</span>
+          </Link>
+        ))}
       </nav>
     </div>
   );

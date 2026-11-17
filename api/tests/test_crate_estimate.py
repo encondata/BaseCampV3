@@ -104,3 +104,19 @@ async def test_the_check_job_carries_the_estimate(client, db, admin_hdrs):  # no
     assert est["devices"] == 3 and est["ru"] == 5 and est["racks"] == 1
     assert est["unknown_size"] == 0
     assert est["crates"] == 2      # one stack → 1 crate → +25% → 2
+
+
+async def test_estimate_counts_conflict_rows_once_per_serial(db):
+    """A serial another client owns may still come along (Continue): it is
+    counted, with the existing asset's model, so the estimate never runs short."""
+    server = AssetModel(make="Dell", model="R740", ru_size=4, category="server")
+    db.add(server)
+    await db.flush()
+    details = [_row("a", server.id, status="conflict"),
+               _row("A", server.id, status="conflict"),       # same serial
+               _row("b", status="conflict"),                   # no model: 2U
+               _row("c", server.id)]
+    got = await estimate(db, details)
+    assert got["devices"] == 3
+    assert got["ru"] == 10
+    assert got["unknown_size"] == 1

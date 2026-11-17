@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.schemas import MoveSetupMoveIn
 from serversherpa.db.models import ImportJob
+from serversherpa.imports.client_choices import flagged_owners
 from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.naming import (
     CRATE_MAX,
@@ -176,7 +177,34 @@ async def check_job(db: AsyncSession, payload: dict | None) -> ImportJob | None:
     return await db.get(ImportJob, uuid.UUID(assets["check_job_id"]))
 
 
-def asset_problems(check: ImportJob | None) -> list[str]:
+STALE_CLIENT = ("The move's client changed after the From-To file was checked. "
+                "Check the file again, then create the move.")
+CHOICES_REQUIRED = ("Choose Continue or Skip for every serial that belongs to "
+                    "another client, then create the move.")
+
+
+def draft_client(payload: dict | None) -> str | None:
+    """The client picked on the draft's first step, as a string (or None)."""
+    raw = ((payload or {}).get("move") or {}).get("client_id")
+    return str(raw) if raw else None
+
+
+def flagged_serials(check: ImportJob | None) -> set[str]:
+    """Distinct serials the check flagged as another client's (lower-cased)."""
+    return set(flagged_owners(((check.results if check else None) or {}).get("details")))
+
+
+def check_is_stale(check: ImportJob, payload: dict | None) -> bool:
+    """The draft's client is not the one the check ran against."""
+    return (check.options or {}).get("client_id") != draft_client(payload)
+
+
+def missing_choices(check: ImportJob) -> list[str]:
+    stored = (check.options or {}).get("client_choices") or {}
+    return sorted(s for s in flagged_serials(check) if s not in stored)
+
+
+def asset_problems(check: ImportJob | None, payload: dict | None = None) -> list[str]:
     if check is None:
         return [("The From-To file check is missing. Upload the file again, "
                  "or skip the asset step.")]
@@ -186,6 +214,11 @@ def asset_problems(check: ImportJob | None) -> list[str]:
     if check.status != "completed":
         return [("The From-To file check didn't finish. Upload the file again, "
                  "or skip the asset step.")]
+    if payload is not None:
+        if check_is_stale(check, payload):
+            return [STALE_CLIENT]
+        if missing_choices(check):
+            return [CHOICES_REQUIRED]
     return []
 
 
@@ -195,7 +228,7 @@ async def draft_problems(db: AsyncSession, payload: dict) -> tuple[list[str], li
     right before each create (a clash there is name_taken)."""
     invalid = await move_problems(db, payload.get("move") or {})
     if payload.get("assets") is not None:
-        invalid += asset_problems(await check_job(db, payload))
+        invalid += asset_problems(await check_job(db, payload), payload)
     clashes: list[str] = []
     if (crates := payload.get("crates")) is not None:
         problems = await crate_problems(db, crates)
@@ -217,7 +250,8 @@ async def new_check(db: AsyncSession, draft: ImportJob, *, filename: str, option
                     file_key: str = "") -> ImportJob:
     check = ImportJob(kind=CHECK_KIND, initiative_id=None, created_by=draft.created_by,
                       filename=filename, file_key=file_key,
-                      options={**options, "move_setup_id": str(draft.id)},
+                      options={**options, "move_setup_id": str(draft.id),
+                               "client_id": draft_client(draft.payload)},
                       phase="validate", status="queued")
     db.add(check)
     await db.flush()
@@ -272,6 +306,7 @@ class Plan:
     make_model_mode: str
     filename: str
     crates: dict | None
+    client_choices: dict[str, dict] = field(default_factory=dict)
     crate_names: list[str] = field(default_factory=list)
     truck_names: list[str] = field(default_factory=list)
 
@@ -287,7 +322,7 @@ async def prepare(db: AsyncSession, job: ImportJob) -> Plan:
     invalid, _ = await draft_problems(db, payload)     # clashes: re-checked at each create
     if invalid:
         raise SetupFailed("setup_invalid", invalid)
-    rows, mode, filename = None, "fuzzy", ""
+    rows, mode, filename, choices = None, "fuzzy", "", {}
     if payload.get("assets") is not None:
         check = await check_job(db, payload)
         try:
@@ -304,9 +339,10 @@ async def prepare(db: AsyncSession, job: ImportJob) -> Plan:
                 for n, canonical, raw in numbered]
         mode = str(opts.get("make_model_mode") or "fuzzy")
         filename = check.filename
+        choices = dict(opts.get("client_choices") or {})
     crates, trucks = payload.get("crates"), payload.get("trucks")
     return Plan(move=typed_move(payload["move"]), rows=rows, make_model_mode=mode,
-                filename=filename, crates=crates,
+                filename=filename, crates=crates, client_choices=choices,
                 crate_names=crate_names(crates) if crates else [],
                 truck_names=truck_names(trucks) if trucks else [])
 
@@ -352,7 +388,10 @@ async def apply_job(db: AsyncSession, job: ImportJob, plan: Plan, *,
                 db, initiative_id=initiative.id, added_by=owner, rows=plan.rows,
                 make_model_mode=plan.make_model_mode, write=True,
                 source_label=f"move-setup {job.id} ({plan.filename})",
-                progress=asset_progress, commit=False, progress_every=PROGRESS_EVERY)
+                progress=asset_progress, commit=False, progress_every=PROGRESS_EVERY,
+                # the move's client is read from the new initiative; a conflict
+                # with no stored choice is skipped (fail safe)
+                client_choices=plan.client_choices, job_id=job.id, audit_actor=owner)
         crates: list = []
         if plan.crate_names:
             try:
@@ -384,7 +423,8 @@ async def apply_job(db: AsyncSession, job: ImportJob, plan: Plan, *,
               changes={"source": "move_setup", "draft_id": str(job.id),
                        "assets_created": summary.get("created", 0),
                        "assets_updated": summary.get("updated", 0),
-                       "assets_left_out": summary.get("review", 0) + summary.get("errors", 0),
+                       "assets_left_out": summary.get("review", 0) + summary.get("errors", 0)
+                                           + summary.get("skipped", 0),
                        "crates": len(crates), "trucks": len(trucks)})
         finished = datetime.now(UTC)
         job.status, job.error = "completed", None

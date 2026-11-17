@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.apply import ORG_ANCHORS, apply_global_roles, apply_groups
+from serversherpa.access.role_mix import assert_no_client_worker_mix
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -49,7 +50,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
+    AccessGroup, AccessGroupMember, AuthSession, Client, ClientContactGroup,
+    NotificationGroup,
     NotificationGroupMember, NotificationMembershipRequest, Partner,
     PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
@@ -205,6 +207,15 @@ async def get_user_detail(
         db, {g.client_id for g, _ in grant_rows if g.client_id},
         {g.partner_id for g, _ in grant_rows if g.partner_id})
 
+    chips: dict = {}
+    if actor.access.is_global:
+        chip_rows = (await db.execute(
+            select(ClientContactGroup.client_id, ClientContactGroup.group_id)
+            .where(ClientContactGroup.person_id == person_id)
+            .order_by(ClientContactGroup.group_id))).all()
+        for cid, gid in chip_rows:
+            chips.setdefault(cid, []).append(gid)
+
     # ── worker card ──
     worker: UserWorkerCard | None = None
     profile = await db.get(WorkerProfile, person_id)
@@ -312,7 +323,8 @@ async def get_user_detail(
             scope_anchor=role.scope_anchor,
             org=(orgs.get(("client", g.client_id)) if g.client_id
                  else orgs.get(("partner", g.partner_id)) if g.partner_id else None),
-            granted_by=refs.get(g.granted_by), granted_at=g.granted_at)
+            granted_by=refs.get(g.granted_by), granted_at=g.granted_at,
+            group_ids=chips.get(g.client_id, []) if g.client_id else [])
             for g, role in grant_rows],
         max_rank=target_max_rank,
         worker=worker,
@@ -728,7 +740,11 @@ async def demote_to_worker(
     organization's contact; the contact flows own them. Everything else
     that grants portal access goes: other roles, access groups, per-person
     permission overrides, notification groups (and pending join/leave
-    requests), two-factor, trusted browsers, sessions and the account."""
+    requests), two-factor, trusted browsers, sessions and the account.
+
+    409 `client_worker_conflict` for a client contact who isn't a worker
+    yet: one person never holds a client tier and the worker role, so
+    staff remove the contact first (access/role_mix.py)."""
     _, account, _ = await _load_target(db, actor, person_id)
     try:
         now = datetime.now(UTC)
@@ -745,6 +761,9 @@ async def demote_to_worker(
             and (role_rows.get(name) is None
                  or role_rows[name].scope_anchor not in ORG_ANCHORS))
         worker_granted = "worker" not in active_roles
+        if worker_granted:
+            # a client contact can't also be a worker: 409, before any write
+            await assert_no_client_worker_mix(db, person_id, "worker")
         access_groups = sorted(await db.scalars(
             select(AccessGroup.name)
             .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)

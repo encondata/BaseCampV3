@@ -7,24 +7,33 @@
 # Options:
 #   --api-url URL      cloud API URL (default https://api.serversherpa.com)
 #   --portal-url URL   portal URL (default: the API URL with api. -> portal.)
-#   --channel NAME     stable (default) or edge
+#   --channel NAME     stable (default), beta or edge
 #   --yes              never prompt
 #   --uninstall        remove the kiosk (the data folder is kept)
 #   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
 #   --start-fresh      don't look for a phase-1 kiosk's data (it gets a new identity)
+#   --step NAME        run one setup step (used by setup.sh on Ubuntu)
 #   --help             show this help
 #
 # Environment overrides:
 #   KIOSK_DIR              install folder (default: see default_dirs)
 #   KIOSK_DATA_DIR         data folder    (default: see default_dirs)
 #   KIOSK_IMAGE            full image reference (tests and CI)
-#   KIOSK_INSTALLER_REF    git ref the companion files are fetched from (default main)
+#   KIOSK_INSTALLER_REF    git ref the companion files are fetched from (default main);
+#                          a ref other than main also pins update.sh's helper refresh
 #   KIOSK_NONINTERACTIVE   1 = never prompt
 #
 # Testing hooks (not for normal use):
 #   KIOSK_TTY              file to read answers from instead of /dev/tty
 #   KIOSK_TEMPLATE_DIR     read companion files from this folder instead of downloading
 #   KIOSK_INSTALL_LIB=1    define the functions without running main
+#   KIOSK_OS_RELEASE       os-release file (default /etc/os-release)
+#   KIOSK_APT_KEYRINGS     apt keyring folder (default /etc/apt/keyrings)
+#   KIOSK_APT_SOURCES      apt sources folder (default /etc/apt/sources.list.d)
+#
+# On Ubuntu, Docker Engine and Google Chrome come from the vendors' own apt
+# repositories (Docker's, falling back to Ubuntu's docker.io when Docker's
+# doesn't serve the release yet); other Linux uses get.docker.com.
 #
 # Written for bash 3.2 (macOS's bash).
 # shellcheck disable=SC2034  # globals set here are read by later steps of the installer
@@ -62,6 +71,7 @@ OPT_API_URL="${OPT_API_URL:-}"
 OPT_PORTAL_URL="${OPT_PORTAL_URL:-}"
 OPT_CHANNEL="${OPT_CHANNEL:-}"
 DO_UNINSTALL=0
+STEP=''          # --step NAME: run one setup step (setup.sh, Ubuntu)
 PURGE_DATA=0
 START_FRESH=0    # --start-fresh: skip a phase-1 kiosk's data knowingly
 LEGACY_DIR=''         # phase-1 data to copy (find_legacy_data)
@@ -73,11 +83,17 @@ HAS_SYSTEMD="${HAS_SYSTEMD:-}"   # 1/0; detected by check_minimums when blank
 BROWSER_BIN=''                   # Chrome/Chromium/Edge (a .app path on macOS)
 KIOSK_IDENTITY=''                # /edge/identity JSON, read by start_kiosk
 ADDED_DOCKER_GROUP=0
+CHROME_INSTALLED=0              # 1 once ensure_chrome installed Chrome this run
+DOCKER_NET_ERR=75                # install_docker_engine_apt: Docker's repository unreachable
 HEALTH_POLL_S="${HEALTH_POLL_S:-3}"
 HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-120}"
 ENGINE_POLL_S="${ENGINE_POLL_S:-3}"
 
 DEFAULT_API_URL='https://api.serversherpa.com'
+DEV_API_URL='https://api.dev.serversherpa.com'
+# Each server set keeps its own data folder (KIOSK_VAR_LIB is a testing hook).
+PROD_DATA_DIR="${KIOSK_VAR_LIB:-/var/lib}/serversherpa-kiosk"
+DEV_DATA_DIR="${KIOSK_VAR_LIB:-/var/lib}/serversherpa-kiosk-dev"
 LEGACY_PROJECT='serversherpa-kiosk-laptop'
 LEGACY_FILTER="label=com.docker.compose.project=$LEGACY_PROJECT"
 KIOSK_CONTAINER='serversherpa-kiosk-edge-1'   # project "serversherpa-kiosk", service "edge"
@@ -145,12 +161,17 @@ ServerSherpa kiosk installer (laptop edition) for macOS and Linux.
 Options:
   --api-url URL      cloud API URL (default https://api.serversherpa.com)
   --portal-url URL   portal URL (default: the API URL with api. -> portal.)
-  --channel NAME     stable (default) or edge
+  --channel NAME     stable (default), beta or edge
   --yes              never prompt
   --uninstall        remove the kiosk (the data folder is kept)
   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
   --start-fresh      don't look for a phase-1 kiosk's data (it gets a new identity)
+  --step NAME        run one setup step (used by setup.sh on Ubuntu)
   --help             show this help
+
+On Ubuntu, Docker Engine and Google Chrome are installed from the vendors'
+apt repositories (Docker's, or Ubuntu's docker.io when Docker's doesn't serve
+the release yet). Other Linux gets Docker from get.docker.com.
 
 Environment: KIOSK_DIR, KIOSK_DATA_DIR, KIOSK_IMAGE, KIOSK_INSTALLER_REF,
 KIOSK_NONINTERACTIVE.
@@ -205,6 +226,38 @@ detect_os() {
   if [ "$OS" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
     ARCH=arm64
   fi
+}
+
+# Ubuntu's vendor apt repositories (keys in APT_KEYRINGS, each source line
+# signed-by its key, as Docker and Google document).
+OS_RELEASE_FILE="${KIOSK_OS_RELEASE:-/etc/os-release}"
+APT_KEYRINGS="${KIOSK_APT_KEYRINGS:-/etc/apt/keyrings}"
+APT_SOURCES="${KIOSK_APT_SOURCES:-/etc/apt/sources.list.d}"
+DOCKER_APT_URL='https://download.docker.com/linux/ubuntu'
+CHROME_KEY_URL='https://dl.google.com/linux/linux_signing_key.pub'
+CHROME_APT_URL='https://dl.google.com/linux/chrome/deb/'
+
+# os_release_value KEY: KEY's value in OS_RELEASE_FILE, surrounding quotes
+# stripped; read as text, never sourced. Empty when the file or key is missing.
+os_release_value() {
+  local v
+  [ -r "$OS_RELEASE_FILE" ] || return 0
+  v=$(awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$OS_RELEASE_FILE" 2>/dev/null) || v=''
+  case "$v" in
+    \"*\") v=${v#\"}; v=${v%\"} ;;
+    \'*\') v=${v#\'}; v=${v%\'} ;;
+  esac
+  printf '%s' "$v"
+}
+
+is_ubuntu() { [ "$(os_release_value ID)" = ubuntu ]; }
+
+# ubuntu_codename: UBUNTU_CODENAME, else VERSION_CODENAME (e.g. noble).
+ubuntu_codename() {
+  local c
+  c=$(os_release_value UBUNTU_CODENAME)
+  [ -n "$c" ] || c=$(os_release_value VERSION_CODENAME)
+  printf '%s' "$c"
 }
 
 default_dirs() {
@@ -289,8 +342,8 @@ merge_config() {
   [ -z "$OPT_CHANNEL" ] || CFG_CHANNEL="$OPT_CHANNEL"
   [ -n "$CFG_CHANNEL" ] || CFG_CHANNEL=stable
   case "$CFG_CHANNEL" in
-    stable|edge) ;;
-    *) die "Unknown channel '$CFG_CHANNEL' (use stable or edge)." ;;
+    stable|beta|edge) ;;
+    *) die "Unknown channel '$CFG_CHANNEL' (use stable, beta or edge)." ;;
   esac
   # Data folder: environment, then saved config, then the OS default.
   if [ "$ENV_DATA_DIR_SET" = 1 ] || [ -z "$CFG_DATA_DIR" ]; then
@@ -339,6 +392,25 @@ write_config() {
     printf 'KIOSK_INSTALLER_REF=%s\n' "$ref"   # where update.sh refreshes the helper scripts from
   } >"$tmp"
   mv "$tmp" "$file"
+}
+
+# set_config_line FILE KEY VALUE: replace KEY's line (or append it), keeping
+# every other line; written atomically, mode 644. When KEY appears more than
+# once, the first line is replaced and the later duplicates are dropped, so
+# the value written is the one config_value (first KEY= line) reads back.
+set_config_line() {
+  local file="$1" tmp
+  check_config_value "$2" "$3"
+  tmp=$(mktemp "$file.XXXXXX") || die "Couldn't write $file."
+  TMP_FILES+=("$tmp")
+  # ENVIRON, not awk -v, so a backslash in the value stays literal.
+  CFG_K="$2" CFG_V="$3" awk '
+    BEGIN { k = ENVIRON["CFG_K"]; v = ENVIRON["CFG_V"] }
+    index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$file" >"$tmp" || die "Couldn't write $file."
+  { chmod 644 "$tmp" && mv -f "$tmp" "$file"; } || die "Couldn't write $file."
 }
 
 image_ref() {
@@ -595,8 +667,300 @@ setup_docker_cli() {
 
 docker_answers() { "${DOCKER[@]}" version >/dev/null 2>&1; }
 
-# ensure_docker: install Docker Desktop (macOS) or Docker Engine (Linux) if missing.
+# The label-printer block reports through these.
+lp_say() { info "$@"; }
+lp_warn() { warn "$@"; }
+# start_kiosk starts the kiosk right after the upkeep, after its own pull.
+lp_kiosk_after_snap_removal() { :; }
+
+# >>> USB label printers (Linux). This block is the same in install.sh and
+# hostnet.sh; tests/test_install_sh.py checks the two copies match. Every
+# step is best-effort, returns 0, and acts only when something is off: it
+# reports each change through lp_say and each failure through lp_warn, which
+# each script defines (install.sh: info/warn; hostnet.sh: silent).
+# Testing hooks: KIOSK_UDEV_RULES_DIR, KIOSK_MODPROBE_DIR, KIOSK_DOCKERD_BIN,
+# KIOSK_RUN_DIR replace /etc/udev/rules.d, /etc/modprobe.d, /usr/bin/dockerd, /run.
+LP_UDEV_RULES="${KIOSK_UDEV_RULES_DIR:-/etc/udev/rules.d}/60-serversherpa-label-printers.rules"
+LP_MODPROBE_CONF="${KIOSK_MODPROBE_DIR:-/etc/modprobe.d}/serversherpa-no-usblp.conf"
+LP_DOCKERD_BIN="${KIOSK_DOCKERD_BIN:-/usr/bin/dockerd}"
+# Present while a snap Docker removal waits for Docker Engine's restart.
+LP_SNAP_MARKER="${KIOSK_RUN_DIR:-/run}/serversherpa-kiosk-snap-docker-removed"
+
+# lp_udev_rule: Zebra (USB vendor 0a5f) printers open to Chrome's WebUSB, for
+# whoever is signed in at the screen (uaccess) only, never world-writable.
+lp_udev_rule() {
+  printf '%s\n' '# ServerSherpa kiosk: Chrome prints to USB Zebra label printers over WebUSB.' \
+    'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", TAG+="uaccess"'
+}
+
+# lp_modprobe_conf: keeps the usblp printer driver off the label printers
+# (it claims them, and WebUSB then gets "Access denied").
+lp_modprobe_conf() {
+  printf '%s\n' '# ServerSherpa kiosk: usblp claims USB label printers, which blocks WebUSB.' \
+    'blacklist usblp'
+}
+
+# lp_write FILE CONTENT: 0 when FILE was written, 1 when it already held
+# CONTENT, 2 when it couldn't be written. Mode 644.
+lp_write() {
+  local file="$1" want="$2"
+  if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "$want" ]; then return 1; fi
+  if mkdir -p "$(dirname "$file")" 2>/dev/null && printf '%s\n' "$want" >"$file" 2>/dev/null \
+     && chmod 644 "$file" 2>/dev/null; then
+    return 0
+  fi
+  return 2
+}
+
+lp_ensure_udev_rule() {
+  local rc=0
+  lp_write "$LP_UDEV_RULES" "$(lp_udev_rule)" || rc=$?
+  case "$rc" in
+    0)
+      lp_say "Wrote $LP_UDEV_RULES so Chrome can open USB Zebra label printers."
+      if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f >/dev/null 2>&1 || true
+      fi ;;
+    2) lp_warn "Couldn't write $LP_UDEV_RULES; Chrome may not be able to open USB label printers." ;;
+  esac
+  return 0
+}
+
+lp_usblp_loaded() {
+  command -v lsmod >/dev/null 2>&1 || return 1
+  lsmod 2>/dev/null | awk '$1 == "usblp" { found = 1 } END { exit !found }'
+}
+
+lp_ensure_no_usblp() {
+  local rc=0
+  lp_write "$LP_MODPROBE_CONF" "$(lp_modprobe_conf)" || rc=$?
+  case "$rc" in
+    0) lp_say "Wrote $LP_MODPROBE_CONF (the usblp driver no longer claims label printers)." ;;
+    2) lp_warn "Couldn't write $LP_MODPROBE_CONF." ;;
+  esac
+  if lp_usblp_loaded && command -v modprobe >/dev/null 2>&1; then
+    if modprobe -r usblp >/dev/null 2>&1; then
+      lp_say "Unloaded the usblp driver."
+    else
+      lp_warn "Couldn't unload the usblp driver (it is blocked from the next start on)."
+    fi
+  fi
+  return 0
+}
+
+# lp_zebra_queues: `lpstat -v` on stdin -> the names of the CUPS queues whose
+# device URI starts with usb://Zebra, one per line.
+lp_zebra_queues() {
+  awk '$1 == "device" && $2 == "for" && index($4, "usb://Zebra") == 1 { q = $3; sub(/:$/, "", q); print q }'
+}
+
+# lp_remove_zebra_queues: the USB Zebra queues Ubuntu sets up on its own; CUPS
+# holding the printer blocks WebUSB. Other printers are never touched.
+lp_remove_zebra_queues() {
+  local q
+  command -v lpstat >/dev/null 2>&1 && command -v lpadmin >/dev/null 2>&1 || return 0
+  for q in $(LC_ALL=C lpstat -v 2>/dev/null | lp_zebra_queues); do
+    if lpadmin -x "$q" >/dev/null 2>&1; then
+      lp_say "Removed the CUPS printer queue $q (the kiosk prints to USB Zebras itself)."
+    else
+      lp_warn "Couldn't remove the CUPS printer queue $q."
+    fi
+  done
+  return 0
+}
+
+lp_snap_has() { command -v snap >/dev/null 2>&1 && snap list "$1" >/dev/null 2>&1; }
+
+# lp_engine_present: Docker Engine (docker-ce or docker.io), not the snap.
+lp_engine_present() {
+  [ -x "$LP_DOCKERD_BIN" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl cat docker.service 2>/dev/null | awk '
+    /^ExecStart=/ { exec = 1 } /\/snap\// { snap = 1 } END { exit !(exec && !snap) }'
+}
+
+# lp_restart_engine: restart whichever of docker.socket and docker.service
+# exist (docker.io may ship no socket unit).
+lp_restart_engine() {
+  local u units=()
+  for u in docker.socket docker.service; do
+    [ -z "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] || units+=("$u")
+  done
+  if [ "${#units[@]}" = 0 ]; then
+    lp_warn "Couldn't restart Docker Engine: systemd has no docker.service."
+  elif systemctl restart "${units[@]}" >/dev/null 2>&1; then
+    lp_say "Restarted Docker Engine."
+  else
+    lp_warn "Couldn't restart Docker Engine (systemctl restart ${units[*]})."
+  fi
+}
+
+# lp_finish_snap_removal [restart]: the marker goes first, so a restart that
+# fails or is cut short is never retried every minute (each one would bounce
+# the kiosk). Docker Engine restarts when asked to (right after the purge) or
+# when it isn't running. Then lp_kiosk_after_snap_removal, which each script
+# defines: the purge deletes a kiosk container the snap ran (install.sh: no-op,
+# start_kiosk follows; hostnet.sh: starts the kiosk on Docker Engine if it
+# isn't running, never pulling, else hands over to the update job). That
+# can't live in this block: install.sh must not start the kiosk before its
+# own pull and start.
+lp_finish_snap_removal() {
+  rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+  if [ "${1:-}" = restart ] || ! systemctl is-active --quiet docker.service 2>/dev/null; then
+    lp_restart_engine
+  fi
+  lp_kiosk_after_snap_removal
+  return 0
+}
+
+# lp_remove_snap_docker: snap Docker next to Docker Engine fights it for
+# /var/run/docker.sock and can't write the data folder ("read-only file
+# system"), so the snap goes. Only when Docker Engine is there to take over.
+# The marker finishes the job on a later run if this one is cut short during
+# the purge; while the snap is still there it is only the purge that's retried.
+lp_remove_snap_docker() {
+  if lp_snap_has docker; then
+    lp_engine_present || return 0
+    : >"$LP_SNAP_MARKER" 2>/dev/null || true
+    if snap remove --purge docker >/dev/null 2>&1; then
+      lp_say "Removed snap Docker (Docker Engine runs the kiosk)."
+      lp_finish_snap_removal restart
+    else
+      lp_warn "Couldn't remove snap Docker (snap remove --purge docker)."
+    fi
+  elif [ -e "$LP_SNAP_MARKER" ]; then
+    lp_finish_snap_removal
+  fi
+  return 0
+}
+
+# lp_chromium_raw_usb: snap Chromium reaches USB devices only through its
+# raw-usb interface, which is off by default.
+lp_chromium_raw_usb() {
+  lp_snap_has chromium || return 0
+  if snap connections chromium 2>/dev/null \
+       | awk '$2 == "chromium:raw-usb" && $3 != "-" { found = 1 } END { exit !found }'; then
+    return 0
+  fi
+  if snap connect chromium:raw-usb >/dev/null 2>&1; then
+    lp_say "Let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  else
+    lp_warn "Couldn't let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  fi
+  return 0
+}
+
+# lp_upkeep: every check above, cheapest first.
+lp_upkeep() {
+  lp_ensure_no_usblp
+  lp_remove_zebra_queues
+  lp_ensure_udev_rule
+  lp_chromium_raw_usb
+  lp_remove_snap_docker
+  return 0
+}
+# <<< USB label printers
+
+# dpkg_recover: once per run (as root), finish a package install that was cut
+# off (Ctrl+C or a closed window during apt), or every apt-get after it stops
+# with "dpkg was interrupted". dpkg has no lock timeout, so a locked dpkg is
+# retried every 2 s for up to DPKG_LOCK_WAIT_S (120 s, like apt's
+# DPkg::Lock::Timeout). Best effort: a failure is a warning, never a stop.
+DPKG_RECOVERED=0
+DPKG_LOCK_WAIT_S=120
+dpkg_recover() {
+  local out rc waited=0
+  [ "$DPKG_RECOVERED" = 0 ] || return 0
+  DPKG_RECOVERED=1
+  is_root && command -v dpkg >/dev/null 2>&1 || return 0
+  while :; do
+    rc=0
+    out=$(DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 </dev/null) || rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
+    [ "$rc" != 0 ] || return 0
+    case "$out" in *lock*) ;; *) break ;; esac
+    [ "$waited" -lt "$DPKG_LOCK_WAIT_S" ] || break
+    sleep 2
+    waited=$((waited + 2))
+  done
+  warn "dpkg --configure -a didn't finish (exit $rc); apt-get may stop with \"dpkg was interrupted\"."
+  return 0
+}
+
+# One apt idiom: wait up to 120 s for another apt (unattended-upgrades) to let go.
+pkg_installed() {  # pkg_installed PKG: 0 when dpkg says it is installed
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
+}
+apt_update() { dpkg_recover; apt-get -o DPkg::Lock::Timeout=120 update; }
+apt_install() { dpkg_recover; DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y "$@"; }
+apt_remove() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 remove -y "$@"; }
+
+# ensure_download_tools (Ubuntu): curl, ca-certificates and gpg, which the
+# Docker and Chrome repositories need; only the missing ones are installed.
+ensure_download_tools() {
+  local missing=''
+  command -v curl >/dev/null 2>&1 || missing="$missing curl"
+  pkg_installed ca-certificates || missing="$missing ca-certificates"
+  command -v gpg >/dev/null 2>&1 || missing="$missing gpg"
+  missing="${missing# }"
+  if [ -z "$missing" ]; then
+    info "curl, ca-certificates and gpg are installed."
+    return 0
+  fi
+  info "Installing $missing"
+  # shellcheck disable=SC2086  # one word per package
+  { apt_update && apt_install $missing; } \
+    || die "Couldn't install $missing (apt-get install). See the messages above, then try again."
+}
+
+# remove_printer_autoconfig: system-config-printer-udev makes a CUPS queue for
+# every USB printer plugged in, and CUPS then holds the label printers.
+remove_printer_autoconfig() {
+  local pkg=system-config-printer-udev
+  command -v dpkg-query >/dev/null 2>&1 || return 0
+  pkg_installed "$pkg" || return 0
+  if apt_remove "$pkg" >/dev/null 2>&1; then
+    info "Removed $pkg (it set up USB label printers as system printers, which blocks the kiosk)."
+  else
+    warn "Couldn't remove $pkg (apt-get remove -y $pkg); the kiosk removes the printer queues it makes every minute."
+  fi
+  return 0
+}
+
+# setup_label_printers (Linux): USB label printers open to Chrome over WebUSB.
+# The host network job (hostnet.sh) keeps all of it in place from then on.
+setup_label_printers() {
+  [ "$OS" = Linux ] || return 0
+  remove_printer_autoconfig
+  lp_upkeep
+}
+
+# printers_ok (Linux, setup checklist): 0 when the udev rule and the modprobe
+# file hold exactly what the upkeep writes, usblp isn't loaded and CUPS has no
+# USB Zebra queue (no lpstat: nothing to check there).
+printers_ok() {
+  [ -f "$LP_UDEV_RULES" ] && [ "$(cat "$LP_UDEV_RULES" 2>/dev/null)" = "$(lp_udev_rule)" ] || return 1
+  [ -f "$LP_MODPROBE_CONF" ] && [ "$(cat "$LP_MODPROBE_CONF" 2>/dev/null)" = "$(lp_modprobe_conf)" ] || return 1
+  ! lp_usblp_loaded || return 1
+  command -v lpstat >/dev/null 2>&1 || return 0
+  [ -z "$(LC_ALL=C lpstat -v 2>/dev/null | lp_zebra_queues)" ]
+}
+
+# remove_label_printer_files (Linux, uninstall): the two files the installer
+# wrote. Packages it removed are not put back.
+remove_label_printer_files() {
+  [ "$OS" = Linux ] || return 0
+  rm -f "$LP_UDEV_RULES" "$LP_MODPROBE_CONF" 2>/dev/null || true
+  if command -v udevadm >/dev/null 2>&1; then udevadm control --reload >/dev/null 2>&1 || true; fi
+  return 0
+}
+
+# ensure_docker: install Docker Desktop (macOS) or Docker Engine (Linux) if
+# missing. On Linux snap Docker doesn't count: Docker Engine is installed next
+# to it, then the snap is removed (lp_remove_snap_docker).
 ensure_docker() {
+  local rc=0
   if [ "$OS" = Darwin ]; then
     if docker_answers || [ -d /Applications/Docker.app ]; then
       info "Docker Desktop is installed."
@@ -604,12 +968,17 @@ ensure_docker() {
     fi
     install_docker_desktop
   else
-    if command -v docker >/dev/null 2>&1; then
-      info "Docker is installed."
+    if lp_engine_present; then
+      info "Docker Engine is installed."
     else
-      info "Installing Docker Engine (get.docker.com)"
-      curl -fsSL https://get.docker.com | sh || die "Docker Engine didn't install. See the messages above, then re-run."
+      ! lp_snap_has docker || info "Snap Docker can't run the kiosk; installing Docker Engine to replace it."
+      install_docker_engine || rc=$?
+      [ "$rc" != "$DOCKER_NET_ERR" ] \
+        || die "Couldn't reach Docker's apt repository ($DOCKER_APT_URL). Check the network connection, then re-run."
+      [ "$rc" = 0 ] || die "Docker Engine didn't install. See the messages above, then re-run."
     fi
+    ensure_compose_plugin
+    lp_remove_snap_docker
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && getent group docker >/dev/null 2>&1; then
       if ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
         if usermod -aG docker "$SUDO_USER"; then
@@ -620,6 +989,72 @@ ensure_docker() {
       fi
     fi
   fi
+}
+
+# docker_repo_serves CODENAME: 0 when Docker's apt repository has a release
+# for it, 1 when it answers with an HTTP error (a 404: not served), 2 when it
+# can't be reached at all (DNS, timeout, captive portal).
+docker_repo_serves() {
+  local rc=0
+  curl -fsSI --max-time 15 "$DOCKER_APT_URL/dists/$1/Release" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    22) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# install_docker_engine_apt (Ubuntu): Docker's documented apt steps. A new
+# Ubuntu release Docker doesn't serve yet gets Ubuntu's own docker.io and
+# docker-compose-v2, and any Docker source (docker.list, or the deb822
+# docker.sources) is removed: a source for a missing release makes every later
+# apt-get update fail. Writing docker.list removes a docker.sources too, so
+# there is only ever one Docker source. When the repository can't be reached
+# it returns DOCKER_NET_ERR and changes nothing.
+install_docker_engine_apt() {
+  local codename key="$APT_KEYRINGS/docker.asc" list="$APT_SOURCES/docker.list" served=0
+  codename=$(ubuntu_codename)
+  [ -n "$codename" ] || { warn "Couldn't read this Ubuntu's codename from $OS_RELEASE_FILE."; return 1; }
+  docker_repo_serves "$codename" || served=$?
+  [ "$served" != 2 ] || return "$DOCKER_NET_ERR"
+  if [ "$served" = 0 ]; then
+    install -m 0755 -d "$APT_KEYRINGS" || return 1
+    rm -f "$APT_SOURCES/docker.sources"
+    curl -fsSL "$DOCKER_APT_URL/gpg" -o "$key" || return 1
+    chmod a+r "$key"
+    printf 'deb [arch=%s signed-by=%s] %s %s stable\n' "$(dpkg --print-architecture)" "$key" \
+      "$DOCKER_APT_URL" "$codename" >"$list" || return 1
+    apt_update && apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  else
+    info "Docker's apt repository doesn't serve Ubuntu $codename yet; installing Ubuntu's docker.io and docker-compose-v2 instead."
+    rm -f "$list" "$APT_SOURCES/docker.sources"
+    apt_update && apt_install docker.io docker-compose-v2
+  fi
+}
+
+# install_docker_engine (Linux): Docker's apt repository on Ubuntu, else get.docker.com.
+install_docker_engine() {
+  if is_ubuntu; then
+    info "Installing Docker Engine (Docker's apt repository)"
+    install_docker_engine_apt
+  else
+    info "Installing Docker Engine (get.docker.com)"
+    curl -fsSL https://get.docker.com | sh
+  fi
+}
+
+# ensure_compose_plugin (Ubuntu): an engine without `docker compose` gets the
+# compose package that matches it. A failure is only a warning: check_compose
+# reports it.
+ensure_compose_plugin() {
+  local pkg=docker-compose-v2
+  is_ubuntu || return 0
+  lp_engine_present || return 0
+  ! "${DOCKER[@]}" compose version >/dev/null 2>&1 || return 0
+  ! pkg_installed docker-ce || pkg=docker-compose-plugin
+  info "Installing $pkg (docker compose)"
+  { apt_update && apt_install "$pkg"; } || warn "Couldn't install $pkg (apt-get update, then apt-get install -y $pkg)."
+  return 0
 }
 
 install_docker_desktop() {
@@ -831,37 +1266,74 @@ wait_kiosk_healthy() {
   done
 }
 
-# start_kiosk: pull, start, wait until healthy, read the identity. Respects
-# update-state.json like the nightly update: a version that failed its health
-# check here before is not started again, and a new version that doesn't get
-# healthy is rolled back.
+# retry_rejected_image: running the installer is an explicit retry, so a
+# version the nightly update set aside after a failed health check
+# (rejected_image) is tried again. Only that key is cleared, in place.
+retry_rejected_image() {
+  [ -n "$UPD_REJECTED" ] || return 0
+  info "A version failed its health check on this laptop before; running the installer retries it."
+  put_rejected_image ''
+}
+
+# put_rejected_image ID: set rejected_image to ID in update-state.json in
+# place, every other key (phase included) kept; the file is written whole
+# when it doesn't exist or has no such key.
+put_rejected_image() {
+  local f="$KIOSK_DIR/update-state.json" text
+  UPD_REJECTED="$1"
+  if [ -f "$f" ] && grep -q '"rejected_image"' "$f" 2>/dev/null; then
+    if text=$(sed "s/\"rejected_image\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"rejected_image\": \"$1\"/" "$f" 2>/dev/null) \
+       && { printf '%s\n' "$text" >"$f"; } 2>/dev/null; then
+      return 0
+    fi
+    warn "Couldn't update $f."
+    return 0
+  fi
+  write_update_state
+}
+
+# start_kept_previous REF NEW LOGS: no kiosk container ran before and NEW
+# didn't get healthy. Start the kept :previous image when there is one other
+# than NEW (as update.sh's start_without_container does); dies once it tried.
+start_kept_previous() {
+  local ref="$1" new="$2" logs="$3" kept
+  kept=$(image_id "$PREVIOUS_TAG")
+  [ -n "$kept" ] && [ "$kept" != "$new" ] || return 0
+  warn "The new version didn't become healthy (status: ${KIOSK_STATUS:-unknown}); starting the kept previous version $kept."
+  if "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref" && compose up -d && wait_kiosk_healthy; then
+    write_update_state
+    die "The new kiosk version didn't become healthy, so the installer started the previous version, which is running. $logs"
+  fi
+  die "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: ${KIOSK_STATUS:-unknown}). $logs"
+}
+
+RUNNING_IMAGE=''   # the kiosk container's image ID before the pull (keep_running_image)
+
+# keep_running_image REF: stop a phase-1 kiosk, then keep the running kiosk's
+# image as :previous. Called before the pull, while the channel tag REF still
+# names the running image. Sets RUNNING_IMAGE (empty when none runs).
+keep_running_image() {
+  stop_legacy_kiosk
+  RUNNING_IMAGE=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
+  [ -z "$RUNNING_IMAGE" ] || keep_previous "$RUNNING_IMAGE" "$1" || true
+}
+
+# start_kiosk: pull, start, wait until healthy, read the identity. Uses
+# update-state.json like the nightly update, except that a version rejected
+# before is tried again (retry_rejected_image); a new version that doesn't get
+# healthy is rolled back and rejected.
 start_kiosk() {
-  local ref prev new kept logs
+  local ref prev new logs rejected_before
   ref=$(image_ref)
   logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
-  stop_legacy_kiosk
-  prev=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
-  # Before the pull, while the channel tag still names the running image.
-  [ -z "$prev" ] || keep_previous "$prev" "$ref" || true
+  keep_running_image "$ref"
+  prev="$RUNNING_IMAGE"
   info "Downloading the kiosk image"
   pull_image
   new=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
   read_update_state
-  if [ -n "$prev" ] && [ -n "$new" ] && [ "$new" != "$prev" ] && [ "$new" = "$UPD_REJECTED" ]; then
-    warn "The newest version failed its health check on this laptop before; keeping the current one."
-    # The channel tag back on the running image, so compose doesn't recreate it.
-    retag "$prev" "$ref" || die "Couldn't keep the current version (docker tag failed)."
-    new="$prev"
-  elif [ -z "$prev" ] && [ -n "$new" ] && [ "$new" = "$UPD_REJECTED" ]; then
-    # No container to keep: like update.sh, the kept :previous image if there is one.
-    kept=$(image_id "$PREVIOUS_TAG")
-    if [ -n "$kept" ] && [ "$kept" != "$new" ] && "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref"; then
-      warn "The newest version failed its health check on this laptop before; starting the kept previous version instead."
-      new="$kept"
-    else
-      warn "The newest version failed its health check on this laptop before, and no earlier version is kept, so starting it anyway."
-    fi
-  fi
+  rejected_before="$UPD_REJECTED"
+  retry_rejected_image
   info "Starting the kiosk"
   if ! { compose up -d && wait_kiosk_healthy; }; then
     if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
@@ -874,6 +1346,13 @@ start_kiosk() {
       write_update_state
       die "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: ${KIOSK_STATUS:-unknown}). $logs"
     fi
+    # No earlier container to go back to: the version that failed stays
+    # rejected (so the retry above doesn't undo the nightly update's
+    # rejection), then the kept :previous image gets its chance.
+    if [ -n "$new" ] && { [ -z "$prev" ] || [ -n "$rejected_before" ]; }; then
+      put_rejected_image "$new"
+    fi
+    [ -n "$prev" ] || start_kept_previous "$ref" "$new" "$logs"
     die "The kiosk didn't become healthy in time (status: ${KIOSK_STATUS:-unknown}). $logs"
   fi
   # A re-run ends any update a crash left half done.
@@ -881,6 +1360,16 @@ start_kiosk() {
   KIOSK_IDENTITY=$(identity_check 2>/dev/null || true)
   [ -n "$KIOSK_IDENTITY" ] || warn "The kiosk is running but didn't answer $KIOSK_URL/edge/identity yet."
   info "The kiosk is running."
+}
+
+# prepare_kiosk_image (--step download): keep the running image as :previous
+# while the channel tag still names it, then pull. Starts nothing; the start
+# step's start_kiosk pulls again (cached, so quick), which also moves the
+# channel tag back to the new image on a retry after a rollback.
+prepare_kiosk_image() {
+  keep_running_image "$(image_ref)"
+  info "Downloading the kiosk image"
+  pull_image
 }
 
 # ── Login items ───────────────────────────────────────────────────────
@@ -897,6 +1386,136 @@ HOSTNET_UNIT='serversherpa-kiosk-hostnet'
 DESKTOP_FILE='serversherpa-kiosk.desktop'
 SYSTEMD_UNIT_DIR='/etc/systemd/system'
 MAC_APP_DIR='/Applications/ServerSherpa Kiosk.app'
+
+# Linux kiosk lockdown (kiosk_session.py): the session, the Start Kiosk icon on
+# the desktop, and the one-shot restore an uninstall leaves when the desktop
+# user isn't signed in.
+SESSION_PY='kiosk_session.py'
+START_ICON_FILE='serversherpa-start-kiosk.desktop'
+RESTORE_AUTOSTART='serversherpa-kiosk-restore.desktop'
+SESSION_STOP_WAIT_S="${SESSION_STOP_WAIT_S:-10}"
+RUN_USER_DIR='/run/user'   # XDG_RUNTIME_DIR's parent: /run/user/UID/bus is a session's D-Bus
+
+have_python3() { command -v python3 >/dev/null 2>&1; }
+
+# ensure_python3 (Linux): the kiosk session runs on python3, which every
+# Ubuntu desktop has; installed with apt when it is missing.
+ensure_python3() {
+  have_python3 && return 0
+  if command -v apt-get >/dev/null 2>&1 \
+     && apt_install python3 >/dev/null 2>&1 \
+     && have_python3; then
+    info "Installed python3 (the kiosk lockdown runs on it)."
+  else
+    warn "python3 isn't installed, so the kiosk opens in a normal window, without the lockdown."
+  fi
+  return 0
+}
+
+# render_start_icon FILE: Start Kiosk on the desktop. kiosk_session.py's
+# start_icon_text writes the same text at every session start
+# (tests/test_install_sh.py checks they match).
+render_start_icon() {
+  cat >"$1" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Start Kiosk
+Comment=Open the ServerSherpa kiosk
+Exec=$(exec_path "$KIOSK_DIR/launch.sh")
+Icon=web-browser
+Terminal=false
+EOF
+}
+
+# user_desktop_dir USER HOME: their desktop folder (xdg-user-dir), else ~/Desktop.
+user_desktop_dir() {
+  local d
+  d=$(as_user "$1" xdg-user-dir DESKTOP 2>/dev/null || true)
+  if [ -z "$d" ] || [ "$d" = "$2" ]; then d="$2/Desktop"; fi
+  printf '%s' "$d"
+}
+
+# install_desktop_icon USER HOME FILE RENDER_FN LABEL: FILE on USER's desktop,
+# as RENDER_FN writes it; written as USER, executable, and trusted so the
+# desktop launches it on a double-click (best-effort: gio needs their session;
+# the kiosk session marks Start Kiosk again when it starts).
+install_desktop_icon() {
+  local user="$1" home="$2" file="$3" render="$4" label="$5" d tmp uid
+  d=$(user_desktop_dir "$user" "$home")
+  tmp=$(mktemp "${TMPDIR:-/tmp}/kiosk-icon.XXXXXX")
+  TMP_FILES+=("$tmp")
+  "$render" "$tmp"
+  if ! { as_user "$user" mkdir -p "$d" && write_as_user "$user" "$tmp" "$d/$file" \
+         && as_user "$user" chmod 755 "$d/$file"; }; then
+    warn "Couldn't put the $label icon on $user's desktop."
+    return 0
+  fi
+  uid=$(id -u "$user" 2>/dev/null || true)
+  # Only on the user's real session bus (as session_restore): without it gio can
+  # report success and save nothing.
+  if [ -n "$uid" ] && [ -S "$RUN_USER_DIR/$uid/bus" ]; then
+    as_user "$user" env "DBUS_SESSION_BUS_ADDRESS=unix:path=$RUN_USER_DIR/$uid/bus" \
+      "XDG_RUNTIME_DIR=$RUN_USER_DIR/$uid" \
+      gio set "$d/$file" metadata::trusted true >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# install_start_icon USER HOME: the Start Kiosk icon.
+install_start_icon() {
+  install_desktop_icon "$1" "$2" "$START_ICON_FILE" render_start_icon "Start Kiosk"
+}
+
+# render_restore_entry PY: the one-shot autostart entry that puts the desktop
+# shortcuts back at the next sign-in, then deletes itself and PY.
+render_restore_entry() {
+  printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=ServerSherpa Kiosk desktop restore' \
+    "Exec=python3 $(exec_path "$1") restore --cleanup" 'Terminal=false' 'NoDisplay=true' \
+    'X-GNOME-Autostart-enabled=true'
+}
+
+# session_restore USER UID: kiosk_session.py restore in USER's desktop session
+# (its D-Bus), so gsettings reaches their settings. Only when that session's
+# bus is there: without it gsettings can fall back to its memory backend,
+# report success and save nothing. 1 = not run, or restore couldn't confirm.
+session_restore() {
+  local run="$RUN_USER_DIR/$2"
+  [ -S "$run/bus" ] || return 1
+  as_user "$1" env "DBUS_SESSION_BUS_ADDRESS=unix:path=$run/bus" "XDG_RUNTIME_DIR=$run" \
+    python3 "$KIOSK_DIR/$SESSION_PY" restore >/dev/null 2>&1
+}
+
+# restore_desktop_lock USER HOME (Linux, uninstall): a running kiosk session is
+# stopped (SIGTERM: it closes Chrome and puts the GNOME shortcuts back). If they
+# are still off, restore runs in the user's session; when they aren't signed
+# in, a copy of kiosk_session.py and a one-shot autostart entry do it at their
+# next sign-in. Never fails the uninstall.
+restore_desktop_lock() {
+  local user="$1" home="$2" state lock uid i=0 auto
+  state="$home/.local/state/serversherpa-kiosk"
+  lock="$state/desktop-lock.json"
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -TERM -u "$user" -f "$KIOSK_DIR/$SESSION_PY" >/dev/null 2>&1 || true
+  fi
+  while [ -f "$lock" ] && [ "$i" -lt "$SESSION_STOP_WAIT_S" ]; do sleep 1; i=$((i + 1)); done
+  [ -f "$lock" ] || return 0
+  uid=$(id -u "$user" 2>/dev/null || true)
+  if [ -n "$uid" ] && [ -f "$KIOSK_DIR/$SESSION_PY" ] && have_python3 \
+     && session_restore "$user" "$uid" && [ ! -f "$lock" ]; then
+    info "Put $user's desktop shortcuts back."
+    return 0
+  fi
+  [ -f "$KIOSK_DIR/$SESSION_PY" ] || { warn "Couldn't put $user's desktop shortcuts back ($SESSION_PY is missing)."; return 0; }
+  auto="$home/.config/autostart/$RESTORE_AUTOSTART"
+  if as_user "$user" mkdir -p "$state" "$home/.config/autostart" \
+     && write_as_user "$user" "$KIOSK_DIR/$SESSION_PY" "$state/$SESSION_PY" \
+     && render_restore_entry "$state/$SESSION_PY" | as_user "$user" tee "$auto" >/dev/null; then
+    info "$user's desktop shortcuts come back at their next sign-in."
+  else
+    warn "Couldn't put $user's desktop shortcuts back. While signed in as $user: python3 $KIOSK_DIR/$SESSION_PY restore"
+  fi
+  return 0
+}
 
 user_home() { SUDO_USER="$1" home_of_user; }
 
@@ -1137,6 +1756,7 @@ install_login_items_macos() {
 
 install_login_items_linux() {
   local user home d tmp since
+  ensure_python3
   render_systemd_units "$SYSTEMD_UNIT_DIR"
   if systemctl daemon-reload && systemctl enable --now "$UPDATE_UNIT.timer"; then
     info "Nightly update scheduled (03:00, $UPDATE_UNIT.timer)."
@@ -1162,13 +1782,19 @@ install_login_items_linux() {
       warn "Couldn't write $d/$DESKTOP_FILE."
     fi
   done
+  install_start_icon "$user" "$home"
+  # The kiosk is back: its own session restores; an uninstall's one-shot
+  # restore must not race it.
+  rm -f "$home/.config/autostart/$RESTORE_AUTOSTART"
   info "The kiosk opens when $user signs in, or from the app menu (ServerSherpa Kiosk)."
+  info "Esc then the PIN csg closes the kiosk; Start Kiosk on the desktop opens it again."
 }
 
-# install_login_items: copy update.sh/launch.sh/hostnet.sh in, then schedule them.
+# install_login_items: copy update.sh/launch.sh/hostnet.sh (and on Linux kiosk_session.py) in, then schedule them.
 install_login_items() {
-  local f
-  for f in update.sh launch.sh hostnet.sh; do
+  local f files='update.sh launch.sh hostnet.sh'
+  [ "$OS" = Darwin ] || files="$files $SESSION_PY"
+  for f in $files; do
     fetch_companion "$f" "$KIOSK_DIR/$f"
     chmod 755 "$KIOSK_DIR/$f"
   done
@@ -1202,6 +1828,9 @@ remove_login_items() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     if [ -n "$user" ]; then
       home=$(user_home "$user")
+      restore_desktop_lock "$user" "$home"
+      rm -f "$(user_desktop_dir "$user" "$home")/$START_ICON_FILE"
+      rm -f "$(user_desktop_dir "$user" "$home")/$SETUP_ICON_FILE"
       rm -f "$home/.config/autostart/$DESKTOP_FILE" "$home/.local/share/applications/$DESKTOP_FILE"
     else
       warn "No desktop user found; remove ~/.config/autostart/$DESKTOP_FILE and ~/.local/share/applications/$DESKTOP_FILE from that account yourself."
@@ -1331,9 +1960,12 @@ uninstall() {
   if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
     stop_kiosk_for_uninstall
   fi
-  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh install-state.json update-state.json; do
+  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh "$SESSION_PY" "$SETUP_RUNNER" \
+           install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done
+  rm -rf "${KIOSK_DIR:?}/setup-snapshot"
+  remove_label_printer_files
   info "Removed the kiosk from $KIOSK_DIR (install.log and update.log were kept). Docker stays installed."
   if [ "$PURGE_DATA" = 1 ]; then
     if [ -d "$KIOSK_DATA_DIR" ]; then
@@ -1356,6 +1988,7 @@ parse_args() {
       --uninstall)  DO_UNINSTALL=1; shift ;;
       --purge-data) PURGE_DATA=1; shift ;;
       --start-fresh) START_FRESH=1; shift ;;
+      --step)       [ "$#" -ge 2 ] || die "--step needs a value."; STEP="$2"; shift 2 ;;
       --help|-h)    usage; exit 0 ;;
       *) die "Unknown option '$1'. Try --help." ;;
     esac
@@ -1412,11 +2045,322 @@ create_data_dir() {
   chmod 700 "$KIOSK_DATA_DIR" || die "Couldn't set the permissions of $KIOSK_DATA_DIR."
 }
 
+# ── Ubuntu setup (setup.sh): checklist rows and the Set up kiosk launcher ──
+SETUP_ICON_FILE='serversherpa-setup-kiosk.desktop'
+SETUP_RUNNER='setup-kiosk.sh'
+
+# check_row ID STATE NOTE: one checklist line for setup.sh. NOTE never has a |.
+check_row() {
+  printf 'row|%s|%s|%s\n' "$1" "$2" "$(printf '%s' "$3" | tr '|' '/')"
+}
+
+# docker_running: the engine is active and enabled at boot, and compose answers.
+docker_running() {
+  systemctl is-active --quiet docker.service 2>/dev/null </dev/null \
+    && systemctl is-enabled --quiet docker.service 2>/dev/null </dev/null \
+    && "${DOCKER[@]}" compose version >/dev/null 2>&1 </dev/null
+}
+
+# check_rows (--step check): what setup.sh's checklist shows, one
+# row|ID|STATE|NOTE line per row (STATE ok, add or fix), in setup's order.
+check_rows() {
+  local status
+  if ! lp_engine_present; then
+    check_row docker add "will be installed"
+  elif docker_running; then
+    check_row docker ok "running"
+  else
+    check_row docker add "installed; will be started"
+  fi
+  if lp_snap_has docker; then
+    check_row snapdocker add "will be replaced"
+  else
+    check_row snapdocker ok "not installed"
+  fi
+  if chrome_installed; then
+    check_row chrome ok "installed"
+  elif [ "$ARCH" != amd64 ]; then
+    check_row chrome fix "Google Chrome isn't available for this processor."
+  else
+    check_row chrome add "will be installed"
+  fi
+  if have_python3; then check_row python3 ok "installed"; else check_row python3 add "will be installed"; fi
+  if printers_ok; then check_row printers ok "set up"; else check_row printers add "will be set up"; fi
+  if [ ! -f "$KIOSK_DIR/docker-compose.yml" ]; then
+    check_row kiosk add "will be installed"
+    return 0
+  fi
+  # Ask Docker only when the engine is already active: with socket-activated
+  # docker.io, docker inspect would start it.
+  if ! systemctl is-active --quiet docker.service 2>/dev/null </dev/null; then
+    check_row kiosk add "installed, stopped (Docker isn't running); will be started"
+    return 0
+  fi
+  if ! status=$("${DOCKER[@]}" inspect -f '{{.State.Health.Status}}' "$KIOSK_CONTAINER" 2>&1 </dev/null); then
+    case "$status" in
+      *[Pp]ermission\ denied*)
+        # Not root and not in the docker group (setup.sh has only ok/add/fix).
+        check_row kiosk add "installed, not checked (no permission to ask Docker); will be started"
+        return 0 ;;
+    esac
+    status=''
+  fi
+  if [ "$status" = healthy ]; then
+    check_row kiosk ok "running"
+  else
+    check_row kiosk add "installed, not healthy (${status:-stopped}); will be started"
+  fi
+  return 0
+}
+
+# render_setup_runner FILE: the Set up kiosk icon's script. It downloads the
+# newest setup.sh (from the installer ref this install came from) every time.
+render_setup_runner() {
+  local ref url
+  ref=$(safe_ref "${KIOSK_INSTALLER_REF:-main}")
+  url="https://raw.githubusercontent.com/encondata/BaseCampV3/$ref/kiosk_laptop/installer/setup.sh"
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+# Set up kiosk (desktop launcher): runs the newest setup.sh, downloaded fresh
+# each time. setup.sh gets the same ref, so it fetches install.sh from it too.
+url='$url'
+tmp=\$(mktemp "\${TMPDIR:-/tmp}/kiosk-setup.XXXXXX") || exit 1
+rc=0
+if wget -qO "\$tmp" "\$url" 2>/dev/null || curl -fsSL "\$url" -o "\$tmp" 2>/dev/null; then
+  KIOSK_INSTALLER_REF='$ref' bash "\$tmp" "\$@" || rc=\$?
+else
+  echo "Couldn't download the kiosk setup from \$url. Check the network, then try again."
+  rc=1
+fi
+rm -f "\$tmp"
+if [ "\$rc" != 0 ]; then printf 'Press Enter to close this window.'; read -r _ </dev/tty; fi
+exit "\$rc"
+EOF
+}
+
+# render_setup_icon FILE: Set up kiosk on the desktop (opens in a terminal).
+render_setup_icon() {
+  cat >"$1" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Set up kiosk
+Comment=Install, update or switch the ServerSherpa kiosk
+Exec=$(exec_path "$KIOSK_DIR/$SETUP_RUNNER")
+Icon=system-software-install
+Terminal=true
+EOF
+}
+
+# install_setup_launcher (--step launcher): the runner in KIOSK_DIR (root's,
+# mode 755) and the Set up kiosk icon on the desktop user's desktop.
+install_setup_launcher() {
+  local runner="$KIOSK_DIR/$SETUP_RUNNER" tmp user
+  tmp=$(mktemp "$KIOSK_DIR/.setup-runner.XXXXXX") || die "Couldn't write $runner."
+  TMP_FILES+=("$tmp")
+  render_setup_runner "$tmp"
+  { chmod 755 "$tmp" && mv -f "$tmp" "$runner"; } || die "Couldn't write $runner."
+  user=$(desktop_user)
+  if [ -z "$user" ]; then
+    warn "No desktop user found, so the Set up kiosk icon wasn't added. Run $runner to set up again."
+    return 0
+  fi
+  install_desktop_icon "$user" "$(user_home "$user")" "$SETUP_ICON_FILE" render_setup_icon "Set up kiosk"
+}
+# move_dev_data (--step move-dev-data): a laptop already on the dev servers
+# keeps its data in the production folder; move it, once, to the dev folder.
+# It goes by the *saved* environment (no merge_config). Production data, and a
+# custom KIOSK_DATA_DIR, are never moved. Order:
+#   1. render the new compose file to a temp file (this can fail offline), so
+#      a failure there changes nothing;
+#   2. stop the kiosk, then mv (one rename between sibling folders, so atomic);
+#   3. mv the rendered compose file into place, then config.env last.
+# A run cut short after the mv leaves the data in the dev folder with the
+# config still naming the (now missing) production folder; the next run sees
+# exactly that and finishes the update, so the data is never lost track of.
+# A config that already names the dev folder while compose still mounts the
+# production one (an older run cut short) gets its compose file re-rendered.
+# It starts nothing: the start step brings the kiosk back.
+move_dev_data() {
+  local cfg="$KIOSK_DIR/config.env" file="$KIOSK_DIR/docker-compose.yml"
+  local api="$CFG_API_URL" dir="$CFG_DATA_DIR" finishing=0 tmp
+  [ -f "$cfg" ] || return 0
+  while [ "${api%/}" != "$api" ]; do api="${api%/}"; done
+  while [ "${dir%/}" != "$dir" ]; do dir="${dir%/}"; done
+  [ "$api" = "$DEV_API_URL" ] || return 0
+  if [ "$dir" = "$DEV_DATA_DIR" ]; then
+    [ -f "$file" ] && grep -qF "\"$PROD_DATA_DIR:/data\"" "$file" || return 0
+    KIOSK_DATA_DIR="$DEV_DATA_DIR"
+    move_dev_compose
+    info "Pointed the kiosk's compose file at its data in $DEV_DATA_DIR."
+    return 0
+  fi
+  [ -z "$dir" ] || [ "$dir" = "$PROD_DATA_DIR" ] || return 0
+  if [ -L "$PROD_DATA_DIR" ]; then
+    die "$PROD_DATA_DIR is a symbolic link (to $(readlink "$PROD_DATA_DIR")), so the installer won't move the dev kiosk's data. Replace the link with the folder it points to (or move that folder to $DEV_DATA_DIR and remove the link), then try again."
+  fi
+  if [ ! -e "$PROD_DATA_DIR" ]; then
+    # Nothing to move, unless an earlier run moved it and stopped short.
+    [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ] || return 0
+    finishing=1
+    info "Finishing the earlier move of the dev kiosk's data to $DEV_DATA_DIR."
+  elif [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ]; then
+    die "Both $PROD_DATA_DIR and $DEV_DATA_DIR hold kiosk data. Move one of them aside, then try again."
+  fi
+  check_data_dir "$DEV_DATA_DIR"
+  KIOSK_DATA_DIR="$DEV_DATA_DIR"
+  tmp=$(mktemp "$file.XXXXXX") || die "Couldn't write $file."
+  TMP_FILES+=("$tmp")
+  render_compose "$tmp"
+  if [ "$finishing" = 0 ]; then
+    if [ -f "$file" ] && docker_answers; then
+      compose stop >/dev/null 2>&1 \
+        || die "Couldn't stop the kiosk to move its data. Check 'systemctl status docker', then try again."
+    fi
+    rmdir "$DEV_DATA_DIR" 2>/dev/null || true
+    # An existing DEV_DATA_DIR would make mv put the data inside it.
+    if [ -e "$DEV_DATA_DIR" ] || [ -L "$DEV_DATA_DIR" ]; then
+      die "Couldn't clear the empty folder $DEV_DATA_DIR to move the dev kiosk's data there. Remove it, then try again."
+    fi
+    mv "$PROD_DATA_DIR" "$DEV_DATA_DIR" \
+      || die "Couldn't move $PROD_DATA_DIR to $DEV_DATA_DIR. The kiosk's data is still in $PROD_DATA_DIR."
+  fi
+  mv -f "$tmp" "$file" || die "Couldn't write $file."
+  CFG_DATA_DIR="$DEV_DATA_DIR"
+  set_config_line "$cfg" KIOSK_DATA_DIR "$DEV_DATA_DIR"
+  if [ "$finishing" = 1 ]; then
+    info "Finished moving the dev kiosk's data to $DEV_DATA_DIR."
+  else
+    info "Moved the dev kiosk's data from $PROD_DATA_DIR to $DEV_DATA_DIR (production and dev kiosks now keep separate data)."
+  fi
+}
+
+# move_dev_compose: render the compose file (KIOSK_DATA_DIR already set) to a
+# temp file beside it, then mv it into place, so a failed render leaves the
+# old file as it was.
+move_dev_compose() {
+  local file="$KIOSK_DIR/docker-compose.yml" tmp
+  tmp=$(mktemp "$file.XXXXXX") || die "Couldn't write $file."
+  TMP_FILES+=("$tmp")
+  render_compose "$tmp"
+  mv -f "$tmp" "$file" || die "Couldn't write $file."
+}
+
+# ── Google Chrome (Ubuntu) ────────────────────────────────────────────
+chrome_installed() { command -v google-chrome-stable >/dev/null 2>&1; }
+
+# install_chrome_apt: Google's signing key and apt source, then the browser.
+# Chrome's own package keeps its source in the same google-chrome.list, so
+# there is never a second, conflicting entry. A failed install leaves the
+# source in place (harmless, and rewritten the same way next time).
+install_chrome_apt() {
+  local key="$APT_KEYRINGS/google-chrome.gpg"
+  install -m 0755 -d "$APT_KEYRINGS" || return 1
+  curl -fsSL "$CHROME_KEY_URL" | gpg --dearmor --yes -o "$key" || return 1
+  chmod a+r "$key"
+  printf 'deb [arch=amd64 signed-by=%s] %s stable main\n' "$key" "$CHROME_APT_URL" \
+    >"$APT_SOURCES/google-chrome.list" || return 1
+  if ! { apt_update && apt_install google-chrome-stable; }; then
+    info "Google's apt source stays in $APT_SOURCES/google-chrome.list; a re-run will retry the install."
+    return 1
+  fi
+}
+
+# ensure_chrome warn|strict (Linux): Google Chrome from Google's apt repository
+# on Ubuntu (amd64 only). strict (setup.sh's chrome step) dies when it can't;
+# warn (install.sh on its own) carries on with whatever browser there is.
+ensure_chrome() {
+  local mode="$1"
+  [ "$OS" = Linux ] || return 0
+  if chrome_installed; then
+    info "Google Chrome is installed."
+    return 0
+  fi
+  if ! is_ubuntu; then
+    [ "$mode" = warn ] || die "This setup supports Ubuntu 22.04 and newer."
+    return 0
+  fi
+  if [ "$ARCH" != amd64 ]; then
+    [ "$mode" = warn ] || die "Google Chrome isn't available for this processor."
+    warn "Google Chrome isn't available for this processor."
+    return 0
+  fi
+  info "Installing Google Chrome (Google's apt repository)"
+  if install_chrome_apt; then
+    CHROME_INSTALLED=1
+    return 0
+  fi
+  [ "$mode" = warn ] || die "Google Chrome didn't install. See the messages above, then try again."
+  warn "Couldn't install Google Chrome; the kiosk uses another browser if one is installed."
+  return 0
+}
+
+# restart_kiosk (--step restart): start the kiosk from the docker-compose.yml
+# in place and wait until it is healthy.
+restart_kiosk() {
+  if ! { compose up -d && wait_kiosk_healthy; }; then
+    die "The kiosk didn't become healthy (status: ${KIOSK_STATUS:-unknown}). See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
+  fi
+  info "The kiosk is running."
+}
+
+# run_step NAME ARGS...: one setup step for setup.sh. ARGS are install.sh's
+# own arguments, so ensure_root re-runs the same command under sudo.
+# Exit 0 means the step is done; a failure goes through die.
+run_step() {
+  local name="$1"
+  shift
+  [ "$OS" = Linux ] || die "--step is for the Ubuntu setup (setup.sh)."
+  KIOSK_NONINTERACTIVE=1
+  case "$name" in
+    check) setup_docker_cli; check_rows ;;   # no root, no log
+    tools|docker|docker-start|chrome|python3|printers|move-dev-data|download|start|login-items|launcher|restart) ;;
+    *) die "Unknown step '$name'. Steps: check tools docker docker-start chrome python3 printers move-dev-data download start login-items launcher restart." ;;
+  esac
+  [ "$name" != check ] || return 0
+  ensure_root "$@"
+  check_minimums
+  mkdir -p "$KIOSK_DIR"
+  chmod 755 "$KIOSK_DIR"
+  start_log "$@"
+  case "$name" in
+    tools) ensure_download_tools ;;
+    docker) setup_docker_cli; ensure_docker ;;
+    docker-start) setup_docker_cli; enable_docker_autostart; wait_for_engine 180; check_compose ;;
+    chrome) ensure_chrome strict ;;
+    python3)
+      ensure_python3
+      have_python3 || die "python3 didn't install, so kiosk mode can't run. See the messages above, then try again."
+      ;;
+    printers) setup_label_printers ;;
+    move-dev-data) setup_docker_cli; move_dev_data ;;
+    download)
+      merge_config
+      setup_docker_cli
+      find_browser
+      create_data_dir
+      write_config "$KIOSK_DIR/config.env"
+      render_compose "$KIOSK_DIR/docker-compose.yml"
+      migrate_legacy_data
+      prepare_kiosk_image
+      ;;
+    start) merge_config; setup_docker_cli; start_kiosk ;;
+    login-items) install_login_items ;;
+    launcher) install_setup_launcher ;;
+    restart) setup_docker_cli; restart_kiosk ;;
+  esac
+  return 0
+}
+
 main() {
   parse_args "$@"
   detect_os
   default_dirs
   load_config "$KIOSK_DIR/config.env"
+  if [ -n "$STEP" ]; then
+    [ "$DO_UNINSTALL" = 0 ] || die "--step and --uninstall can't be used together."
+    run_step "$STEP" "$@"
+    return 0
+  fi
   if [ "$DO_UNINSTALL" = 1 ]; then
     ensure_root "$@"
     # Only the data folder from the saved config: a damaged setting elsewhere must not block uninstall.
@@ -1441,6 +2385,11 @@ main() {
   enable_docker_autostart
   wait_for_engine 180
   check_compose
+  setup_label_printers
+  ensure_chrome warn
+  # Again only after a Chrome install, so the saved config records it (and the
+  # no-browser warning from preflight isn't repeated).
+  [ "$CHROME_INSTALLED" = 0 ] || find_browser
   create_data_dir
   write_config "$KIOSK_DIR/config.env"
   render_compose "$KIOSK_DIR/docker-compose.yml"

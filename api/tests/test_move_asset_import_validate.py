@@ -69,7 +69,7 @@ async def test_validate_writes_nothing_and_reports(db):
     assert by_row[7]["status"] == "error"
     assert result["summary"] == {
         "total_rows": 6, "processed_rows": 6, "created": 2, "updated": 2,
-        "review": 1, "errors": 1,
+        "review": 1, "errors": 1, "client_id": None, "conflicts": 0,
     }
     assert result["cancelled"] is False
 

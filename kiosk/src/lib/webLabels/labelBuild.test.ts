@@ -51,7 +51,7 @@ import type { LabelStationSettings } from '../api';
 import { writeKioskSetup } from '../kioskSetup';
 import { clearDb, closeDb, deleteRows, getAll, putRows, readMeta, writeMeta } from '../localDb';
 import { readSyncStatus, resetSyncStatus, runSync } from '../sync';
-import { writeWebLabelKind, writeWebLabelSettings } from '../webLabelSettings';
+import { writeWebLabelKind, writeWebLabelPrintingOff, writeWebLabelSettings } from '../webLabelSettings';
 import { ApiError } from '../api';
 import { webLabelBackend } from '../labelBackend';
 import {
@@ -403,6 +403,21 @@ describe('requestLabelBuild', () => {
     await deleteRows('label_templates_raw', ['body']);
     await requestLabelBuild();
     expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'templates_missing' });
+  });
+
+  it('a kiosk set up not to print labels builds none, and builds again after a Yes', async () => {
+    const runner = countingRunner();
+    setLabelBuildRunner(runner);
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    writeWebLabelPrintingOff();
+    await requestLabelBuild();
+    expect(runner.builds).toBe(0);
+    expect(readWebLabelStatus()).toEqual(IDLE);
+    writeWebLabelKind('top');
+    await requestLabelBuild();
+    expect(runner.builds).toBe(1);
   });
 
   it('nothing set up is not "not downloaded": no printer, or no move', async () => {

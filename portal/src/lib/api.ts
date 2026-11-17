@@ -16,6 +16,7 @@
 import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { Flow } from './matchingRules';
 import type { Day } from './notifications';
 import type { OrgItem } from './orgs';
 import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
@@ -271,10 +272,21 @@ function storeSession(data: SessionData): void {
   sessionExpiresAt = data.session_expires_at;
 }
 
+const sessionClearedHooks = new Set<() => void>();
+
+/** Register clean-up that must run whenever the local session is
+ *  cleared (sign-out is a soft reset, so module state such as caches
+ *  would otherwise outlive the user). Modules register at init, which
+ *  keeps api.ts free of imports back into them. */
+export function onLocalSessionCleared(fn: () => void): void {
+  sessionClearedHooks.add(fn);
+}
+
 export function clearLocalSession(): void {
   accessToken = null;
   accessTokenExpiresAt = 0;
   sessionExpiresAt = null;
+  sessionClearedHooks.forEach((fn) => fn());
 }
 
 export function getSessionExpiresAt(): string | null {
@@ -745,6 +757,8 @@ export interface UserDetailAccount {
 export interface UserRoleGrant {
   role: string; label: string; rank: number; scope_anchor: string;
   org: OrgRefOut | null; granted_by: PersonRef | null; granted_at: string;
+  /** client grants, global callers only; [] otherwise */
+  group_ids?: string[];
 }
 
 export interface UserWorkerCard {
@@ -1064,7 +1078,7 @@ export interface CopyPlanRow {
   person_id: string; display_name: string; avatar_url: string | null;
   status: 'ok' | 'skipped';
   reason: 'cannot_target_self' | 'rank_too_low' | 'no_account'
-    | 'role_rank_too_low' | 'person_not_found' | null;
+    | 'role_rank_too_low' | 'person_not_found' | 'client_worker_conflict' | null;
   roles: { from: string[]; to: string[] } | null;
   groups: { from: string[]; to: string[] } | null;
   overrides: { added: number; removed: number; changed: number } | null;
@@ -1127,7 +1141,7 @@ export async function setUserRoles(personId: string, roles: string[]): Promise<s
 
 /* ── external directory (client/partner contacts + external role) ── */
 
-export type ContactTier = 'owner' | 'admin' | 'viewer';
+export type ContactTier = 'owner' | 'admin' | 'viewer' | 'individual';
 export type OrgKind = 'client' | 'partner';
 
 export interface ExternalLinkItem {
@@ -1191,6 +1205,10 @@ export interface ContactItem {
   tier: ContactTier;
   org_title: string | null;
   functions: string[];
+  /** filled only for global callers; [] otherwise */
+  group_ids?: string[];
+  /** individual, or has group chips (partners: always false) */
+  restricted?: boolean;
 }
 
 export async function listOrgContacts(kind: OrgKind, id: string): Promise<ContactItem[]> {
@@ -1251,6 +1269,8 @@ export interface ContactUpdatePatch {
   tier?: ContactTier;
   org_title?: string | null;
   functions?: string[];
+  /** client links, global staff only; replaces the person's group chips */
+  group_ids?: string[];
 }
 
 export async function patchContactLink(
@@ -2622,6 +2642,24 @@ export async function removeContainerAsset(
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/** Where a container is now (GET /containers/{id}/position): its truck's
+ *  last GPS report, the pin of the site it sits at, or nothing known.
+ *  A truck that has never reported comes back with null coordinates. */
+export interface ContainerPosition {
+  kind: 'truck' | 'site' | 'none';
+  name: string | null;
+  lat: number | null;
+  lng: number | null;
+  recorded_at: string | null;
+  approximate_address: string;
+}
+
+export async function getContainerPosition(id: string): Promise<ContainerPosition> {
+  const resp = await apiFetch(`/containers/${id}/position`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export interface ContainerBulkRow {
   row: number; action: 'create' | 'error';
   data: Record<string, unknown>; errors: string[];
@@ -3814,6 +3852,10 @@ export async function recheckInitiativePlacement(id: string): Promise<PlacementR
 // The API queues the job; a separate worker process runs it. The portal
 // polls getImportJob until the job reaches a terminal status.
 
+export type ClientChoice = 'continue' | 'skip';
+/** A choice as the API stores it: with the client that owned the serial at
+ *  the check (a Continue applies only while it still does). */
+export interface StoredClientChoice { choice: ClientChoice; from_client_id: string | null }
 export type ImportJobPhase = 'validate' | 'commit';
 export type ImportJobStatus =
   'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -3821,8 +3863,12 @@ export type ImportJobStatus =
 export interface ImportRowDetail {
   row: number;
   serial_number: string;
-  status: 'created' | 'updated' | 'review' | 'error';
+  status: 'created' | 'updated' | 'review' | 'error' | 'conflict' | 'skipped';
   message: string;
+  /** conflict (check) and skipped (commit) rows: the client the serial belongs to */
+  current_client?: { id: string; name: string };
+  /** created/updated rows a Continue moved from another client */
+  client_moved_from?: { id: string; name: string };
   asset_id?: string | null;
   asset_created?: boolean;
   serial_generated?: boolean;
@@ -3858,6 +3904,12 @@ export interface ImportJobOut {
     reprocess_of?: string; only_rows?: number[];
     // set on a Create-a-move-in-steps file check (no move yet)
     move_setup_id?: string;
+    // Continue/Skip per flagged serial (lower-cased), stored by the API
+    client_choices?: Record<string, StoredClientChoice>;
+    // a wizard check: the move's client it ran against
+    client_id?: string | null;
+    // a committed import: the move's client its check ran against
+    check_client_id?: string | null;
   };
   phase: ImportJobPhase;
   status: ImportJobStatus;
@@ -3894,9 +3946,15 @@ export async function getImportJob(jobId: string): Promise<ImportJobOut> {
   return resp.json();
 }
 
-export async function commitImportJob(jobId: string): Promise<ImportJobOut> {
+export async function commitImportJob(
+  jobId: string, clientChoices?: Record<string, ClientChoice>,
+): Promise<ImportJobOut> {
   const resp = await apiFetch(
-    `/initiatives/assets/import-jobs/${jobId}/commit`, { method: 'POST' });
+    `/initiatives/assets/import-jobs/${jobId}/commit`,
+    clientChoices
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_choices: clientChoices }) }
+      : { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -4011,6 +4069,11 @@ export const recheckMoveSetupAssets = (id: string) =>
  *  so the wizard never polls the initiatives:change-gated
  *  /initiatives/assets/import-jobs route (getImportJob), which an
  *  initiatives:add-only admin cannot reach. */
+/** Save the Continue/Skip choice for every serial the check flagged as
+ *  belonging to another client. */
+export const putMoveSetupChoices = (id: string, clientChoices: Record<string, ClientChoice>) =>
+  moveSetupCall<ImportJobOut>(`/${id}/assets/choices`,
+    jsonInit('PUT', { client_choices: clientChoices }));
 export const getMoveSetupCheck = (id: string) => moveSetupCall<ImportJobOut>(`/${id}/assets`);
 export const createMoveFromSetup = (id: string) =>
   moveSetupCall<MoveSetupDraft>(`/${id}/create`, { method: 'POST' });
@@ -7337,6 +7400,281 @@ export async function searchWiki(
 ): Promise<WikiSearchHit[]> {
   const qs = new URLSearchParams({ q, kind, limit: String(limit), log: 'false' });
   const resp = await apiFetch(`/wiki/search?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+// ── matching rules (/devtools/matching-rules) ──
+// Developer › Matching rules: versioned flows that decide how a scanned value finds an asset.
+// Reads need `devtools:view`, writes `devtools:change`. The shapes mirror
+// api/src/serversherpa/matching_rules/schemas.py.
+
+export type MatchingPlace = 'printing' | 'scanning';
+export type MatchingState = 'draft' | 'standby' | 'live' | 'retired';
+
+export interface MatchingCheckSummary {
+  passed: number;
+  total: number;
+  ok: boolean;
+  checked_at: string | null;
+}
+
+export interface MatchingProblem {
+  message: string;
+  node_ids: string[];
+}
+
+export interface MatchingCheckItem {
+  code: string;
+  label: string;
+  ok: boolean;
+  problems: MatchingProblem[];
+}
+
+export interface MatchingTestRowResult {
+  row_id: string;
+  test_asset_id: string;
+  asset_tag: number;
+  asset_name: string;
+  value: string;
+  expected: string;
+  outcome: 'found' | 'not_found' | 'stopped';
+  found_asset_tag: number | null;
+  found_field: string | null;
+  passed: boolean;
+}
+
+export interface MatchingCheck {
+  ok: boolean;
+  structure_ok: boolean;
+  tests_ok: boolean;
+  passed: number;
+  total: number;
+  structure: MatchingCheckItem[];
+  tests: MatchingTestRowResult[];
+}
+
+export interface MatchingVersion {
+  id: string;
+  place: MatchingPlace;
+  version: number;
+  state: MatchingState;
+  based_on_version: number | null;
+  saved_by_name: string | null;
+  saved_at: string;
+  state_changed_at: string | null;
+  checked: MatchingCheckSummary | null;
+  current: MatchingCheckSummary;
+}
+
+export interface MatchingVersionDetail extends MatchingVersion {
+  flow: Flow;
+  check: MatchingCheck;
+}
+
+export interface MatchingHit {
+  id: string;
+  asset_tag: number | null;
+  name: string | null;
+  rfid: string | null;
+  serial: string | null;
+  sits: 'move' | 'client';
+}
+
+export interface MatchingTraceStep {
+  node_id: string;
+  kind: string;
+  value_in: string;
+  value_out: string | null;
+  output: string | null;
+  hits: MatchingHit[] | null;
+}
+
+export interface MatchingRun {
+  outcome: 'found' | 'not_found' | 'stopped';
+  stop_reason: string | null;
+  end_node_id: string | null;
+  asset: MatchingHit | null;
+  field: string | null;
+  action: string | null;
+  message: string | null;
+  trace: MatchingTraceStep[];
+}
+
+export interface MatchingTestRowIn {
+  place: MatchingPlace;
+  value: string;
+  expected: string;
+}
+
+export interface MatchingTestRow extends MatchingTestRowIn {
+  id: string;
+  test_asset_id: string;
+}
+
+export interface MatchingTestAssetIn {
+  asset_tag: number;
+  name: string;
+  rfid?: string | null;
+  serial?: string | null;
+  sits?: 'move' | 'client';
+}
+
+export interface MatchingTestAsset extends MatchingTestAssetIn {
+  id: string;
+  rfid: string | null;
+  serial: string | null;
+  sits: 'move' | 'client';
+  rows: MatchingTestRow[];
+}
+
+const MATCHING = '/devtools/matching-rules';
+// Every id goes into its path through encodeURIComponent: an id from the
+// address bar is already decoded, and a `../` in it must stay one segment.
+
+async function matchingCall<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const resp = await apiFetch(`${MATCHING}${path}`, body === undefined ? { method } : {
+    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.status === 204 ? (undefined as T) : resp.json();
+}
+
+export const listMatchingVersions = (place: MatchingPlace): Promise<MatchingVersion[]> =>
+  matchingCall(`/versions?place=${encodeURIComponent(place)}`, 'GET');
+
+export const getMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}`, 'GET');
+
+export const createMatchingDraft = (
+  body: { place: MatchingPlace; flow: Flow; based_on_id?: string | null },
+): Promise<MatchingVersionDetail> => matchingCall('/versions', 'POST', body);
+
+export const updateMatchingDraft = (id: string, flow: Flow): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}`, 'PUT', { flow });
+
+export const standbyMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}/standby`, 'POST');
+
+export const deployMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}/deploy`, 'POST');
+
+export const rollbackMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}/rollback`, 'POST');
+
+export const checkMatchingFlow = (place: MatchingPlace, flow: Flow): Promise<MatchingCheck> =>
+  matchingCall('/check', 'POST', { place, flow });
+
+export const testRunMatchingFlow = (body: {
+  place: MatchingPlace; flow: Flow; value: string; against: 'test_set' | 'move'; initiative_id?: string;
+}): Promise<MatchingRun> => matchingCall('/test-run', 'POST', body);
+
+export const listMatchingTestAssets = (): Promise<MatchingTestAsset[]> =>
+  matchingCall('/test-assets', 'GET');
+
+export const createMatchingTestAsset = (body: MatchingTestAssetIn): Promise<MatchingTestAsset> =>
+  matchingCall('/test-assets', 'POST', body);
+
+export const updateMatchingTestAsset = (id: string, body: MatchingTestAssetIn): Promise<MatchingTestAsset> =>
+  matchingCall(`/test-assets/${encodeURIComponent(id)}`, 'PATCH', body);
+
+export const deleteMatchingTestAsset = (id: string): Promise<void> =>
+  matchingCall(`/test-assets/${encodeURIComponent(id)}`, 'DELETE');
+
+export const createMatchingTestRow = (assetId: string, body: MatchingTestRowIn): Promise<MatchingTestRow> =>
+  matchingCall(`/test-assets/${encodeURIComponent(assetId)}/rows`, 'POST', body);
+
+export const updateMatchingTestRow = (id: string, body: MatchingTestRowIn): Promise<MatchingTestRow> =>
+  matchingCall(`/test-rows/${encodeURIComponent(id)}`, 'PATCH', body);
+
+export const deleteMatchingTestRow = (id: string): Promise<void> =>
+  matchingCall(`/test-rows/${encodeURIComponent(id)}`, 'DELETE');
+
+/* ── client groups (staff, global scope) ───────────────────────── */
+
+export interface ClientGroup {
+  id: string; name: string; aliases: string[]; asset_count: number; people_count: number;
+}
+export interface ReviewValue {
+  value: string; value_key: string; asset_count: number;
+  move_ids: string[]; move_names: string[]; dismissed: boolean;
+}
+export interface MergePlan {
+  aliases_added: string[]; rows_moved: number; people_moved: number; conflicts: string[];
+}
+
+const jsonPost = (method: string, body: unknown): RequestInit => ({
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+});
+
+export async function listClientGroups(clientId: string): Promise<ClientGroup[]> {
+  const resp = await apiFetch(`/clients/${clientId}/groups`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createClientGroup(
+  clientId: string, body: { name: string; aliases?: string[] },
+): Promise<ClientGroup> {
+  const resp = await apiFetch(`/clients/${clientId}/groups`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateClientGroup(
+  clientId: string, groupId: string, body: { name?: string; aliases?: string[] },
+): Promise<ClientGroup> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${groupId}`, jsonPost('PATCH', body));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteClientGroup(clientId: string, groupId: string): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${groupId}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function mergeClientGroups(
+  clientId: string, targetId: string, sourceId: string, dryRun: boolean,
+): Promise<MergePlan> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${targetId}/merge`,
+    jsonPost('POST', { source_id: sourceId, dry_run: dryRun }));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listGroupReview(clientId: string, includeDismissed = false): Promise<ReviewValue[]> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review?include_dismissed=${includeDismissed}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function matchGroupReview(
+  clientId: string, body: { value: string; group_id: string },
+): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review/match`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function dismissGroupReview(
+  clientId: string, body: { value: string; dismissed: boolean },
+): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review/dismiss`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** True asset counts, unfiltered by client groups — what a restricted login
+ *  sees as the totals while its lists are shorter. */
+export interface AssetTotals { total: number; by_status: Record<string, number> }
+
+export async function getInitiativeAssetTotals(initiativeId: string): Promise<AssetTotals> {
+  const resp = await apiFetch(`/initiatives/${initiativeId}/asset-totals`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getClientAssetTotals(clientId: string): Promise<AssetTotals> {
+  const resp = await apiFetch(`/clients/${clientId}/asset-totals`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

@@ -3,6 +3,8 @@ the exact titles, and how Clear / Block permanently resolve every copy."""
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import select, text, update
 from starlette.requests import Request
 
@@ -117,6 +119,59 @@ async def test_permanent_title(db):
         block.level, block.permanent = level, False
         assert notif.block_title(block) == (
             f"Sign-ins blocked from 203.0.113.7 for {word} (10 failed attempts)")
+
+
+async def _tries(db, now: datetime) -> None:
+    """ESCALATE_TRIES turned-away attempts: one rung up."""
+    for _ in range(ab.ESCALATE_TRIES):
+        with pytest.raises(HTTPException):
+            await ab.raise_if_blocked(db, req(), now=now)
+
+
+async def test_tries_in_the_title(db):
+    await person(db, "Ada", "admin")
+    block = await trip(db)
+    block.attempts_while_blocked = 20
+    assert notif.block_title(block) == (
+        "Sign-ins blocked from 203.0.113.7 for 1 hour "
+        "(10 failed attempts, 20 tries while blocked)")
+
+
+async def test_escalation_replaces_each_admins_card_with_a_fresh_unread_one(db):
+    a = await person(db, "Ada", "admin")
+    s = await person(db, "Sue", "super_admin")
+    await trip(db)
+    # Ada dismissed hers (Leave as is); Sue never looked
+    await db.execute(update(Notification).where(Notification.person_id == a)
+                     .values(read_at=T0))
+    await db.commit()
+    old = {r.id for r in await rows(db)}
+    later = T0 + timedelta(minutes=5)
+    await _tries(db, later)
+    got = await rows(db)
+    assert sorted(r.person_id for r in got) == sorted([a, s])
+    for r in got:
+        assert r.id not in old
+        assert r.read_at is None
+        assert r.title == ("Sign-ins blocked from 203.0.113.7 for 6 hours "
+                           "(10 failed attempts, 10 tries while blocked)")
+        assert r.payload["state"] == "open" and r.payload["level"] == 2
+        assert r.payload["blocked_at"] == notif.block_key(T0)
+        assert r.payload["ends_at"] == (later + timedelta(hours=6)).isoformat()
+    # a decision still resolves the fresh cards
+    await ab.clear(db, ADDR, actor_id=a, now=later)
+    await db.commit()
+    assert {r.payload["state"] for r in await rows(db)} == {"cleared"}
+
+
+async def test_escalation_leaves_an_earlier_blocks_card_alone(db):
+    await person(db, "Ada", "admin")
+    await trip(db)                                   # block 1, ends T0 + 1 h
+    later = T0 + timedelta(hours=2)
+    await trip(db, now=later)                        # block 2
+    await _tries(db, later)
+    keys = sorted(r.payload["blocked_at"] for r in await rows(db))
+    assert keys == [notif.block_key(T0), notif.block_key(later)]
 
 
 async def test_clear_resolves_every_admins_copy(db):

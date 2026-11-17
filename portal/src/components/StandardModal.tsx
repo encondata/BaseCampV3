@@ -28,7 +28,8 @@ export default function StandardModal({
   busy?: boolean;
   /** Extra class(es) for the card, after the house ones. */
   cardClass?: string;
-  children: ReactNode;
+  /** Left out (or null/false), the dialog has no body: a confirm that is all header. */
+  children?: ReactNode;
   footer?: ReactNode;
 }) {
   useEffect(() => {
@@ -56,7 +57,7 @@ export default function StandardModal({
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
-        <div className="modal-body">{children}</div>
+        {children != null && children !== false && <div className="modal-body">{children}</div>}
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
     </div>

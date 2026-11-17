@@ -6,11 +6,35 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Date, Float, ForeignKey, Identity, Index, Integer,
-    LargeBinary, Numeric, SmallInteger, String, Text, text,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    Date,
+    Float,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    LargeBinary,
+    MetaData,
+    Numeric,
+    SmallInteger,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import (
-    ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, TSVECTOR, UUID,
+    ARRAY,
+    BYTEA,
+    CITEXT,
+    INET,
+    JSONB,
+    TIMESTAMP,
+    TSVECTOR,
+    UUID,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -275,6 +299,80 @@ class ContactProfile(Base):
     updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ClientGroup(Base):
+    """A named group of a client's assets, built from the From-To Owner column.
+    Names are unique per client by their matching key (migration 0128)."""
+
+    __tablename__ = "client_groups"
+    __table_args__ = (UniqueConstraint("client_id", "name_key", name="client_groups_client_name_key"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    name_key: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+
+
+class ClientGroupAlias(Base):
+    """An extra Owner spelling that resolves to a group."""
+
+    __tablename__ = "client_group_aliases"
+    __table_args__ = (UniqueConstraint("client_id", "alias_key", name="client_group_aliases_client_alias_key"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("client_groups.id", ondelete="CASCADE"), index=True)
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"))
+    alias: Mapped[str]
+    alias_key: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ClientGroupDismissal(Base):
+    """An Owner value an admin chose not to turn into a group."""
+
+    __tablename__ = "client_group_dismissals"
+
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"), primary_key=True)
+    value_key: Mapped[str] = mapped_column(primary_key=True)
+    dismissed_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    dismissed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+
+
+class ClientContactGroup(Base):
+    """Which groups a client_individual contact may see."""
+
+    __tablename__ = "client_contact_groups"
+
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"), primary_key=True)
+    # ON DELETE NO ACTION: a held group can't be deleted (see
+    # clientgroups.service.delete_group)
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("client_groups.id"), primary_key=True)
+
+
+# View created by migration 0128: each asset's newest roster row per client.
+# It lives on its own MetaData so nothing ever tries to create it as a table
+# (Base.metadata is what devtools and the cascade helper walk).
+_views = MetaData()
+asset_owner_current = Table(
+    "asset_owner_current", _views,
+    Column("asset_id", UUID(as_uuid=True)),
+    Column("client_id", UUID(as_uuid=True)),
+    Column("owner", Text),
+    Column("owner_group_id", UUID(as_uuid=True)),
+)
 
 
 class AuthSession(Base):
@@ -1484,6 +1582,10 @@ class InitiativeAsset(Base):
     priority_wave: Mapped[str | None] = mapped_column(String(30))
     disposition: Mapped[str | None]
     owner: Mapped[str | None]
+    # The client group this row's Owner resolved to (migration 0128); SET NULL
+    # when the group is deleted so the raw owner text still stands.
+    owner_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("client_groups.id", ondelete="SET NULL"), index=True)
     source_pod: Mapped[str | None]
     destination_pod: Mapped[str | None]
     source_rack: Mapped[str | None]
@@ -2716,4 +2818,5 @@ class AddressBlock(Base):
 # Register the learning and project-plan models on Base.metadata (they import
 # Base from here).
 import serversherpa.learning.models  # noqa: F401
+import serversherpa.matching_rules.models  # noqa: F401
 import serversherpa.plans.models  # noqa: F401

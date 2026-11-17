@@ -1,29 +1,18 @@
 /**
- * InitiativeEditModal — the only place an initiative's fields are
- * mutated: field edits + archive/unarchive. `initiative === null` opens
- * in create mode. The type picker drives conditional sections
- * (sectionsForType); after creation only admins may change the type —
- * the server enforces this too (403 type_change_forbidden). Follows
- * ContainerEditModal's modal conventions.
+ * InitiativeEditModal — field edits + archive/unarchive from the
+ * /initiatives list (the full details page edits in its Edit tab,
+ * InitiativeEditTab; both save through useInitiativeEditor).
+ * `initiative === null` opens in create mode. The type picker drives
+ * conditional sections (sectionsForType); after creation only admins may
+ * change the type — the server enforces this too (403
+ * type_change_forbidden). Follows ContainerEditModal's modal conventions.
  */
 
-import { useState, type FormEvent } from 'react';
+import { type FormEvent } from 'react';
 
-import {
-  ApiError,
-  archiveInitiative,
-  createInitiative,
-  updateInitiative,
-  type InitiativeItem,
-  type OrgRef,
-  type SiteItem,
-  type StatusValue,
-} from '../../lib/api';
-import {
-  formFromInitiative, INITIATIVE_ERRORS, initiativePayload,
-  type InitiativeFormState,
-} from '../../lib/initiatives';
-import InitiativeFields, { FALLBACK_COLOR, useNextColorSeed } from './InitiativeFields';
+import type { InitiativeItem, OrgRef, SiteItem, StatusValue } from '../../lib/api';
+import InitiativeFields from './InitiativeFields';
+import { useInitiativeEditor } from './useInitiativeEditor';
 
 interface Props {
   initiative: InitiativeItem | null;   // null = create mode
@@ -40,68 +29,16 @@ interface Props {
   onSaved: () => Promise<void> | void;   // parent refetches
 }
 
-function mapError(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) return INITIATIVE_ERRORS[err.code] ?? fallback;
-  return 'Network error.';
-}
-
 export default function InitiativeEditModal({
   initiative, statuses, types, subTypes, shippingTypes, sites, clients,
   partners, isAdmin, canChange, onClose, onSaved,
 }: Props) {
-  const isCreateMode = initiative === null;
-  const [form, setForm] = useState<InitiativeFormState>(
-    () => formFromInitiative(initiative));
-  const [archived, setArchived] = useState<boolean>(!!initiative?.archived_at);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  // Create mode opens the wheel on the color a create would assign, so
-  // "auto-selected, changeable" is visible before saving.
-  useNextColorSeed(isCreateMode, setForm);
-
-  const locked = saving || (!isCreateMode && !canChange);
-  // An initiative that has never been colored shows its status color —
-  // the same color the calendar paints it today — without that fallback
-  // being written back to the row unless the user actually spins.
-  const wheelColor =
-    form.color || initiative?.status_color || FALLBACK_COLOR;
-  // type is picked freely on create; edits are admin-only (server-enforced)
-  const typeLocked = locked || (!isCreateMode && !isAdmin);
+  const ed = useInitiativeEditor({ initiative, isAdmin, canChange, onSaved });
+  const { isCreateMode, form, setForm, archived, saving, error, locked } = ed;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      const payload = initiativePayload(form);
-      if (isCreateMode) {
-        await createInitiative(payload);
-      } else {
-        await updateInitiative(initiative.id, payload);
-      }
-      await onSaved();
-      onClose();
-    } catch (err) {
-      setError(mapError(err, 'Could not save — try again.'));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const toggleArchive = async () => {
-    if (!initiative) return;
-    setSaving(true);
-    setError('');
-    try {
-      await archiveInitiative(initiative.id, !archived);
-      setArchived((v) => !v);
-      await onSaved();
-    } catch (err) {
-      setError(mapError(err, 'Could not change the archive state — try again.'));
-    } finally {
-      setSaving(false);
-    }
+    if (await ed.save()) onClose();
   };
 
   const title = initiative
@@ -127,7 +64,7 @@ export default function InitiativeEditModal({
               form={form} setForm={setForm} initiative={initiative}
               statuses={statuses} types={types} subTypes={subTypes}
               shippingTypes={shippingTypes} sites={sites} clients={clients} partners={partners}
-              locked={locked} typeLocked={typeLocked} wheelColor={wheelColor}
+              locked={locked} typeLocked={ed.typeLocked} wheelColor={ed.wheelColor}
               kioskPassword={!isCreateMode && isAdmin}
               typeHint={!isCreateMode && !isAdmin ? 'Only admins can change the type.' : undefined}
               colorHint={isCreateMode
@@ -144,7 +81,7 @@ export default function InitiativeEditModal({
             </button>
             {initiative && canChange && (
               <button className="mini-btn danger" type="button" disabled={saving}
-                      onClick={() => void toggleArchive()}>
+                      onClick={() => void ed.toggleArchive()}>
                 {archived ? 'Unarchive' : 'Archive'}
               </button>
             )}

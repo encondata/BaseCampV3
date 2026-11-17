@@ -17,6 +17,7 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import LabelRegenScreen from '../components/LabelRegenScreen';
 import OffMoveAlarm from '../components/OffMoveAlarm';
 import ScanFlash from '../components/ScanFlash';
+import SystemTray from '../components/lockdown/SystemTray';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
@@ -29,7 +30,7 @@ import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import { isLaptop, platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
-import { useWebLabelSettings } from '../lib/webLabelSettings';
+import { useWebLabelPrinting, useWebLabelSettings } from '../lib/webLabelSettings';
 
 const REG_CHIP: Record<RegistrationState, string> = {
   ok: 'c-green', soon: 'c-amber', expired: 'c-red', none: 'c-slate',
@@ -75,6 +76,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const sync = useSyncStatus();
   const { status: edge } = useEdgeStatus();
   const webPrinter = useWebLabelSettings();
+  const webPrintsLabels = useWebLabelPrinting();
   const laptop = isLaptop();
 
   const onSetup = location.pathname === '/setup' || location.pathname.startsWith('/setup/');
@@ -181,6 +183,8 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           {identity.name}
         </button>
         <div className="kiosk-user">
+          {/* Linux laptop only: battery and network (renders nothing elsewhere). */}
+          <SystemTray />
           {authed && registration && (
             <span className={`chip ${REG_CHIP[registration]}`}>
               <span className="dot" />{registrationLabel(registration)}
@@ -240,9 +244,9 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       {/* The same takeover on a web kiosk while the browser builds its
           labels, fed by that build's status (in memory, never the edge).
           Only once a printer is saved: a kiosk that never prints never
-          builds, and never sees it. Signed in and off Kiosk Setup, as on
-          the laptop. */}
-      {authed && !laptop && webPrinter !== null && !onSetup
+          builds, and never sees it (nor one set up not to print labels).
+          Signed in and off Kiosk Setup, as on the laptop. */}
+      {authed && !laptop && webPrinter !== null && webPrintsLabels && !onSetup
         && <LabelRegenScreen getStatus={webLabelBackend.getStatus} deviceWord={webLabelBackend.deviceWord} />}
     </div>
   );

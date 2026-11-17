@@ -5,7 +5,7 @@
  * the payload shaping for the "new external contact" one-form flow.
  */
 
-import type { ContactUpdatePatch, ExternalLinkItem, ExternalPersonItem, OrgKind, PersonDetail } from './api';
+import type { ContactTier, ContactUpdatePatch, ExternalLinkItem, ExternalPersonItem, OrgKind, PersonDetail } from './api';
 import type { GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
 
@@ -61,6 +61,12 @@ export function externalSearchHay(person: ExternalPersonItem): string {
     `${distinctFunctions(person.links).join(' ')}`).toLowerCase();
 }
 
+/** Tier as the External page shows it: the existing lowercase text, except
+ *  the new tier, which reads "Individual". */
+export function tierText(t: ContactTier): string {
+  return t === 'individual' ? 'Individual' : t;
+}
+
 /** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
  *  display text for a given column key. Mirrors exactly what the page's own
  *  cell renderer shows: 'orgs' joins each link's "org · tier" the way its
@@ -74,7 +80,7 @@ export function externalSearchHay(person: ExternalPersonItem): string {
 export function externalCellText(p: ExternalPersonItem, colKey: string): string {
   switch (colKey) {
     case 'primary': return `${p.display_name} ${p.email ?? p.phone ?? ''}`.trim();
-    case 'orgs': return p.links.length ? p.links.map((l) => `${l.org_name} · ${l.tier}`).join(', ') : '—';
+    case 'orgs': return p.links.length ? p.links.map((l) => `${l.org_name} · ${tierText(l.tier)}`).join(', ') : '—';
     case 'type': return typeLabel(p.links);
     case 'title': return distinctTitles(p.links).join(', ') || '—';
     case 'functions': return distinctFunctions(p.links).join(', ') || '—';

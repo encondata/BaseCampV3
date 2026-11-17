@@ -22,7 +22,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.access.hosts import authorize_host_view
+from serversherpa.access.hosts import authorize_host_view, host_items_hidden
 from serversherpa.access.visibility import can_set_visibility, visible_levels
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import AttachmentOut, AttachmentUpdateIn, VisibilityLevel
@@ -100,7 +100,10 @@ def _err(status: int, code: str) -> HTTPException:
 async def _authorize(
     db: DbSession, actor: AuthContext, entity_type: str, entity_id: uuid.UUID,
     action: str, kind: str | None = None,
-) -> None:
+) -> bool:
+    """Raises when the actor may not do `action` here. Returns False when the
+    host's files are hidden from the actor (client groups, via the shared
+    host read rule): a list comes back empty."""
     entity = await db.get(ENTITY_MODEL[entity_type], entity_id)
     if entity is None:
         raise _err(404, "entity_not_found")
@@ -112,7 +115,7 @@ async def _authorize(
         # is never on its own a bypass. A list request with no `kind`
         # filter can't prove every row would be an avatar, so it falls
         # through to the normal checks below too.
-        return
+        return True
     if entity_type == "report_definition":
         # the survey_template xlsx and the standards docx/pdf both live on
         # the report definition itself, so their attachment permission is
@@ -122,20 +125,19 @@ async def _authorize(
         required = "view" if action == "view" else "change"
         if not actor.access.can("reports", required):
             raise _err(403, "forbidden")
-        return
+        return True
     if action == "view" and not actor.access.is_global:
         # reads derive from the host resource (view + row scope) exactly
         # like notes — attachments:view is never consulted, so a
         # client-scoped actor can list the Everyone files on any record
         # they can see. Per-file levels are filtered by the caller.
-        await authorize_host_view(db, actor, entity_type, entity_id)
-        return
+        return await authorize_host_view(db, actor, entity_type, entity_id)
     if entity_type == "asset" and action == "view":
         # global actors read asset files on assets:view alone (no
         # `attachments` grant needed), mirroring the asset notes rule.
         if not actor.access.can("assets", "view"):
             raise _err(403, "forbidden")
-        return
+        return True
     if not actor.access.can("attachments", action):
         raise _err(403, "forbidden")
     # attachments has no SCOPE_COLUMNS entry to backstop a matrix/override
@@ -144,6 +146,7 @@ async def _authorize(
     # attachments get a real scope map.
     if not actor.access.is_global:
         raise _err(403, "forbidden")
+    return True
 
 
 async def _get_live_attachment(
@@ -153,7 +156,8 @@ async def _get_live_attachment(
     cannot see (hidden files behave as missing)."""
     att = await db.get(Attachment, attachment_id)
     if att is None or att.deleted_at is not None \
-            or att.visibility not in visible_levels(actor.access):
+            or att.visibility not in visible_levels(actor.access) \
+            or await host_items_hidden(db, actor, att.entity_type, att.entity_id):
         raise _err(404, "attachment_not_found")
     return att
 
@@ -296,7 +300,8 @@ async def list_attachments(
     entity_id: uuid.UUID,
     kind: Kind | None = None,
 ) -> list[AttachmentOut]:
-    await _authorize(db, user, entity_type, entity_id, "view", kind)
+    if not await _authorize(db, user, entity_type, entity_id, "view", kind):
+        return []
     stmt = select(Attachment).where(
         Attachment.entity_type == entity_type,
         Attachment.entity_id == entity_id,

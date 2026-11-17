@@ -228,6 +228,8 @@ class ScopeOut(BaseModel):
     global_: bool = Field(alias="global")
     client_ids: list[uuid.UUID] = []
     partner_ids: list[uuid.UUID] = []
+    # clients where this login sees only some client groups' assets
+    restricted_client_ids: list[uuid.UUID] = []
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -791,6 +793,57 @@ class UserCreateIn(BaseModel):
     invite: bool = False
 
 
+# ── client groups ──────────────────────────────────────────────────
+
+class ClientGroupOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    aliases: list[str]
+    asset_count: int
+    people_count: int
+
+
+class ClientGroupIn(BaseModel):
+    name: str
+    aliases: list[str] = []
+
+
+class ClientGroupPatchIn(BaseModel):
+    name: str | None = None
+    aliases: list[str] | None = None
+
+
+class GroupReviewValueOut(BaseModel):
+    value: str
+    value_key: str
+    asset_count: int
+    move_ids: list[uuid.UUID]
+    move_names: list[str]
+    dismissed: bool
+
+
+class GroupMergeIn(BaseModel):
+    source_id: uuid.UUID
+    dry_run: bool = True
+
+
+class GroupMergePlanOut(BaseModel):
+    aliases_added: list[str]
+    rows_moved: int
+    people_moved: int
+    conflicts: list[str]
+
+
+class GroupReviewMatchIn(BaseModel):
+    value: str
+    group_id: uuid.UUID
+
+
+class GroupReviewDismissIn(BaseModel):
+    value: str
+    dismissed: bool = True
+
+
 # ── stakeholders (clients & partners) ──────────────────────────────
 
 ORG_STATUSES = {"prospect", "active", "inactive"}
@@ -926,26 +979,29 @@ class ContactItem(BaseModel):
     avatar_url: str | None
     has_account: bool
     granted_at: datetime
-    tier: Literal["owner", "admin", "viewer"]
+    tier: Literal["owner", "admin", "viewer", "individual"]
     org_title: str | None = None
     functions: list[str] = []
+    group_ids: list[uuid.UUID] = []
+    restricted: bool = False
 
 
 class ContactAddIn(BaseModel):
     person_id: uuid.UUID
-    tier: Literal["owner", "admin", "viewer"] = "viewer"
+    tier: Literal["owner", "admin", "viewer", "individual"] = "viewer"
 
 
 class ContactUpdateIn(BaseModel):
-    """Any subset of {tier, org_title, functions}. Rank rules apply only
+    """Any subset of {tier, org_title, functions, group_ids}. Rank rules apply only
     when tier is present; org_title=null clears; functions replaces the
     whole tag list (validated/normalized server-side)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    tier: Literal["owner", "admin", "viewer"] | None = None
+    tier: Literal["owner", "admin", "viewer", "individual"] | None = None
     org_title: str | None = None
     functions: list[str] | None = None
+    group_ids: list[uuid.UUID] | None = None
 
 
 class ClientActivityItem(BaseModel):
@@ -968,13 +1024,21 @@ class ClientActivityOut(BaseModel):
     activity_7d: int
 
 
+class AssetTotalsOut(BaseModel):
+    """True asset counts for a move's roster or a client's assets, never
+    narrowed by client groups: `total` and a count per status key."""
+
+    total: int
+    by_status: dict[str, int]
+
+
 # ── external directory (client/partner contacts + external role) ──
 
 class ExternalLinkItem(BaseModel):
     kind: Literal["client", "partner"]
     org_id: uuid.UUID
     org_name: str
-    tier: Literal["owner", "admin", "viewer"]
+    tier: Literal["owner", "admin", "viewer", "individual"]
     org_title: str | None
     functions: list[str]
 
@@ -1097,6 +1161,8 @@ class UserRoleGrant(BaseModel):
     org: OrgRefOut | None
     granted_by: PersonRef | None
     granted_at: datetime
+    # client grants only, global callers only; [] otherwise
+    group_ids: list[uuid.UUID] = []
 
 
 class UserWorkerCard(BaseModel):
@@ -1731,6 +1797,17 @@ class AssetMoveRow(BaseModel):
     scheduled_start: datetime | None
     scheduled_end: datetime | None
     added_at: datetime
+
+
+class ContainerPositionOut(BaseModel):
+    """Where a container is on a map: its truck's newest GPS report, its
+    site's pin, or nothing (kind "none")."""
+    kind: Literal["truck", "site", "none"]
+    name: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    recorded_at: datetime | None = None
+    approximate_address: str = ""
 
 
 class ContainerItem(BaseModel):
@@ -2508,6 +2585,14 @@ class PlacementRecheckOut(BaseModel):
     collisions: int
     orphans: int
     cleared: int
+
+
+class ImportCommitIn(BaseModel):
+    """Optional body of POST /initiatives/assets/import-jobs/{id}/commit.
+    Values are checked by the route (not here) so a bad one answers with the
+    exact `invalid_client_choice` code instead of FastAPI's validation shape."""
+
+    client_choices: dict[str, str] | None = None
 
 
 class ImportJobOut(BaseModel):

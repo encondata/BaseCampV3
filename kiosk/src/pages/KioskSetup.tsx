@@ -48,6 +48,7 @@ import ConnectStep from '../components/setup/ConnectStep';
 import LabelKindStep from '../components/setup/LabelKindStep';
 import NetworkCheckStep from '../components/setup/NetworkCheckStep';
 import PairStep from '../components/setup/PairStep';
+import PrintLabelsStep from '../components/setup/PrintLabelsStep';
 import PrinterStep from '../components/setup/PrinterStep';
 import ReaderStep from '../components/setup/ReaderStep';
 import StationTypeStep from '../components/setup/StationTypeStep';
@@ -67,7 +68,9 @@ import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
 import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
-import { readWebLabelKind, writeWebLabelKind } from '../lib/webLabelSettings';
+import {
+  readWebLabelKind, readWebLabelPrinting, writeWebLabelKind, writeWebLabelPrintingOff,
+} from '../lib/webLabelSettings';
 
 /** Shown when Kiosk Setup is reached from another device on the LAN. */
 const LAN_NOTICE = "You're changing the setup of the laptop itself.";
@@ -89,10 +92,15 @@ const STEP_LABEL: Record<Step, string> = {
  *  its path has no Scan type step. The portal saves the same key anyway. */
 const LABEL_STATION_SCAN_STATUS = 'labeled';
 
+/** A web kiosk's Scan type step leaves out Active (Jimmy, 2026-11-17),
+ *  as well as every scan type with RFID in its name. */
+const WEB_HIDDEN_SCAN_STATUS = 'active';
+
 /** The steps this kiosk walks. Web mode skips the station type (RFID
- *  needs the laptop edge) and ends by asking what it prints, which the
- *  web kiosk keeps for itself rather than sending to the portal. An RFID
- *  Station and a Dock walk the same reader path. */
+ *  needs the laptop edge) and ends by asking whether it prints labels and,
+ *  only after a Yes, what it prints; the web kiosk keeps both answers for
+ *  itself rather than sending them to the portal. An RFID Station and a
+ *  Dock walk the same reader path. */
 function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan', 'kind'];
   if (isReaderStation(stationType)) return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
@@ -149,6 +157,10 @@ export default function KioskSetup() {
   const [submitError, setSubmitError] = useState('');
   // A Label Station's step 4 choice, and its saved settings (Change setup).
   const [labelKind, setLabelKind] = useState<LabelKind>('top');
+  // A web kiosk's step 4 asks first whether it prints labels; `askKind`
+  // is set once it answers Yes, which brings up what it prints.
+  const [printsLabels, setPrintsLabels] = useState(true);
+  const [askKind, setAskKind] = useState(false);
   const [labelStation, setLabelStation] = useState<LabelStationSettings | null>(null);
   // The saved settings load after the Site save. A late answer only
   // preselects the label kind while the kind step is still open and nobody
@@ -159,10 +171,14 @@ export default function KioskSetup() {
   useEffect(() => { stepRef.current = step; }, [step]);
   const sync = useSyncStatus();
   // An RFID station or a Dock only offers scan types with RFID in the name.
+  // A web kiosk has no reader, so it offers none of those, and not Active.
+  const hasRfid = (t: { label: string }) => t.label.toLowerCase().includes('rfid');
   const scanTypes = options
     ? (isReaderStation(stationType) && laptop
-      ? options.scan_types.filter((t) => t.label.toLowerCase().includes('rfid'))
-      : options.scan_types)
+      ? options.scan_types.filter(hasRfid)
+      : laptop
+        ? options.scan_types
+        : options.scan_types.filter((t) => !hasRfid(t) && t.key !== WEB_HIDDEN_SCAN_STATUS))
     : [];
   // A phone on the LAN changes the laptop's own setup, which every browser shares.
   const lanAccess = laptop && window.__KIOSK_CONFIG__?.lanAccess === true;
@@ -443,7 +459,12 @@ export default function KioskSetup() {
         // reader; a web kiosk still has to say what it prints (preselecting
         // what it already prints), after which the wizard closes.
         if (isReaderStation(station)) setStep('confirm');
-        else if (!laptop) { setLabelKind(readWebLabelKind()); setStep('kind'); }
+        else if (!laptop) {
+          setPrintsLabels(readWebLabelPrinting());
+          setAskKind(false);
+          setLabelKind(readWebLabelKind());
+          setStep('kind');
+        }
         else setWizardOpen(false);
       }
       // Fire-and-forget: the summary appears immediately and the
@@ -547,7 +568,7 @@ export default function KioskSetup() {
   // Before a station type is picked the path's length isn't known yet.
   const stepLabel = step === 'type' && !stationType
     ? `Step 1 · ${STEP_LABEL.type}`
-    : `Step ${stepIndex + 1} of ${path.length} · ${STEP_LABEL[step]}`;
+    : `Step ${stepIndex + 1} of ${path.length} · ${step === 'kind' && !laptop ? 'Label printing' : STEP_LABEL[step]}`;
   const moveStep = step === 'move' || step === 'site' || step === 'scan';
   const canCancel = Boolean(selection) && setupState === 'complete';
 
@@ -615,7 +636,25 @@ export default function KioskSetup() {
           </div>
         )}
 
-        {step === 'kind' && (
+        {step === 'kind' && !laptop && !askKind && (
+          <div>
+            <PrintLabelsStep selected={printsLabels}
+                             onChoose={(prints) => {
+                               setPrintsLabels(prints);
+                               if (prints) {
+                                 setAskKind(true);
+                               } else {
+                                 // Saved and complete already: the kiosk
+                                 // only has to remember it prints nothing.
+                                 writeWebLabelPrintingOff();
+                                 setWizardOpen(false);
+                               }
+                             }}
+                             onBack={back} />
+          </div>
+        )}
+
+        {step === 'kind' && (laptop || askKind) && (
           <div>
             <LabelKindStep selected={labelKind} device={laptop ? 'station' : 'kiosk'}
                            onChoose={(kind) => {
@@ -630,7 +669,7 @@ export default function KioskSetup() {
                                setWizardOpen(false);
                              }
                            }}
-                           onBack={back} />
+                           onBack={laptop ? back : () => setAskKind(false)} />
           </div>
         )}
 

@@ -4,6 +4,7 @@ membership endpoints live here too (the container is the aggregate
 root); the join table enforces one-container-per-asset."""
 
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response
@@ -13,9 +14,11 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     ContainerAssetRow, ContainerAssetsAddIn, ContainerBulkCreateIn,
-    ContainerBulkCreateOut, ContainerCreateIn, ContainerItem, ContainerUpdateIn,
+    ContainerBulkCreateOut, ContainerCreateIn, ContainerItem, ContainerPositionOut,
+    ContainerUpdateIn,
 )
 from serversherpa.assets.items import asset_items, asset_statuses
+from serversherpa.assets.placement import container_position
 from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Initiative, Person, Site,
     StatusValue,
@@ -167,6 +170,24 @@ async def get_container(
     actor: AuthContext = require_permission("containers", "view"),
 ) -> ContainerItem:
     return await _detail(db, await _get_container(db, container_id))
+
+
+@router.get("/{container_id}/position", response_model=ContainerPositionOut)
+async def get_container_position(
+    container_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "view"),
+) -> ContainerPositionOut:
+    container = await _get_container(db, container_id)
+    visible = select(Container.id).where(Container.id == container_id)
+    cond = scope_conditions("containers", actor.access, actor.person.id)
+    if cond is not None:
+        visible = visible.where(cond)
+    if container.archived_at is not None or await db.scalar(visible) is None:
+        raise _err(404, "container_not_found")
+    pos = await container_position(
+        db, container, actor.access, actor.person.id)
+    return ContainerPositionOut(**asdict(pos))
 
 
 async def _check_refs(db: DbSession, data: dict) -> None:

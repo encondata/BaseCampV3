@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { displayRfid } from '@portal/lib/format';
 
 import { hslCss, useAppearance } from '../lib/appearance';
+import { dialogOpen } from '../lib/escapeToPin';
 import { flash } from '../lib/flash';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
@@ -130,6 +131,10 @@ export default function Scan() {
     const reclaim = () => {
       const el = inputRef.current;
       if (!el || el.disabled || document.activeElement === el) return;
+      // A modal over the page (the Linux laptop's Esc PIN pad, mounted at
+      // the app root) owns the keyboard: pulling focus back here would send
+      // what is typed into it, Enter included, in as a scan.
+      if (dialogOpen()) return;
       const active = document.activeElement;
       if (active && active !== document.body && KEEPS_FOCUS.has(active.tagName)) return;
       el.focus();

@@ -4,18 +4,23 @@
  *  setup is incomplete or failed lands back on Home instead of the
  *  feature's placeholder. Label Printing (every `/labels*` route) also
  *  bounces home on an RFID Station laptop, developer mode or not: that
- *  station has no Label Printing tile. */
+ *  station has no Label Printing tile. So does a web kiosk whose setup
+ *  said it doesn't print labels, developer mode or not. */
 
 import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 
 import { useDevMode } from '../lib/devMode';
 import { featureAvailable, type KioskFeature } from '../lib/features';
+import { isLaptop } from '../lib/platform';
 import { useKioskSetupState } from '../lib/setupState';
+import { useWebLabelPrinting } from '../lib/webLabelSettings';
 
 export default function SetupGate({ feature, children }: { feature: KioskFeature; children: ReactNode }) {
   const [setupState] = useKioskSetupState();
   const [devMode] = useDevMode();
+  const printsLabels = useWebLabelPrinting();
+  if (feature.id === 'labels' && !isLaptop() && !printsLabels) return <Navigate to="/" replace />;
   if (!featureAvailable(feature, setupState, devMode)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }

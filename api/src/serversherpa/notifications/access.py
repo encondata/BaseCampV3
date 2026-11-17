@@ -33,12 +33,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from serversherpa.access.resolver import AccessInfo, resolve_access_many
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.scope import roster_row_condition, scope_conditions
 from serversherpa.db.models import (
     Asset,
     Container,
     Device,
     Initiative,
+    InitiativeAsset,
     Person,
     PersonRole,
     Site,
@@ -209,7 +210,10 @@ async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UU
     more, for all the things at once. People who can open none are left out, and people who open
     all of them share one set, so never change one. Raises ValueError for a kind of thing outside
     VIEWABLE_THINGS, before anything else. `access` skips resolving and is used as it stands: a
-    person it has no entry for opens nothing."""
+    person it has no entry for opens nothing.
+
+    An asset's page also follows its client's groups (access/scope.py): a restricted login opens
+    only the assets of its groups."""
     page = _page(thing_type)
     things = list(dict.fromkeys(ids))
     people = list(dict.fromkeys(person_ids))
@@ -234,6 +238,56 @@ async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UU
             continue
         theirs = frozenset(await db.scalars(
             select(page.scope).where(_among(page.scope, present), cond)))
+        if theirs:
+            out[person_id] = theirs
+    return out
+
+
+async def visible_rows(db: AsyncSession, pairs: Iterable[tuple[uuid.UUID, uuid.UUID]],
+                       person_ids: Iterable[uuid.UUID], *,
+                       access: Mapping[uuid.UUID, AccessInfo] | None = None,
+                       ) -> dict[uuid.UUID, frozenset[tuple[uuid.UUID, uuid.UUID]]]:
+    """For each person among `person_ids` who can see some of these roster rows, each named by
+    its (asset id, initiative id), the ones they can see right now: what the move's asset list
+    (GET /initiatives/{id}/assets) shows them. That needs `initiatives:view`, the move in their
+    row scope, and the row passing the move's group rule (`roster_row_condition`). A pair with
+    no row on that move is seen by nobody.
+
+    The cost doesn't grow with the number of rows: one query finds the rows, one batch resolves
+    everyone's access, and only a person with row scope or group limits costs one more. People
+    who see none are left out, and people who see all of them share one set. `access` is used
+    as it stands: a person it has no entry for sees nothing."""
+    wanted = set(pairs)
+    people = list(dict.fromkeys(person_ids))
+    if not wanted or not people:
+        return {}
+    asset_ids = {asset_id for asset_id, _ in wanted}
+    initiative_ids = {initiative_id for _, initiative_id in wanted}
+
+    def rows() -> Select[tuple[uuid.UUID, uuid.UUID]]:
+        return (select(InitiativeAsset.asset_id, InitiativeAsset.initiative_id)
+                .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+                .where(_among(InitiativeAsset.asset_id, asset_ids),
+                       _among(InitiativeAsset.initiative_id, initiative_ids)))
+
+    present = frozenset(pair for pair in (await db.execute(rows())).tuples().all()
+                        if pair in wanted)
+    if not present:
+        return {}
+    if access is None:
+        access = await resolve_access_many(db, people)
+    out: dict[uuid.UUID, frozenset[tuple[uuid.UUID, uuid.UUID]]] = {}
+    for person_id in people:
+        info = access.get(person_id)
+        if info is None or not info.can("initiatives", "view"):
+            continue
+        conds = [cond for cond in (scope_conditions("initiatives", info, person_id),
+                                   roster_row_condition(info)) if cond is not None]
+        if not conds:
+            out[person_id] = present
+            continue
+        theirs = frozenset(pair for pair in (await db.execute(rows().where(*conds)))
+                           .tuples().all() if pair in present)
         if theirs:
             out[person_id] = theirs
     return out

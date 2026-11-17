@@ -14,7 +14,9 @@ A starting point for the crate count, worked out from the From-To check:
   added, rounded up, then the wizard's crate cap applies.
 
 Each serial counts once (a file can list one twice). Error rows are left
-out: they never become assets."""
+out: they never become assets. Conflict rows (a serial another client owns)
+count, with the existing asset's model: staff may Continue them, and an
+extra crate is safer than a short one."""
 
 import math
 import uuid
@@ -64,7 +66,7 @@ async def estimate(db: AsyncSession, details: list[dict]) -> dict:
     seen: set[str] = set()
     model_ids: list[str | None] = []
     for d in details:
-        if d.get("status") not in ("created", "updated", "review"):
+        if d.get("status") not in ("created", "updated", "review", "conflict"):
             continue
         serial = (d.get("serial_number") or "").lower()
         if serial and serial in seen:

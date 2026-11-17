@@ -27,7 +27,8 @@ from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_request, client_ip, enforce_read_only_config,
-    rate_limit_ip, require_permission, require_rank, session_started_at, station_device,
+    ensure_kiosk_data_allowed, rate_limit_ip, require_kiosk_data, require_permission,
+    require_rank, session_started_at, station_device,
 )
 from serversherpa.api.routes.auth import (
     RESET_WINDOW_SECONDS, _scope_out, person_out, session_response, totp_status_out,
@@ -329,7 +330,7 @@ async def edge_move_passwords(
     db: DbSession,
     serial: str = Query(min_length=1, max_length=120),
     have: str | None = Query(None, max_length=64),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskEdgeMovePasswordsOut:
     """For the laptop edge: an argon2 hash of the password of the move the
     kiosk with `serial` is set up on, plus the session template for that
@@ -737,7 +738,7 @@ async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusVal
 @router.get("/setup-options", response_model=SetupOptionsOut)
 async def setup_options(
     db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> SetupOptionsOut:
     """Move initiatives that are not complete or historical (see
     HISTORICAL_INITIATIVE_STATUSES) and active asset status values, for the
@@ -756,7 +757,10 @@ async def setup_options(
     initiatives:view-shaped scope), and workers are self-anchored rather
     than initiative-anchored, so there is no narrower scope to apply that
     would still let a worker set up a kiosk. See the spec's security notes
-    for the accepted-risk writeup."""
+    for the accepted-risk writeup. One exception: a person with client group
+    limits gets 403 `forbidden` here and on every kiosk route that hands
+    out roster or asset data (`require_kiosk_data`), because none of them
+    apply group rules."""
     rows = await _allowed_initiatives_with_sites(db)
     if actor.session.initiative_id is not None:
         # a move-password session sees only its own move (none once that
@@ -790,7 +794,7 @@ async def setup_options(
 @router.post("/setup", response_model=KioskSetupOut)
 async def kiosk_setup(
     body: KioskSetupIn, db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskSetupOut:
     """Stamps this kiosk's Device row (found by serial) with the move, the
     move's source or destination site, and the scan type chosen in the
@@ -920,7 +924,7 @@ async def kiosk_setup(
 @router.post("/station-key", response_model=KioskStationKeyOut)
 async def issue_station_key(
     body: KioskStationKeyIn, db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskStationKeyOut:
     """Issue (or replace) this RFID, Label, Time Clock or Dock Station's key. The raw key is
     returned once; only its sha256 is stored. A move-password session may
@@ -955,7 +959,7 @@ async def issue_station_key(
 async def kiosk_setup_read(
     db: DbSession,
     serial: str = Query(min_length=1, max_length=120),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskSetupReadOut:
     """Read-back of what the portal holds for this kiosk's setup: move,
     site, scan type, station type and paired reader. A move-password
@@ -995,7 +999,7 @@ async def kiosk_setup_read(
 async def sync_assets(
     db: DbSession,
     initiative_id: uuid.UUID = Query(...),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskAssetsSyncOut:
     """Every asset on this move's roster, for the kiosk's local
     (IndexedDB) copy of the move: identity fields (asset ID, name, RFID,
@@ -1138,7 +1142,7 @@ async def _people_body(db: AsyncSession) -> KioskPeopleSyncOut:
 async def sync_containers(
     db: DbSession,
     initiative_id: uuid.UUID = Query(...),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskContainersSyncOut:
     """Every unarchived container on this move, for the kiosk's local
     copy — what the Containers screen matches a scanned crate against
@@ -1196,7 +1200,7 @@ async def _containers_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskC
 async def sync_label_templates(
     db: DbSession,
     initiative_id: uuid.UUID = Query(...),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskLabelTemplatesSyncOut:
     """The move's label template set, for a Label Printing kiosk to print
     offline: every active Front, Container and Container Info template,
@@ -1392,7 +1396,7 @@ async def kiosk_label_test_render(
 async def sync_client_assets(
     db: DbSession,
     initiative_id: uuid.UUID = Query(...),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskClientAssetsSyncOut:
     """Every asset of this move's client that is NOT on this move, so a
     laptop can tell a sighting from a stranger: one row per asset-and-move
@@ -1542,7 +1546,7 @@ async def station_sync_client_assets(
 @router.post("/scans", response_model=KioskScanBatchOut)
 async def ingest_scans(
     body: KioskScanBatchIn, db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskScanBatchOut:
     """Take a batch of scans off a kiosk and write them into `raw_scans`
     — the same inbox the scan-matching worker drains. The kiosk sends
@@ -1811,7 +1815,7 @@ def normalize_rfid(raw: str) -> str:
 @router.post("/assets/{asset_id}/rfid", response_model=KioskRfidEnrollOut)
 async def enroll_rfid(
     asset_id: uuid.UUID, body: KioskRfidEnrollIn, db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskRfidEnrollOut:
     """Write an RFID tag onto an asset from the kiosk's RFID Enroll
     screen, and record the physical scan that produced it — both in one
@@ -1916,7 +1920,7 @@ async def kiosk_asset_lookup(
     db: DbSession,
     serial: str = Query(...),
     q: str = Query(..., max_length=200),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskAssetLookupOut:
     """Find devices for the kiosk's Asset Lookup screen by a typed or
     scanned value: exact asset tag, serial or RFID first (a value that is
@@ -1952,7 +1956,7 @@ async def kiosk_asset_detail(
     asset_id: uuid.UUID,
     db: DbSession,
     serial: str = Query(...),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskAssetDetailOut:
     """The Asset Lookup details card: identity plus, for each live move the
     device is on, where it comes from and goes to. Admin and above (rank 60)
@@ -2021,7 +2025,7 @@ async def kiosk_asset_scans(
     db: DbSession,
     serial: str = Query(...),
     limit: int = Query(50, ge=1, le=500),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
     _admin: AuthContext = require_rank(GATE_BYPASS_RANK),
     _scans: AuthContext = require_permission("scans", "view"),
 ) -> list[AssetScanItem]:
@@ -2102,7 +2106,7 @@ async def _pack_asset(
              response_model=KioskContainerAssetOut)
 async def pack_container_asset(
     container_id: uuid.UUID, body: KioskContainerAssetIn, db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskContainerAssetOut:
     """Pack an asset into a container, or unpack it out of one, from the
     kiosk's Containers screen — membership and the physical scan that
@@ -2339,7 +2343,7 @@ async def station_dock_pass(
 async def sync_trucks(
     db: DbSession,
     initiative_id: uuid.UUID = Query(...),
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskTrucksSyncOut:
     """Every unarchived truck on this move, for the kiosk's local copy —
     what the Trucks screen's step-one card picker lists and filters.
@@ -2403,7 +2407,7 @@ async def sync_trucks(
              response_model=KioskTruckContainerOut)
 async def load_truck_container(
     truck_id: uuid.UUID, body: KioskTruckContainerIn, db: DbSession,
-    actor: AuthContext = require_permission("kiosk", "view"),
+    actor: AuthContext = require_kiosk_data(),
 ) -> KioskTruckContainerOut:
     """Load a container onto a truck, or unload it off one, from the
     kiosk's Trucks screen — the link and the physical scan that produced
@@ -3183,8 +3187,7 @@ async def get_kiosk_label_bundle(
     session is locked to its move. An unknown label type is a 422 here,
     where the portal route answers with an empty bundle.
     """
-    if not actor.access.can("kiosk", "view"):
-        raise _err(403, "forbidden")
+    ensure_kiosk_data_allowed(actor)  # kiosk:view, no client group limits
     _require_move(actor, initiative_id)
     ini = await _scoped_initiative(db, actor, initiative_id)
     known = await db.get(LabelVocab, ("type", label_type))

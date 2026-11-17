@@ -239,7 +239,7 @@ async def test_asset_check_runs_without_a_move(client, db, admin_hdrs, other_adm
     assert (check["kind"], check["initiative_id"]) == ("move_assets", None)
     assert (check["phase"], check["status"]) == ("validate", "queued")
     assert check["options"] == {"make_model_mode": "fuzzy", "generate_serials": False,
-                                "move_setup_id": draft["id"]}
+                                "move_setup_id": draft["id"], "client_id": None}
     got = (await client.get(f"{BASE}/{draft['id']}", headers=admin_hdrs)).json()
     assert got["payload"]["assets"] == {"check_job_id": check["id"], "filename": "ft.csv"}
     row = await reload(check["id"])

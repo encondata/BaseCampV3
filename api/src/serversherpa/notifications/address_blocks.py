@@ -45,8 +45,10 @@ async def admin_person_ids(db: AsyncSession) -> list[uuid.UUID]:
 
 def block_title(block: AddressBlock) -> str:
     when = "permanently" if block.permanent else f"for {_DURATIONS[block.level]}"
+    tries = (f", {block.attempts_while_blocked} tries while blocked"
+             if block.attempts_while_blocked else "")
     return (f"Sign-ins blocked from {block.address} {when} "
-            f"({block.failure_count} failed attempts)")
+            f"({block.failure_count} failed attempts{tries})")
 
 
 def block_key(blocked_at: datetime) -> str:
@@ -65,6 +67,21 @@ async def announce_block(db: AsyncSession, block: AddressBlock) -> int:
     for pid in admins:
         await notify(db, pid, KIND, title, body="", link=LINK, payload=dict(payload))
     return len(admins)
+
+
+async def reannounce_block(db: AsyncSession, block: AddressBlock) -> int:
+    """After a block moves up a rung: each admin's open card for this block
+    is replaced by a fresh, unread one with the new level and end, so the
+    toast comes back even for an admin who chose Leave as is."""
+    gone = await db.scalars(text(
+        "DELETE FROM notifications WHERE kind = :kind "
+        "AND payload ->> 'address' = CAST(:address AS text) "
+        "AND payload ->> 'blocked_at' = CAST(:blocked_at AS text) "
+        "AND payload ->> 'state' = 'open' RETURNING person_id"),
+        {"kind": KIND, "address": block.address,
+         "blocked_at": block_key(block.blocked_at)})
+    await signal_inboxes(db, gone.all())
+    return await announce_block(db, block)
 
 
 async def resolve_block(db: AsyncSession, address: str, blocked_at: datetime,

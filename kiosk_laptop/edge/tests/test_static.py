@@ -39,3 +39,8 @@ async def test_edge_identity_endpoint(client, app):
 async def test_unknown_non_get_is_404(client):
     r = await client.post("/not-an-api")
     assert r.status_code == 404
+
+
+async def test_config_js_host_os_is_null_without_the_file(client):
+    r = await client.get("/config.js")
+    assert '"hostOs": null' in r.text

@@ -349,8 +349,8 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
     person's switches or the company defaults may have changed. The checks run
     in order and the first that fails decides: notification_gone, resolved,
     back_online (Device offline only), hidden, read, recipient_inactive,
-    no_access (a notification the event sweep wrote, or a wiki notice about a
-    page, folder or file: wiki/notify.access_recheck) and not_watching (the
+    no_access (a notification the event sweep wrote, an asset watch's notice,
+    or a wiki notice about a page, folder or file: wiki/notify.access_recheck) and not_watching (the
     event sweep's only), then category_turned_down (the effective Email switch
     is now off). `contact` is the recipient, loaded when None is passed.
     Timing is not re-computed. Writes nothing.

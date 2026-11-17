@@ -56,7 +56,9 @@ import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import { clearKioskSetup, readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
 import { readSetupState, writeSetupState } from '../lib/setupState';
-import { readWebLabelKind, writeWebLabelKind } from '../lib/webLabelSettings';
+import {
+  readWebLabelKind, readWebLabelPrinting, writeWebLabelKind, writeWebLabelPrintingOff,
+} from '../lib/webLabelSettings';
 import KioskSetup from './KioskSetup';
 
 const OPTIONS = {
@@ -84,13 +86,15 @@ const OPTIONS = {
   scan_types: [
     { key: 'rfid_1_cage_exit', label: 'RFID 1 - Cage Exit', color: '#123' },
     { key: 'rfid_2_dock', label: 'RFID 2 - Dock', color: '#456' },
+    { key: 'active', label: 'Active', color: '#789' },
+    { key: 'pre_stage', label: 'Pre-Stage', color: '#abc' },
   ],
 };
 
 const RESULT = {
   device_id: 'd-1', initiative_id: 'i-1', initiative_name: 'NAP11 Hall Migration (demo)',
   site_id: 's-2', site_name: 'NAP22 Hall', site_role: 'destination' as const,
-  scan_status: 'rfid_1_cage_exit', scan_status_label: 'RFID 1 - Cage Exit',
+  scan_status: 'pre_stage', scan_status_label: 'Pre-Stage',
 };
 
 beforeEach(() => {
@@ -132,8 +136,11 @@ async function goToScanStep(user: ReturnType<typeof userEvent.setup>) {
   await user.click(cardFor('NAP22 Hall'));
 }
 
-/** A web kiosk's setup ends by asking what it prints; Top is the default. */
+/** A web kiosk's setup ends by asking whether it prints labels, then
+ *  (after Yes) what it prints; Top is the default. */
 async function chooseTopLabels(user: ReturnType<typeof userEvent.setup>) {
+  await screen.findByText('Will this kiosk print labels?');
+  await user.click(cardFor('Yes'));
   await screen.findByText('What does this kiosk print?');
   await user.click(cardFor('Top labels'));
 }
@@ -220,30 +227,30 @@ it('clicking a site advances to the scan-type step', async () => {
 
   expect(screen.getByText('Step 3 of 4 · Scan type')).toBeTruthy();
   expect(screen.getByText('Which scan type?')).toBeTruthy();
-  expect(screen.getByRole('option', { name: 'RFID 1 - Cage Exit' })).toBeTruthy();
-  expect(screen.getByRole('option', { name: 'RFID 2 - Dock' })).toBeTruthy();
+  // a web kiosk has no reader: no scan type with RFID in its name, and no Active
+  expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['Pre-Stage']);
 });
 
 it('clicking a scan type saves the setup and shows the summary', async () => {
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
 
   await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledWith({
     serial: getIdentity().serial, initiative_id: 'i-1', site_id: 's-2',
-    scan_status: 'rfid_1_cage_exit',
+    scan_status: 'pre_stage',
   }));
   await chooseTopLabels(user);
 
   expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
   expect(screen.getByText('NAP11 Hall Migration (demo)')).toBeTruthy();
   expect(screen.getByText('NAP22 Hall')).toBeTruthy();
-  expect(screen.getByText('RFID 1 - Cage Exit')).toBeTruthy();
+  expect(screen.getByText('Pre-Stage')).toBeTruthy();
   expect(readKioskSetup()).toEqual({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
     siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
-    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+    scanStatus: 'pre_stage', scanLabel: 'Pre-Stage',
   });
   expect(readSetupState()).toBe('complete');
 });
@@ -253,7 +260,7 @@ it('a laptop sign-in made offline is told to sign in again while online', async 
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
 
   expect(await screen.findByText('Sign in again while online to do this.')).toBeTruthy();
   expect(readSetupState()).toBe('failed');
@@ -264,11 +271,11 @@ it('a rejected submit shows the inline error, sets failed, and re-enables the ca
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
 
   expect(await screen.findByText("Couldn't save the kiosk setup (server_error). Try again.")).toBeTruthy();
   expect(readSetupState()).toBe('failed');
-  const card = cardFor('RFID 1 - Cage Exit') as HTMLButtonElement;
+  const card = cardFor('Pre-Stage') as HTMLButtonElement;
   expect(card.disabled).toBe(false);
 });
 
@@ -315,7 +322,7 @@ it('Change setup re-enters the wizard at step 1, pre-selected all the way throug
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
   await chooseTopLabels(user);
   await screen.findByText(/This kiosk is set up for/);
 
@@ -328,14 +335,14 @@ it('Change setup re-enters the wizard at step 1, pre-selected all the way throug
   expect(cardFor('NAP22 Hall').getAttribute('aria-selected')).toBe('true');
 
   await user.click(cardFor('NAP22 Hall'));
-  expect(cardFor('RFID 1 - Cage Exit').getAttribute('aria-selected')).toBe('true');
+  expect(cardFor('Pre-Stage').getAttribute('aria-selected')).toBe('true');
 });
 
 it('"Go to home" navigates to /', async () => {
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
   await chooseTopLabels(user);
   await screen.findByText(/This kiosk is set up for/);
   await user.click(screen.getByRole('button', { name: 'Go to home' }));
@@ -346,7 +353,7 @@ it('a rejected re-save of an already-complete setup keeps it complete, and Cance
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
   await chooseTopLabels(user);
   await screen.findByText(/This kiosk is set up for/);
   expect(readSetupState()).toBe('complete');
@@ -354,7 +361,7 @@ it('a rejected re-save of an already-complete setup keeps it complete, and Cance
   apiMock.submitKioskSetup.mockRejectedValueOnce(new ApiError(500, 'server_error'));
   await user.click(screen.getByRole('button', { name: 'Change setup' }));
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
 
   expect(await screen.findByText("Couldn't save the kiosk setup (server_error). Try again."))
     .toBeTruthy();
@@ -394,7 +401,7 @@ it('a successful save kicks off the move-data download', async () => {
   const user = userEvent.setup();
   renderPage();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
   await chooseTopLabels(user);
 
   await screen.findByText(/This kiosk is set up for/);
@@ -405,7 +412,7 @@ function renderSummaryWith(status: typeof syncMock.status) {
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
     siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
-    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+    scanStatus: 'pre_stage', scanLabel: 'Pre-Stage',
   });
   writeSetupState('complete');
   syncMock.status = status;
@@ -1078,34 +1085,66 @@ it('web mode has no station-type step and sends no station_type', async () => {
   expect(await screen.findByText('Step 1 of 4 · Move')).toBeTruthy();
   expect(screen.queryByText('What is this station?')).toBeNull();
   await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
   await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledTimes(1));
   const payload = apiMock.submitKioskSetup.mock.calls[0][0] as Record<string, unknown>;
   expect(Object.prototype.hasOwnProperty.call(payload, 'station_type')).toBe(false);
   expect(readKioskSetup()?.stationType).toBeUndefined();
 });
 
-// ── web: what it prints (Top or Front) ──────────────────────────────
+// ── web: label printing (Yes or No), then what it prints (Top or Front) ──
+
+async function goToWebPrintStep(user: ReturnType<typeof userEvent.setup>) {
+  await goToScanStep(user);
+  await user.click(cardFor('Pre-Stage'));
+  await screen.findByText('Will this kiosk print labels?');
+}
 
 async function goToWebKindStep(user: ReturnType<typeof userEvent.setup>) {
-  await goToScanStep(user);
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await goToWebPrintStep(user);
+  await user.click(cardFor('Yes'));
   await screen.findByText('What does this kiosk print?');
 }
 
-it('web setup asks what it prints after the scan type', async () => {
+it('web setup asks whether it prints labels after the scan type', async () => {
   const user = userEvent.setup();
   renderPage();
-  await goToWebKindStep(user);
+  await goToWebPrintStep(user);
 
-  expect(screen.getByText('Step 4 of 4 · What it prints')).toBeTruthy();
-  expect(cardFor('Top labels').getAttribute('aria-selected')).toBe('true');
-  expect(cardFor('Front labels').getAttribute('aria-selected')).toBe('false');
+  expect(screen.getByText('Step 4 of 4 · Label printing')).toBeTruthy();
+  expect(cardFor('Yes').getAttribute('aria-selected')).toBe('true');   // printing until a No
+  expect(cardFor('No').getAttribute('aria-selected')).toBe('false');
+  // not yet what it prints: that comes only after a Yes
+  expect(screen.queryByText('What does this kiosk print?')).toBeNull();
   // The portal already has the move, site, and scan type: this step is
   // the kiosk's own, and the setup counts as complete from the save.
   expect(apiMock.submitKioskSetup).toHaveBeenCalledTimes(1);
   expect(readSetupState()).toBe('complete');
   expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
+  expect(screen.queryByText(/This kiosk is set up for/)).toBeNull();
+});
+
+it('No saves that this kiosk prints no labels and closes the wizard', async () => {
+  writeWebLabelKind('front');
+  const user = userEvent.setup();
+  renderPage();
+  await goToWebPrintStep(user);
+  await user.click(cardFor('No'));
+
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  expect(readWebLabelPrinting()).toBe(false);
+  expect(readWebLabelKind()).toBe('front');   // kept for a later Yes
+  expect(apiMock.submitKioskSetup).toHaveBeenCalledTimes(1);   // nothing more goes to the portal
+});
+
+it('Yes asks what it prints, with the step count unchanged', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await goToWebKindStep(user);
+
+  expect(screen.getByText('Step 4 of 4 · Label printing')).toBeTruthy();
+  expect(cardFor('Top labels').getAttribute('aria-selected')).toBe('true');
+  expect(cardFor('Front labels').getAttribute('aria-selected')).toBe('false');
   expect(screen.queryByText(/This kiosk is set up for/)).toBeNull();
 });
 
@@ -1117,6 +1156,7 @@ it('choosing Front saves it on this kiosk and closes the wizard', async () => {
 
   expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
   expect(readWebLabelKind()).toBe('front');
+  expect(readWebLabelPrinting()).toBe(true);
   expect(apiMock.submitKioskSetup).toHaveBeenCalledTimes(1);   // nothing more goes to the portal
   expect(screen.queryByText('Printer step for front')).toBeNull();   // that is the laptop's step
 });
@@ -1133,18 +1173,41 @@ it('choosing Top (the default) is saved too', async () => {
   expect(readWebLabelKind()).toBe('top');
 });
 
-it('Back from What it prints returns to the scan type step', async () => {
+it('a kiosk that said No turns printing back on with Yes and a kind', async () => {
+  writeWebLabelPrintingOff();
+  const user = userEvent.setup();
+  renderPage();
+  await goToWebPrintStep(user);
+  expect(cardFor('No').getAttribute('aria-selected')).toBe('true');   // the kiosk's own answer
+  await user.click(cardFor('Yes'));
+  await user.click(cardFor('Top labels'));
+
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  expect(readWebLabelPrinting()).toBe(true);
+});
+
+it('Back from What it prints returns to the label printing question', async () => {
   const user = userEvent.setup();
   renderPage();
   await goToWebKindStep(user);
   await user.click(screen.getByRole('button', { name: 'Back' }));
 
-  expect(screen.getByText('Step 3 of 4 · Scan type')).toBeTruthy();
-  expect(screen.getByText('Which scan type?')).toBeTruthy();
-  expect(cardFor('RFID 1 - Cage Exit').getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByText('Will this kiosk print labels?')).toBeTruthy();
+  expect(cardFor('Yes').getAttribute('aria-selected')).toBe('true');
 });
 
-it('Change setup on a web kiosk walks the same four steps and ends at What it prints', async () => {
+it('Back from the label printing question returns to the scan type step', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await goToWebPrintStep(user);
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+
+  expect(screen.getByText('Step 3 of 4 · Scan type')).toBeTruthy();
+  expect(screen.getByText('Which scan type?')).toBeTruthy();
+  expect(cardFor('Pre-Stage').getAttribute('aria-selected')).toBe('true');
+});
+
+it('Change setup on a web kiosk walks the same four steps and asks again from the question', async () => {
   const user = userEvent.setup();
   renderPage();
   await goToWebKindStep(user);
@@ -1154,9 +1217,10 @@ it('Change setup on a web kiosk walks the same four steps and ends at What it pr
   await user.click(screen.getByRole('button', { name: 'Change setup' }));
   await user.click(cardFor('NAP11 Hall Migration (demo)'));
   await user.click(cardFor('NAP22 Hall'));
-  await user.click(cardFor('RFID 2 - Dock'));
+  await user.click(cardFor('Pre-Stage'));
 
-  await screen.findByText('What does this kiosk print?');
+  await screen.findByText('Will this kiosk print labels?');
+  await user.click(cardFor('Yes'));
   expect(cardFor('Front labels').getAttribute('aria-selected')).toBe('true');
 });
 
@@ -1318,7 +1382,7 @@ it('shows the administrator banner while the clear notice is up, and drops it on
 
   await goToScanStep(user);
   expect(screen.getByText(BANNER)).toBeTruthy();   // still up mid-wizard
-  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await user.click(cardFor('Pre-Stage'));
   await chooseTopLabels(user);
 
   expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
@@ -1330,7 +1394,7 @@ it('shows the banner on the summary view too, when a clear arrives over a comple
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
     siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
-    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+    scanStatus: 'pre_stage', scanLabel: 'Pre-Stage',
   });
   writeSetupState('complete');
   localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'x', acked: true, notice: true }));
@@ -1349,7 +1413,7 @@ it('a clear landing while the summary is open opens the wizard and loads the mov
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
     siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
-    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+    scanStatus: 'pre_stage', scanLabel: 'Pre-Stage',
   });
   writeSetupState('complete');
   renderPage();
@@ -1371,7 +1435,7 @@ it('a clear landing while the wizard is already open restarts it at step 1 and r
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
     siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
-    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+    scanStatus: 'pre_stage', scanLabel: 'Pre-Stage',
   });
   writeSetupState('complete');
   const user = userEvent.setup();

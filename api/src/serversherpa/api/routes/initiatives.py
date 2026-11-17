@@ -16,11 +16,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.scope import roster_row_condition, scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
+    AssetTotalsOut, ImportCommitIn, ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
     InitiativeAssetSummary, InitiativeAssetUpdateIn, InitiativeCreateIn,
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
@@ -28,11 +28,13 @@ from serversherpa.api.schemas import (
     InitiativePersonUpdateIn, InitiativeUpdateIn, KioskPasswordOut, PlacementRecheckOut,
 )
 from serversherpa.assets.placement import asset_placements
+from serversherpa.clientgroups.service import rematch_initiative, rematch_rows
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.imports.client_choices import ChoiceError, stored_choices
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
@@ -471,6 +473,10 @@ async def update_initiative(
         if learning_codes.EXPIRY_FIELDS & changes.keys():
             await db.flush()
             await learning_codes.refresh_expiry(db, initiative)
+        if "client_id" in changes:
+            # the move's Owner values now resolve against another client's groups
+            await db.flush()
+            await rematch_initiative(db, initiative.id)
         await db.commit()
     except IntegrityError as exc:
         # a racing save took the same code, or a racing admin the same
@@ -1015,12 +1021,18 @@ NULLABLE_TEXT_ASSET_FIELDS = (
 async def _initiative_asset_rows(
     db: DbSession, initiative_id: uuid.UUID, actor: AuthContext,
 ) -> list[InitiativeAssetOut]:
-    rows = (await db.execute(
+    query = (
         select(InitiativeAsset, Asset)
         .join(Asset, Asset.id == InitiativeAsset.asset_id)
         .where(InitiativeAsset.initiative_id == initiative_id)
         .order_by(InitiativeAsset.priority_wave.nullslast(),
-                  natural(Asset.serial_number)))).all()
+                  natural(Asset.serial_number)))
+    # client groups: a restricted login sees only its groups' rows (never
+    # leaning on an assets grant — the roster needs initiatives:view alone)
+    row_cond = roster_row_condition(actor.access)
+    if row_cond is not None:
+        query = query.where(row_cond)
+    rows = (await db.execute(query)).all()
     # one merged vocabulary (0022) labels both the roster row's own
     # status and the embedded asset's status
     statuses = {s.key: (s.label, s.color) for s in await db.scalars(
@@ -1094,6 +1106,22 @@ async def list_initiative_assets(
 ) -> list[InitiativeAssetOut]:
     await _get_initiative(db, initiative_id, actor)
     return await _initiative_asset_rows(db, initiative_id, actor)
+
+
+@router.get("/{initiative_id}/asset-totals", response_model=AssetTotalsOut)
+async def initiative_asset_totals(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "view"),
+) -> AssetTotalsOut:
+    """True roster counts for the move: every row, whatever groups the
+    actor sees (the list itself may be shorter for a restricted login)."""
+    await _get_initiative(db, initiative_id, actor)
+    counts = dict((await db.execute(
+        select(InitiativeAsset.status, func.count())
+        .where(InitiativeAsset.initiative_id == initiative_id)
+        .group_by(InitiativeAsset.status))).all())
+    return AssetTotalsOut(total=sum(counts.values()), by_status=counts)
 
 
 async def _already_attached(
@@ -1232,6 +1260,9 @@ async def update_initiative_asset(
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(assoc.initiative_id), action="asset_update",
               changes=changes)
+    if "owner" in changes:
+        await db.flush()
+        await rematch_rows(db, [assoc.id])
     if "status" in changes:
         # A status edit is a scan event: record it and run the rules
         # engine here, anchored to THIS initiative. A failing rule rolls
@@ -1360,8 +1391,12 @@ async def get_move_asset_import_job(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    # read-only status poll: scope-checked, but not globally anchored
-    return await _get_import_job(db, job_id, actor)
+    # read-only status poll: scope-checked first (a foreign id reads as 404),
+    # then global like every other import route: the results name the clients
+    # that own flagged serials
+    job = await _get_import_job(db, job_id, actor)
+    _require_global(actor)
+    return job
 
 
 @router.post("/assets/import-jobs/{job_id}/commit",
@@ -1369,6 +1404,7 @@ async def get_move_asset_import_job(
 async def commit_move_asset_import_job(
     job_id: uuid.UUID,
     db: DbSession,
+    body: ImportCommitIn | None = None,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
     job = await _get_import_job(db, job_id, actor)
@@ -1376,6 +1412,30 @@ async def commit_move_asset_import_job(
     _require_move_job(job)
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
+    # the check ran against the move's client at the time; if the move has
+    # changed hands since, its conflicts (and Continue's target) are wrong
+    check_client = ((job.results or {}).get("summary") or {}).get("client_id")
+    move_client = await db.scalar(
+        select(Initiative.client_id).where(Initiative.id == job.initiative_id))
+    if check_client != (str(move_client) if move_client else None):
+        raise _err(409, "check_stale_client")
+    # every distinct serial the check flagged as another client's needs a
+    # choice; each is stored with the owner the check saw (a Continue
+    # applies only while the serial still belongs to that client)
+    try:
+        stored = stored_choices(body.client_choices if body else None,
+                                (job.results or {}).get("details"))
+    except ChoiceError as exc:
+        if exc.serials is not None:
+            raise _err(422, exc.code, serials=exc.serials) from None
+        raise _err(422, exc.code) from None
+    # ALWAYS replace the stored choices with this job's own flagged serials
+    # ({} when none): choices inherited or left from an earlier attempt must
+    # never apply to a conflict that first appears at commit time (that row
+    # is skipped without a fresh decision). Reassign, never mutate in place.
+    # check_client_id lets the worker repeat the stale-client guard.
+    job.options = {**(job.options or {}), "client_choices": stored,
+                   "check_client_id": check_client}
     job.phase = "commit"
     job.committed_by = actor.person.id      # not always the uploader: the worker tells both
     job.status = "queued"
@@ -1437,7 +1497,8 @@ async def reprocess_move_asset_import_job(
         kind=parent.kind, initiative_id=parent.initiative_id,
         created_by=actor.person.id, filename=parent.filename,
         file_key=parent.file_key,
-        options={**(parent.options or {}),
+        options={**{k: v for k, v in (parent.options or {}).items()
+                    if k not in ("client_choices", "check_client_id")},
                  "only_rows": review_rows,
                  "reprocess_of": str(parent.id)},
         phase="validate", status="queued")

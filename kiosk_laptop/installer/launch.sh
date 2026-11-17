@@ -7,6 +7,12 @@
 # the installer found (KIOSK_BROWSER in config.env), in app mode; when it found
 # none, Chrome or Edge is looked for again, else the default browser opens.
 #
+# Linux: when kiosk_session.py is installed next to this script and python3 and
+# a browser are there, the kiosk session takes over (kiosk_session.py: the
+# waiting page, Chrome in --kiosk mode with a watcher, the desktop lock, the
+# Esc → PIN exit). Otherwise, and on macOS always, the kiosk opens in an app
+# window as before.
+#
 # Environment: KIOSK_LAUNCH_TIMEOUT_S (default 300), KIOSK_LAUNCH_POLL_S (2).
 # Testing hooks: KIOSK_LAUNCH_LIB=1 defines the functions without running main.
 # Written for bash 3.2 (macOS's bash).
@@ -76,7 +82,36 @@ open_kiosk() {
   fi
 }
 
+have_python3() { command -v python3 >/dev/null 2>&1; }
+session_ready() { [ -f "$KIOSK_DIR/kiosk_session.py" ] && have_python3; }
+# run_session BROWSER: the Linux kiosk session, as a child so a crash at startup
+# (a bad nightly refresh) still leaves a way back. Returns its exit code.
+run_session() { python3 "$KIOSK_DIR/kiosk_session.py" run --browser "$1"; }
+# restore_session_desktop: the session can't start, so a desktop lock an
+# earlier session left is put back (never leave the shortcuts off).
+restore_session_desktop() { python3 "$KIOSK_DIR/kiosk_session.py" restore >/dev/null 2>&1 || true; }
+# stop_session_chrome BROWSER: a kiosk Chrome the session left behind (it
+# crashed, or ended without closing it) is closed before the app window opens.
+stop_session_chrome() { python3 "$KIOSK_DIR/kiosk_session.py" stop-chrome --browser "$1" >/dev/null 2>&1 || true; }
+
 main() {
+  local b rc
+  if [ "$OS" = Linux ] && session_ready; then
+    b=$(browser)
+    [ -n "$b" ] || b=$(find_browser)
+    if [ -n "$b" ]; then
+      rc=0
+      run_session "$b" || rc=$?
+      # 0 = a normal PIN exit to the desktop: nothing more to do.
+      [ "$rc" -eq 0 ] && return 0
+      # Any other code falls back: 3 = the kiosk app has no lockdown (an older
+      # kiosk image than this helper), 1 = the browser can't start or keeps
+      # closing, anything else = it crashed. Close its Chrome, put the desktop
+      # back, then the plain app window below.
+      stop_session_chrome "$b"
+    fi
+    restore_session_desktop
+  fi
   wait_for_kiosk || true
   open_kiosk
 }

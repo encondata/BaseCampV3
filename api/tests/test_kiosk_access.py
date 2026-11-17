@@ -12,8 +12,8 @@ from tests.test_sites_api import make_login
 from tests.test_status_values_write import _make
 
 KIOSK_ROLES = ("developer", "founder", "super_admin", "admin", "staff", "worker")
-NO_KIOSK_ROLES = ("client_owner", "client_admin", "client_viewer", "vendor_owner",
-                  "vendor_admin", "vendor_viewer", "external")
+NO_KIOSK_ROLES = ("client_owner", "client_admin", "client_viewer", "client_individual",
+                  "vendor_owner", "vendor_admin", "vendor_viewer", "external")
 
 
 def test_kiosk_resource_registered():
