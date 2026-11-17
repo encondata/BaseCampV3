@@ -281,6 +281,11 @@ final class AppContainer {
         async let loaded: Void = outbox.load()
         _ = await (restored, hydrated, loaded)
         authChanged()
+        #if DEBUG
+        // UI tests pass this to check the Face ID sign-in sheet's layout: the real sheet with sample
+        // words, over whatever the launch shows (no key, no prompt, no server call).
+        if ProcessInfo.processInfo.arguments.contains("-uiTestEnrollOffer") { enrollOffer.showSampleForUITest() }
+        #endif
     }
 
     /// The restored sync reads `done`, so the builder's first look at it builds (Android starts

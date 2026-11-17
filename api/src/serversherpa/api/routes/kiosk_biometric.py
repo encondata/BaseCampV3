@@ -62,6 +62,7 @@ from serversherpa.api.schemas import (
     SessionOut,
 )
 from serversherpa.db.models import BiometricKey, Device, Person, UserAccount
+from serversherpa.security import address_blocks
 from serversherpa.security.tokens import TokenError
 from serversherpa.services import auth as auth_service
 from serversherpa.services import biometric
@@ -230,6 +231,14 @@ async def challenge(
     return out
 
 
+# Refusals that count toward a sign-in address block (SS-487): an unknown
+# key or a signature that does not verify. An expired or spent challenge
+# (bad_challenge) is not a wrong credential and never counts. Account-specific refusals after a valid
+# signature (account_disabled, kiosk_not_allowed, password_change_required,
+# biometric_expired, not_personal_device) never count.
+_COUNTED_SIGN_IN = frozenset({"no_biometric", "bad_signature"})
+
+
 @router.post("/sign-in", response_model=SessionOut)
 async def sign_in(
     body: BiometricSignInIn, request: Request, response: Response, db: DbSession,
@@ -238,6 +247,7 @@ async def sign_in(
     as /auth/login answers a kiosk (body and ss_refresh cookie). Each
     attempt spends its challenge. Account-specific refusals come only
     after the signature proves the key."""
+    await address_blocks.raise_if_blocked(db, request)
     raw_ip = rate_limit_ip(request)
     ip = _inet_or_none(raw_ip)
     bucket = move_login_bucket(raw_ip)
@@ -245,8 +255,11 @@ async def sign_in(
         raise _err(429, "biometric_rate_limited")
 
     async def fail(code: str, status: int) -> HTTPException:
-        return await _move_login_failed(db, ip, bucket, code, status=status,
-                                        method="biometric", key_id=str(body.key_id))
+        error = await _move_login_failed(db, ip, bucket, code, status=status,
+                                         method="biometric", key_id=str(body.key_id))
+        if code in _COUNTED_SIGN_IN:
+            await address_blocks.record_failure(db, request, address_blocks.BIOMETRIC_SIGN_IN)
+        return error
 
     try:
         key_id, nonce_id = biometric.decode_sign_in_challenge(body.challenge)

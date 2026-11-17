@@ -11,6 +11,12 @@ const api = vi.hoisted(() => ({
 vi.mock('./api', async (importActual) => ({ ...(await importActual<typeof import('./api')>()), ...api }));
 const sounds = vi.hoisted(() => ({ playNotificationSound: vi.fn(() => true), installAudioUnlock: vi.fn(() => () => {}) }));
 vi.mock('./notificationSounds', () => sounds);
+const stream = vi.hoisted(() => ({
+  live: false, onChange: null as null | (() => void),
+}));
+vi.mock('./inboxStream', () => ({
+  useInboxStream: (_id: unknown, onChange: () => void) => { stream.onChange = onChange; return stream.live; },
+}));
 const auth = vi.hoisted(() => ({
   person: { id: 'p1' } as { id: string } | null,
   preferences: { notif: { sound: 'ping', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } } },
@@ -18,7 +24,7 @@ const auth = vi.hoisted(() => ({
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
 
 const {
-  NotificationsProvider, useNotifications, INBOX_POLL_MS, LOCAL_TOAST_MS, ACTION_TOAST_MS,
+  NotificationsProvider, useNotifications, INBOX_POLL_MS, INBOX_POLL_LIVE_MS, LOCAL_TOAST_MS, ACTION_TOAST_MS,
 } = await import('./notificationsContext');
 
 const inbox = (items: Inbox['items']): Inbox =>
@@ -44,6 +50,8 @@ beforeEach(() => {
   api.hideInboxItem.mockResolvedValue(undefined);
   api.clearReadInbox.mockResolvedValue(undefined);
   auth.person = { id: 'p1' };
+  stream.live = false;
+  stream.onChange = null;
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
@@ -144,4 +152,136 @@ it('plays the chosen sound only when NEW items arrive after the first poll', asy
   expect(sounds.playNotificationSound).toHaveBeenCalledWith('ping');
   await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
   expect(sounds.playNotificationSound).toHaveBeenCalledTimes(1);    // same items again: no replay
+});
+
+const blockedItem = (id: string, payload: Record<string, unknown> = {}, read = false) => ({
+  ...item(id, read), kind: 'address_blocked', category: 'security' as const, link: '/system/blocked-addresses',
+  title: 'Sign-ins blocked from 203.0.113.7 for 1 hour (10 failed attempts)',
+  payload: { address: '203.0.113.7', level: 1, ends_at: new Date(Date.now() + 3_600_000).toISOString(),
+    failure_count: 10, state: 'open', ...payload },
+});
+
+it('the first poll toasts an unread open address block, but not a read one or one that ended', async () => {
+  api.listInbox.mockResolvedValue(inbox([
+    blockedItem('blk'), blockedItem('old', {}, true),
+    blockedItem('gone', { ends_at: new Date(Date.now() - 1000).toISOString() }),
+    blockedItem('done', { state: 'cleared', decided_by: 'Ada Admin' }), item('a'),
+  ]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText(/new:blk$/);
+  expect(screen.getByText(/new:blk$/).textContent).toContain('new:blk');
+});
+
+it('a later poll drops an address-block toast once another admin has decided it', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listInbox.mockResolvedValue(inbox([item('a')]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk'), item('a')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:blk');
+  api.listInbox.mockResolvedValue(inbox([
+    blockedItem('blk', { state: 'cleared', decided_by: 'Ada Admin' }, true), item('a'),
+  ]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:1 new:');
+});
+
+it('a later poll keeps other new toasts while it drops a decided address block', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listInbox.mockResolvedValue(inbox([]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:0 new:');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk'), item('b')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:blk,b');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk', { state: 'permanent', decided_by: 'Ada Admin' }, true), item('b')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:1 new:b');
+});
+
+it('a fresh card for the same block (it moved up a rung) replaces its old toast', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const key = { blocked_at: '2026-11-10T12:00:00+00:00' };
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk', key), item('a')]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:2 new:blk');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk2', { ...key, level: 2 }), item('a')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:blk2');
+});
+
+it('a block that already ended by the time a poll first sees it does not toast', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listInbox.mockResolvedValue(inbox([]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:0 new:');
+  api.listInbox.mockResolvedValue(inbox([
+    blockedItem('gone', { ends_at: new Date(Date.now() - 1000).toISOString() }), item('b'),
+  ]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:b');
+});
+
+it('a stream signal re-reads the inbox and toasts a new item', async () => {
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  api.listInbox.mockResolvedValue(inbox([item('b'), item('a')]));
+  await act(async () => { stream.onChange!(); });
+  await screen.findByText('unread:2 new:b');
+  expect(sounds.playNotificationSound).toHaveBeenCalledTimes(1);
+});
+
+it('coalesces a burst: three signals while a read is in flight cause one more read, not three', async () => {
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  api.listInbox.mockClear();
+  const resolvers: Array<(v: Inbox) => void> = [];
+  api.listInbox.mockImplementation(() => new Promise<Inbox>((r) => { resolvers.push(r); }));
+  await act(async () => { stream.onChange!(); });
+  expect(api.listInbox).toHaveBeenCalledTimes(1);
+  await act(async () => { stream.onChange!(); stream.onChange!(); stream.onChange!(); });
+  expect(api.listInbox).toHaveBeenCalledTimes(1);
+  await act(async () => { resolvers[0]!(inbox([item('a')])); });
+  await waitFor(() => expect(api.listInbox).toHaveBeenCalledTimes(2));
+  await act(async () => { resolvers[1]!(inbox([item('a')])); });
+  expect(api.listInbox).toHaveBeenCalledTimes(2);
+});
+
+it('a refresh requested during a read resolves only after the follow-up read', async () => {
+  let n: ReturnType<typeof useNotifications> | null = null;
+  function Grab() { n = useNotifications(); return null; }
+  render(<NotificationsProvider><Grab /></NotificationsProvider>);
+  await waitFor(() => expect(api.listInbox).toHaveBeenCalledTimes(1));
+  await act(async () => { await Promise.resolve(); });
+  api.listInbox.mockClear();
+  const resolvers: Array<(v: Inbox) => void> = [];
+  api.listInbox.mockImplementation(() => new Promise<Inbox>((r) => { resolvers.push(r); }));
+  let done = false;
+  await act(async () => { void n!.refresh(); });
+  await act(async () => { void n!.refresh().then(() => { done = true; }); });
+  await act(async () => { resolvers[0]!(inbox([])); });
+  expect(done).toBe(false);
+  await waitFor(() => expect(resolvers).toHaveLength(2));
+  await act(async () => { resolvers[1]!(inbox([])); });
+  await waitFor(() => expect(done).toBe(true));
+});
+
+it('polls every 120 s while live and every 30 s while not', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  stream.live = true;
+  const { unmount } = render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  api.listInbox.mockClear();
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS * 3 + 100); });
+  expect(api.listInbox).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_LIVE_MS - INBOX_POLL_MS * 3); });
+  expect(api.listInbox).toHaveBeenCalledTimes(1);
+  unmount();
+  stream.live = false;
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  api.listInbox.mockClear();
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  expect(api.listInbox).toHaveBeenCalledTimes(1);
 });

@@ -110,6 +110,8 @@ KINDS: dict[str, KindInfo] = {
     "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",
                                brief=True, owner_always=True),
+    # In-app only: a sign-in block is an admin to-do, never an email.
+    "address_blocked": KindInfo("security", "Sign-ins blocked", email=False),
 }
 
 

@@ -19,6 +19,7 @@ from serversherpa.db.models import (
     Person, PersonRole, RolePermission, UserAccount,
 )
 from serversherpa.notifications.inbox import notify
+from serversherpa.notifications.live import signal_inboxes
 from serversherpa.services.audit import audit
 
 
@@ -183,12 +184,13 @@ async def resolve_copies(db: AsyncSession, request_id: uuid.UUID, state: str,
     the request is decided (any state but pending/open) the copies are also
     marked read, for everyone: there is nothing left to act on. A copy that
     was already read keeps its first read time."""
-    await db.execute(text(
+    changed = await db.scalars(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
         "'decided_by', CAST(:decided_by AS text)), "
         "read_at = CASE WHEN CAST(:state AS text) IN ('pending', 'open') "
         "THEN read_at ELSE COALESCE(read_at, now()) END "
         "WHERE kind = 'membership_request' "
-        "AND payload ->> 'request_id' = CAST(:request_id AS text)"),
+        "AND payload ->> 'request_id' = CAST(:request_id AS text) RETURNING person_id"),
         {"state": state, "decided_by": decided_by, "request_id": str(request_id)})
+    await signal_inboxes(db, changed.all())

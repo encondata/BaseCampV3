@@ -12,8 +12,11 @@
  * (U numbers mirrored onto both rails with no every-5 emphasis, legend
  * chips moved from the modal header to its footer).
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const rackPdf = vi.hoisted(() => ({ exportRackPdf: vi.fn() }));
+vi.mock('../../lib/rackPdf', () => rackPdf);
 
 import RackViewModal, { FACEPLATE_USABLE_WIDTH } from './RackViewModal';
 import type { InitiativeAssetRow, InitiativeAssetSummary } from '../../lib/api';
@@ -50,7 +53,7 @@ function makeRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetRo
 describe('RackViewModal (render smoke)', () => {
   it('renders a populated REAR elevation with a verified faceplate and its label', () => {
     render(
-      <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
     );
     expect(screen.getByText('Rack R1 — Source')).toBeTruthy();
     expect(screen.getByText('w1-hs4-m0407 (rear)')).toBeTruthy();
@@ -68,7 +71,7 @@ describe('RackViewModal (render smoke)', () => {
       makeRow({ id: 'n2', source_ru: 33.2, source_position: null,
                 asset: makeAsset({ id: 'a-n2', name: 'nvlarch03-mgmt030', ru_size: null }) }),
     ];
-    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />);
     const devices = screen.getByRole('img', { name: 'Rack R1 — Source — front elevation' });
     const nodes = screen.getByRole('img', { name: 'Rack R1 — Source — front nodes elevation' });
     expect(screen.getByText('FRONT · NODES')).toBeTruthy();
@@ -97,7 +100,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('renders one elevation only when no device on the side houses nodes', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ id: 'a', source_ru: 5, source_position: null }),
       makeRow({ id: 'b', source_ru: 40, source_position: null,
                 asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'top-dev' }) }),
@@ -109,7 +112,7 @@ describe('RackViewModal (render smoke)', () => {
   it('draws a node with no chassis as a dashed orphan block and names it in the list', () => {
     const rows = [makeRow({ id: 'o', source_ru: 3.5, source_position: null,
                             asset: makeAsset({ id: 'a-o', name: 'san-01', ru_size: 1 }) })];
-    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />);
     expect(document.querySelector('.rack-faceplate-orphan')).toBeTruthy();
     // both the SVG faceplate label and the device-list row carry the "! "
     // prefix for an orphan; check each surface on its own so a regression
@@ -129,7 +132,7 @@ describe('RackViewModal (render smoke)', () => {
       makeRow({ id: 'n1', source_ru: 33.1, source_position: null,
                 asset: makeAsset({ id: 'a-n1', name: 'node-a1', serial_number: 'SN-N1', ru_size: null }) }),
     ];
-    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />);
     const nodes = screen.getByRole('img', { name: /front nodes elevation/i });
     fireEvent.mouseEnter(within(nodes).getByText('node-a1').closest('g')!);
     const tip = document.querySelector('.rack-tooltip') as HTMLElement;
@@ -142,7 +145,7 @@ describe('RackViewModal (render smoke)', () => {
 
   it('omits the REAR elevation entirely when nothing is rear-mounted, centering FRONT alone', () => {
     render(
-      <RackViewModal
+      <RackViewModal moveName="M1"
         rackName="R1" side="source"
         rows={[makeRow({ source_position: 'front' })]} onClose={() => {}}
       />,
@@ -155,7 +158,7 @@ describe('RackViewModal (render smoke)', () => {
 
   it('renders the FRONT elevation\'s own empty-state message when the rack/side has no assets at all', () => {
     render(
-      <RackViewModal rackName="R1" side="destination" rows={[makeRow()]} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="destination" rows={[makeRow()]} onClose={() => {}} />,
     );
     // makeRow's default row only has a SOURCE placement, so the destination
     // side has nothing -> FRONT renders empty, REAR is omitted (0 blocks).
@@ -178,7 +181,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     // Squeezed to a 2-lane width here, so the label truncates (exact
     // truncation math is covered by the dedicated `rackLabel` unit tests
@@ -203,7 +206,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
 
     const headings = [...container.querySelectorAll('.rack-elevation-heading')]
@@ -242,7 +245,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     const realFaceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
     const ghostFaceplates = Array.from(container.querySelectorAll('.rack-faceplate-ghost'));
@@ -273,7 +276,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     const faceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
     expect(faceplates).toHaveLength(3);
@@ -287,7 +290,7 @@ describe('RackViewModal (render smoke)', () => {
 
   it('renders posts as clean outlined rails with no cage-nut hole pattern (round 3)', () => {
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
     );
     expect(container.querySelectorAll('.rack-rail-hole')).toHaveLength(0);
     // makeRow's default row renders both elevations (FRONT always, REAR
@@ -311,7 +314,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
 
     // No tooltip until hovered.
@@ -340,7 +343,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
     fireEvent.mouseEnter(faceplateGroup);
@@ -360,7 +363,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     // FRONT always renders; with a rear-mounted asset, it shows that
     // asset's ghost (blank box, no visible label) rather than staying empty.
@@ -381,7 +384,7 @@ describe('RackViewModal (render smoke)', () => {
 
   it('mirrors U numbers onto both rails with no every-5 emphasis (round 4)', () => {
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={[makeRow({ source_position: 'front' })]} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={[makeRow({ source_position: 'front' })]} onClose={() => {}} />,
     );
     // Only FRONT renders here (no rear-mounted asset) -> one elevation.
     const labels = Array.from(container.querySelectorAll('.rack-u-label'));
@@ -398,7 +401,7 @@ describe('RackViewModal (render smoke)', () => {
 
   it('moves the Verified/Planned legend from the modal header to the footer', () => {
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
     );
     const head = container.querySelector('.modal-head')!;
     const foot = container.querySelector('.modal-foot')!;
@@ -410,7 +413,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('fills faceplates with the category color and contrast label', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ source_position: null, asset: makeAsset({
         model_category: 'server', model_category_label: 'Server',
         model_category_color: '#1668a7' }) }),
@@ -422,7 +425,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('uses neutral fill + dark text when uncategorized', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}}
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}}
            rows={[makeRow({ source_position: null })]} />);
     const plate = document.querySelector('rect.rack-faceplate')!;
     expect(plate.getAttribute('fill')).toBe('#eef0f3');
@@ -431,7 +434,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('borders: verified solid green, planned dashed dark; no vents or LED', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ id: 'v', source_ru: 10, source_verified: true, source_position: null }),
       makeRow({ id: 'p', source_ru: 20, source_verified: false, source_position: null,
                 asset: makeAsset({ id: 'a2', serial_number: 'SN-2', name: 'dev-2' }) }),
@@ -459,7 +462,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
     fireEvent.mouseEnter(faceplateGroup);
@@ -476,7 +479,7 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     const { container } = render(
-      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+      <RackViewModal moveName="M1" rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
     const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
     fireEvent.mouseEnter(faceplateGroup);
@@ -484,7 +487,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('lists devices top-down beside the elevations', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ id: 'low', source_ru: 5, source_position: null }),
       makeRow({ id: 'high', source_ru: 40, source_position: null,
                 asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'top-dev',
@@ -499,7 +502,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('groups the list under FRONT/REAR when a rear elevation renders', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ id: 'f', source_ru: 5, source_position: null }),
       makeRow({ id: 'r', source_ru: 40, source_position: 'rear',
                 asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'rear-dev' }) }),
@@ -509,7 +512,7 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('legend shows categories present plus the border key', () => {
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ source_position: null, asset: makeAsset({
         model_category: 'server', model_category_label: 'Server',
         model_category_color: '#1668a7' }) }),
@@ -524,7 +527,7 @@ describe('RackViewModal (render smoke)', () => {
     const write = vi.fn();
     const win = { document: { write, close: vi.fn() } };
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window);
-    render(<RackViewModal rackName="R1" side="source" onClose={() => {}}
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}}
            rows={[makeRow({ source_position: null })]} />);
     fireEvent.click(screen.getByText('Print layout'));
     expect(openSpy).toHaveBeenCalledWith('', '_blank');
@@ -534,9 +537,59 @@ describe('RackViewModal (render smoke)', () => {
   });
 });
 
+describe('Export PDF', () => {
+  const rows = [
+    makeRow({ id: 'f', source_ru: 5, source_position: null }),
+    makeRow({ id: 'r', source_ru: 40, source_position: 'rear',
+              asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'rear-dev' }) }),
+  ];
+
+  it('sits beside Print layout and hands the exporter the move, rack, side and on-screen frames', async () => {
+    rackPdf.exportRackPdf.mockResolvedValue(undefined);
+    render(<RackViewModal moveName="NAP11 Migration" rackName="R1" side="source"
+                          onClose={() => {}} rows={rows} />);
+    const button = screen.getByRole('button', { name: 'Export PDF' });
+    expect(button.className).toBe('mini-btn');
+    expect(button.parentElement).toBe(screen.getByRole('button', { name: 'Print layout' }).parentElement);
+    fireEvent.click(button);
+    expect(rackPdf.exportRackPdf).toHaveBeenCalledTimes(1);
+    const input = rackPdf.exportRackPdf.mock.calls[0][0];
+    expect(input).toMatchObject({
+      moveName: 'NAP11 Migration', rackName: 'R1', sideLabel: 'Source', grouped: true,
+    });
+    expect(input.frames.map((f: { heading: string }) => f.heading)).toEqual(['FRONT', 'REAR']);
+    for (const f of input.frames) expect(f.svg.tagName.toLowerCase()).toBe('svg');
+    expect(input.listRows.map((r: { name: string }) => r.name)).toEqual(['w1-hs4-m0407', 'rear-dev']);
+    expect(await screen.findByRole('button', { name: 'Export PDF' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('reads Exporting… and is disabled while the export runs', async () => {
+    let finish: () => void = () => {};
+    rackPdf.exportRackPdf.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={rows} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+    const busy = screen.getByRole('button', { name: 'Exporting…' });
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { finish(); });
+    expect((screen.getByRole('button', { name: 'Export PDF' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows a one-line alert when the export fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    rackPdf.exportRackPdf.mockRejectedValue(new Error('boom'));
+    render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={rows} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+    expect((await screen.findByRole('alert')).textContent)
+      .toBe("Couldn't make the PDF. Use Print layout instead.");
+    expect(screen.getByRole('button', { name: 'Export PDF' })).toBeTruthy();
+    errorSpy.mockRestore();
+  });
+});
+
 describe('rack height is dynamic', () => {
   it('renders 52U by default and grows to the highest device plus headroom, rounded to even', () => {
-    const { container } = render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    const { container } = render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ id: 'top', source_ru: 57, source_position: null,
                 asset: makeAsset({ id: 'a-top', serial_number: 'SN-T', name: 'tall', ru_size: 2 }) }),
     ]} />);
@@ -548,7 +601,7 @@ describe('rack height is dynamic', () => {
   });
 
   it('never renders a device at RU 0 — it is not a mounting position', () => {
-    const { container } = render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    const { container } = render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
       makeRow({ id: 'zero', source_ru: 0, source_position: null }),
       makeRow({ id: 'one', source_ru: 1, source_position: null,
                 asset: makeAsset({ id: 'a1', serial_number: 'SN-1', name: 'bottom-dev' }) }),
@@ -560,7 +613,7 @@ describe('rack height is dynamic', () => {
 });
 
 it('names the assets that are assigned to the rack but unplaced (RU 0)', () => {
-  render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+  render(<RackViewModal moveName="M1" rackName="R1" side="source" onClose={() => {}} rows={[
     makeRow({ id: 'z1', source_ru: 0, source_position: null }),
     makeRow({ id: 'z2', source_ru: 0, source_position: null, asset: makeAsset({ id: 'a2', serial_number: 'SN-2', name: 'dev-2' }) }),
     makeRow({ id: 'ok', source_ru: 5, source_position: null, asset: makeAsset({ id: 'a3', serial_number: 'SN-3', name: 'dev-3' }) }),

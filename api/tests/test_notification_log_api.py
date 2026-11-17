@@ -603,7 +603,7 @@ async def test_kinds_report_critical_and_locked(client, db):
     await db.commit()
     resp = await client.get(KINDS_PATH, headers=hdrs)
     assert resp.status_code == 200, resp.text
-    always = {"password_expiring", "totp_enrolled"}
+    always = {"password_expiring", "totp_enrolled", "address_blocked"}
     assert resp.json() == [
         {"kind": kind, "label": info.label, "category": info.category, "email": info.email,
          "owner_always": info.owner_always,
@@ -621,6 +621,9 @@ async def test_kinds_report_critical_and_locked(client, db):
         {"kind": "totp_enrolled", "label": "Two-factor authentication enrolled",
          "category": "security", "email": True, "owner_always": True, "critical": True,
          "locked": True, "watchable": False, "everywhere": False, "reaches": []},
+        {"kind": "address_blocked", "label": "Sign-ins blocked", "category": "security",
+         "email": False, "owner_always": False, "critical": True, "locked": True,
+         "watchable": False, "everywhere": False, "reaches": []},
     ]
     # the two status changes, Device offline and Status rule matched can be watched, on the
     # things they reach (a rule's notice never everywhere)

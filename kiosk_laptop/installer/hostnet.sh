@@ -24,12 +24,17 @@
 # bridge adapters (docker0, br-*, veth*, bridge100) and adapters that are
 # down included. The edge's printer guard refuses all of them, so a printer
 # address can never lead back to the laptop.
+# On Linux it also writes "host_os": "linux" (the kiosk page turns the Linux lockdown on with it); macOS's file has no such key.
 # Prints nothing; exits 1 (keeping the old file, which then goes stale) when it
 # can't read or write.
 #
 # The data folder: KIOSK_DATA_DIR, else config.env's KIOSK_DATA_DIR, else the
 # OS default. Testing hooks: KIOSK_HOSTNET_LIB=1 defines the functions without
-# running main; KIOSK_SYSFS_NET replaces /sys/class/net. Written for bash 3.2
+# running main; KIOSK_SYSFS_NET replaces /sys/class/net (and see the label
+# printer block for its own).
+#
+# On Linux as root it also keeps the USB label printers working for Chrome's
+# WebUSB (label_upkeep, after the file is written, best-effort and silent). Written for bash 3.2
 # (macOS's bash).
 set -uo pipefail
 
@@ -193,11 +198,13 @@ self_only() {
   '
 }
 
-# to_json STAMP [GATEWAY [SELF]]: "name<TAB>ipv4<TAB>prefix" lines on stdin ->
-# the file's JSON, with a "gateway" key after the interfaces when GATEWAY
-# isn't empty, then "self_addresses" (SELF split on spaces) when SELF is given.
+# to_json STAMP [GATEWAY [SELF [HOST_OS]]]: "name<TAB>ipv4<TAB>prefix" lines on
+# stdin -> the file's JSON, with a "gateway" key after the interfaces when
+# GATEWAY isn't empty, then "self_addresses" (SELF split on spaces) when SELF is
+# given, then "host_os" when HOST_OS isn't empty.
 to_json() {
-  awk -F '\t' -v stamp="$1" -v gw="${2:-}" -v hasself="$([ $# -ge 3 ] && echo 1 || echo 0)" -v selfs="${3:-}" '
+  awk -F '\t' -v stamp="$1" -v gw="${2:-}" -v hasself="$([ $# -ge 3 ] && echo 1 || echo 0)" -v selfs="${3:-}" \
+      -v hostos="${4:-}" '
     function esc(v) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return v }
     { items = items (NR > 1 ? ", " : "") sprintf("{\"name\": \"%s\", \"ipv4\": \"%s\", \"prefix\": %d}", esc($1), $2, $3) }
     END {
@@ -207,10 +214,15 @@ to_json() {
         for (i = 1; i <= n; i++) list = list (list != "" ? ", " : "") sprintf("\"%s\"", esc(ips[i]))
         extra = extra sprintf(", \"self_addresses\": [%s]", list)
       }
+      if (hostos != "") extra = extra sprintf(", \"host_os\": \"%s\"", esc(hostos))
       printf "{\"updated_at\": \"%s\", \"interfaces\": [%s]%s}\n", stamp, items, extra
     }
   '
 }
+
+# host_os: "linux" on Linux, for the kiosk page (only a Linux laptop gets the
+# kiosk lockdown). Nothing elsewhere, so macOS's file stays as it was.
+host_os() { [ "$OS" != Linux ] || printf 'linux'; }
 
 # The gateway parsers read their input to the end instead of exiting at the
 # match: an early exit closes the pipe while the writer may still be writing
@@ -290,10 +302,252 @@ main() {
   raw=$(read_tool) || return 1
   found=$(printf '%s\n' "$raw" | lan_list)
   self=$(printf '%s\n' "$raw" | self_list)
-  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)" "$self")"
+  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)" "$self" "$(host_os)")"
 }
 
-# Called on the last line so a partially written script runs nothing.
+# The label-printer block is silent here.
+lp_say() { :; }
+lp_warn() { :; }
+
+# lp_kiosk_after_snap_removal: the label-printer block calls this after it
+# removed snap Docker, whose purge deletes a kiosk container the snap ran.
+# When no kiosk container runs on Docker Engine, it is started from the image
+# already there: never pulled, detached, and cut off after
+# HOSTNET_START_TIMEOUT_S so the run stays inside its 30 s budget. When the
+# image is missing or the start fails, the update job is started now (not
+# waited for); it pulls the image and starts a missing container.
+HOSTNET_KIOSK_CONTAINER='serversherpa-kiosk-edge-1'
+HOSTNET_UPDATE_SERVICE='serversherpa-kiosk-update.service'
+HOSTNET_START_TIMEOUT_S="${HOSTNET_START_TIMEOUT_S:-15}"
+
+# compose_image: the image docker-compose.yml runs.
+compose_image() {
+  local line
+  line=$(grep -E '^[[:space:]]*image:' "$KIOSK_DIR/docker-compose.yml" 2>/dev/null | head -n 1)
+  line="${line#*image:}"
+  printf '%s' "${line#"${line%%[![:space:]]*}"}"
+}
+
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$HOSTNET_START_TIMEOUT_S" "$@"; else "$@"; fi
+}
+
+lp_kiosk_after_snap_removal() {
+  local compose_file="$KIOSK_DIR/docker-compose.yml" ref
+  [ -f "$compose_file" ] && command -v docker >/dev/null 2>&1 || return 0
+  [ "$(docker inspect -f '{{.State.Running}}' "$HOSTNET_KIOSK_CONTAINER" 2>/dev/null)" != true ] || return 0
+  ref=$(compose_image)
+  if [ -n "$ref" ] && docker image inspect "$ref" >/dev/null 2>&1 \
+     && bounded docker compose -f "$compose_file" up -d --pull never >/dev/null 2>&1; then
+    return 0
+  fi
+  systemctl start --no-block "$HOSTNET_UPDATE_SERVICE" >/dev/null 2>&1 || true
+  return 0
+}
+
+# >>> USB label printers (Linux). This block is the same in install.sh and
+# hostnet.sh; tests/test_install_sh.py checks the two copies match. Every
+# step is best-effort, returns 0, and acts only when something is off: it
+# reports each change through lp_say and each failure through lp_warn, which
+# each script defines (install.sh: info/warn; hostnet.sh: silent).
+# Testing hooks: KIOSK_UDEV_RULES_DIR, KIOSK_MODPROBE_DIR, KIOSK_DOCKERD_BIN,
+# KIOSK_RUN_DIR replace /etc/udev/rules.d, /etc/modprobe.d, /usr/bin/dockerd, /run.
+LP_UDEV_RULES="${KIOSK_UDEV_RULES_DIR:-/etc/udev/rules.d}/60-serversherpa-label-printers.rules"
+LP_MODPROBE_CONF="${KIOSK_MODPROBE_DIR:-/etc/modprobe.d}/serversherpa-no-usblp.conf"
+LP_DOCKERD_BIN="${KIOSK_DOCKERD_BIN:-/usr/bin/dockerd}"
+# Present while a snap Docker removal waits for Docker Engine's restart.
+LP_SNAP_MARKER="${KIOSK_RUN_DIR:-/run}/serversherpa-kiosk-snap-docker-removed"
+
+# lp_udev_rule: Zebra (USB vendor 0a5f) printers open to Chrome's WebUSB, for
+# whoever is signed in at the screen (uaccess) only, never world-writable.
+lp_udev_rule() {
+  printf '%s\n' '# ServerSherpa kiosk: Chrome prints to USB Zebra label printers over WebUSB.' \
+    'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", TAG+="uaccess"'
+}
+
+# lp_modprobe_conf: keeps the usblp printer driver off the label printers
+# (it claims them, and WebUSB then gets "Access denied").
+lp_modprobe_conf() {
+  printf '%s\n' '# ServerSherpa kiosk: usblp claims USB label printers, which blocks WebUSB.' \
+    'blacklist usblp'
+}
+
+# lp_write FILE CONTENT: 0 when FILE was written, 1 when it already held
+# CONTENT, 2 when it couldn't be written. Mode 644.
+lp_write() {
+  local file="$1" want="$2"
+  if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "$want" ]; then return 1; fi
+  if mkdir -p "$(dirname "$file")" 2>/dev/null && printf '%s\n' "$want" >"$file" 2>/dev/null \
+     && chmod 644 "$file" 2>/dev/null; then
+    return 0
+  fi
+  return 2
+}
+
+lp_ensure_udev_rule() {
+  local rc=0
+  lp_write "$LP_UDEV_RULES" "$(lp_udev_rule)" || rc=$?
+  case "$rc" in
+    0)
+      lp_say "Wrote $LP_UDEV_RULES so Chrome can open USB Zebra label printers."
+      if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f >/dev/null 2>&1 || true
+      fi ;;
+    2) lp_warn "Couldn't write $LP_UDEV_RULES; Chrome may not be able to open USB label printers." ;;
+  esac
+  return 0
+}
+
+lp_usblp_loaded() {
+  command -v lsmod >/dev/null 2>&1 || return 1
+  lsmod 2>/dev/null | awk '$1 == "usblp" { found = 1 } END { exit !found }'
+}
+
+lp_ensure_no_usblp() {
+  local rc=0
+  lp_write "$LP_MODPROBE_CONF" "$(lp_modprobe_conf)" || rc=$?
+  case "$rc" in
+    0) lp_say "Wrote $LP_MODPROBE_CONF (the usblp driver no longer claims label printers)." ;;
+    2) lp_warn "Couldn't write $LP_MODPROBE_CONF." ;;
+  esac
+  if lp_usblp_loaded && command -v modprobe >/dev/null 2>&1; then
+    if modprobe -r usblp >/dev/null 2>&1; then
+      lp_say "Unloaded the usblp driver."
+    else
+      lp_warn "Couldn't unload the usblp driver (it is blocked from the next start on)."
+    fi
+  fi
+  return 0
+}
+
+# lp_zebra_queues: `lpstat -v` on stdin -> the names of the CUPS queues whose
+# device URI starts with usb://Zebra, one per line.
+lp_zebra_queues() {
+  awk '$1 == "device" && $2 == "for" && index($4, "usb://Zebra") == 1 { q = $3; sub(/:$/, "", q); print q }'
+}
+
+# lp_remove_zebra_queues: the USB Zebra queues Ubuntu sets up on its own; CUPS
+# holding the printer blocks WebUSB. Other printers are never touched.
+lp_remove_zebra_queues() {
+  local q
+  command -v lpstat >/dev/null 2>&1 && command -v lpadmin >/dev/null 2>&1 || return 0
+  for q in $(LC_ALL=C lpstat -v 2>/dev/null | lp_zebra_queues); do
+    if lpadmin -x "$q" >/dev/null 2>&1; then
+      lp_say "Removed the CUPS printer queue $q (the kiosk prints to USB Zebras itself)."
+    else
+      lp_warn "Couldn't remove the CUPS printer queue $q."
+    fi
+  done
+  return 0
+}
+
+lp_snap_has() { command -v snap >/dev/null 2>&1 && snap list "$1" >/dev/null 2>&1; }
+
+# lp_engine_present: Docker Engine (docker-ce or docker.io), not the snap.
+lp_engine_present() {
+  [ -x "$LP_DOCKERD_BIN" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl cat docker.service 2>/dev/null | awk '
+    /^ExecStart=/ { exec = 1 } /\/snap\// { snap = 1 } END { exit !(exec && !snap) }'
+}
+
+# lp_restart_engine: restart whichever of docker.socket and docker.service
+# exist (docker.io may ship no socket unit).
+lp_restart_engine() {
+  local u units=()
+  for u in docker.socket docker.service; do
+    [ -z "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] || units+=("$u")
+  done
+  if [ "${#units[@]}" = 0 ]; then
+    lp_warn "Couldn't restart Docker Engine: systemd has no docker.service."
+  elif systemctl restart "${units[@]}" >/dev/null 2>&1; then
+    lp_say "Restarted Docker Engine."
+  else
+    lp_warn "Couldn't restart Docker Engine (systemctl restart ${units[*]})."
+  fi
+}
+
+# lp_finish_snap_removal [restart]: the marker goes first, so a restart that
+# fails or is cut short is never retried every minute (each one would bounce
+# the kiosk). Docker Engine restarts when asked to (right after the purge) or
+# when it isn't running. Then lp_kiosk_after_snap_removal, which each script
+# defines: the purge deletes a kiosk container the snap ran (install.sh: no-op,
+# start_kiosk follows; hostnet.sh: starts the kiosk on Docker Engine if it
+# isn't running, never pulling, else hands over to the update job). That
+# can't live in this block: install.sh must not start the kiosk before its
+# own pull and start.
+lp_finish_snap_removal() {
+  rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+  if [ "${1:-}" = restart ] || ! systemctl is-active --quiet docker.service 2>/dev/null; then
+    lp_restart_engine
+  fi
+  lp_kiosk_after_snap_removal
+  return 0
+}
+
+# lp_remove_snap_docker: snap Docker next to Docker Engine fights it for
+# /var/run/docker.sock and can't write the data folder ("read-only file
+# system"), so the snap goes. Only when Docker Engine is there to take over.
+# The marker finishes the job on a later run if this one is cut short during
+# the purge; while the snap is still there it is only the purge that's retried.
+lp_remove_snap_docker() {
+  if lp_snap_has docker; then
+    lp_engine_present || return 0
+    : >"$LP_SNAP_MARKER" 2>/dev/null || true
+    if snap remove --purge docker >/dev/null 2>&1; then
+      lp_say "Removed snap Docker (Docker Engine runs the kiosk)."
+      lp_finish_snap_removal restart
+    else
+      lp_warn "Couldn't remove snap Docker (snap remove --purge docker)."
+    fi
+  elif [ -e "$LP_SNAP_MARKER" ]; then
+    lp_finish_snap_removal
+  fi
+  return 0
+}
+
+# lp_chromium_raw_usb: snap Chromium reaches USB devices only through its
+# raw-usb interface, which is off by default.
+lp_chromium_raw_usb() {
+  lp_snap_has chromium || return 0
+  if snap connections chromium 2>/dev/null \
+       | awk '$2 == "chromium:raw-usb" && $3 != "-" { found = 1 } END { exit !found }'; then
+    return 0
+  fi
+  if snap connect chromium:raw-usb >/dev/null 2>&1; then
+    lp_say "Let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  else
+    lp_warn "Couldn't let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  fi
+  return 0
+}
+
+# lp_upkeep: every check above, cheapest first.
+lp_upkeep() {
+  lp_ensure_no_usblp
+  lp_remove_zebra_queues
+  lp_ensure_udev_rule
+  lp_chromium_raw_usb
+  lp_remove_snap_docker
+  return 0
+}
+# <<< USB label printers
+
+# label_upkeep: on Linux as root, put the USB label-printer setup back if
+# anything undid it (install.sh does the same at install time). Never on macOS.
+label_upkeep() {
+  [ "$OS" = Linux ] || return 0
+  [ "$(id -u 2>/dev/null)" = 0 ] || return 0
+  lp_upkeep
+}
+
+# Called on the last lines so a partially written script runs nothing. The
+# upkeep runs after host-network.json is written, in a subshell, so nothing
+# in it can change the exit code.
 if [ "${KIOSK_HOSTNET_LIB:-0}" != "1" ]; then
   main "$@" >/dev/null 2>&1
+  rc=$?
+  ( label_upkeep ) >/dev/null 2>&1 || true
+  exit "$rc"
 fi

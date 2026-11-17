@@ -253,3 +253,8 @@
 @supports not selector(::-webkit-scrollbar) {
   .sirdar-seed .data-table-scroll { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent; }
 }
+
+/* The Environments page header: Adopt existing and New deployment. */
+.sirdar-head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* The Environments tab's cards sit under the tabs. */
+.sirdar-env-cards { margin-top: 12px; }

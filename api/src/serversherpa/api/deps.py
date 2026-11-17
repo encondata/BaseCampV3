@@ -344,6 +344,30 @@ def require_permission(resource: str, action: str):
     return Depends(guard)
 
 
+def ensure_kiosk_data_allowed(actor: AuthContext) -> None:
+    """403 `forbidden` unless the actor holds kiosk:view and has no client
+    group limits. The kiosk routes that hand out roster or asset data (or a
+    key or password that would reach it) apply no group rule, so a person
+    whose `access.restricted_clients()` is non-empty (an individual, or a
+    viewer with chips) never gets them, however they came to hold
+    kiosk:view: a legacy worker role, a cloned role, an override. Station
+    key and device-only routes have no person and don't come here.
+    Spec: docs/superpowers/specs/2026-11-10-client-groups-design.md"""
+    if not actor.access.can("kiosk", "view") or actor.access.restricted_clients():
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+
+
+def require_kiosk_data():
+    """Route guard: kiosk:view and no client group limits
+    (`ensure_kiosk_data_allowed`)."""
+
+    async def guard(user: CurrentUser) -> AuthContext:
+        ensure_kiosk_data_allowed(user)
+        return user
+
+    return Depends(guard)
+
+
 def require_rank(min_rank: int):
     """Route guard: require the actor's highest role rank to be at least
     `min_rank` (e.g. SUPER_ADMIN_RANK). It checks rank only — pair it with

@@ -20,6 +20,7 @@ import { IconArrow, IconEye, IconEyeOff, IconLink } from '../components/login/lo
 import EnrollFlow from '../components/totp/EnrollFlow';
 import OtpInput from '../components/totp/OtpInput';
 import { ApiError, isTotpChallenge, totpEnrollConfirm, totpEnrollStart, totpVerify, type TotpChallenge } from '../lib/api';
+import { addressBlockedMessage, isAddressBlocked } from '../lib/addressBlocked';
 import { getSystemStatus } from '../lib/systemStatus';
 import ForgotPasswordCard from '../components/login/ForgotPasswordCard';
 import '../styles/auth-theme.css';
@@ -130,7 +131,9 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
       navigate(from ?? '/', { replace: true });
     } catch (err) {
       const errCode = err instanceof ApiError ? err.code : 'network';
-      setError(extraErrors?.[errCode] ?? ERROR_MESSAGES[errCode] ?? 'Login failed. Please try again.');
+      setError(isAddressBlocked(err)
+        ? addressBlockedMessage((err as ApiError).detail)
+        : extraErrors?.[errCode] ?? ERROR_MESSAGES[errCode] ?? 'Login failed. Please try again.');
       setInvalid({ email: true, password: true });
       setPassword('');
       shakeForm();
@@ -151,10 +154,12 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
       finish();
     } catch (err) {
       const c = err instanceof ApiError ? err.code : 'network';
-      const message = CODE_ERRORS[c] ?? 'Could not verify the code. Try again.';
+      const blocked = isAddressBlocked(err);
+      const message = blocked ? addressBlockedMessage((err as ApiError).detail)
+        : CODE_ERRORS[c] ?? 'Could not verify the code. Try again.';
       setCode('');
       shakeForm();
-      if (c === 'invalid_challenge' || c === 'account_locked') {
+      if (c === 'invalid_challenge' || c === 'account_locked' || blocked) {
         // The card is about to unmount — carry the message back to the
         // password form instead of losing it along with codeError.
         setChallenge(null);
@@ -337,9 +342,12 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
                 }}
                 remember={trustDays > 0 ? { checked: rememberBrowser, onChange: setRememberBrowser, days: trustDays } : null}
                 onDone={finish}
-                onError={(c) => {
+                onError={(c, err) => {
                   shakeForm();
-                  if (c === 'invalid_challenge' || c === 'account_locked') {
+                  if (isAddressBlocked(err)) {
+                    setChallenge(null);
+                    setError(addressBlockedMessage((err as ApiError).detail));
+                  } else if (c === 'invalid_challenge' || c === 'account_locked') {
                     // Same drop-back as the verify card: don't strand the
                     // user on a blank form with no explanation.
                     setChallenge(null);

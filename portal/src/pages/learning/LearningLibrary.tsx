@@ -4,7 +4,8 @@
  * has, and a chip per translation language colored by status. Search, column
  * menus and the columns picker like the other lists. New document (a wiki
  * page from the Learning space plus a title) needs learning:add and opens the
- * new document's page.
+ * new document's page. Super admins and above get Show archived, which adds
+ * the archived documents, each with an Archived chip in its Version cell.
  */
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
@@ -16,6 +17,7 @@ import { useLearningAccess } from '../../components/learning/useLearningAccess';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters, usePersistentListState,
 } from '../../lib/columnMenu';
+import { SUPER_ADMIN_RANK } from '../../lib/access';
 import {
   languageName, listLearningDocuments, type LearningDocumentListItem,
 } from '../../lib/learning';
@@ -47,7 +49,7 @@ const versionText = (d: LearningDocumentListItem) =>
 function cellText(d: LearningDocumentListItem, key: string): string {
   switch (key) {
     case 'title': return d.title;
-    case 'version': return versionText(d);
+    case 'version': return d.archived_at ? `${versionText(d)} Archived` : versionText(d);
     case 'published': return d.published_at ? shortDate(d.published_at) : '';
     case 'packets': return d.packets.join(', ');
     case 'signoffs': return String(d.signoff_count);
@@ -71,23 +73,25 @@ function compare(a: string | number, b: string | number): number {
 }
 
 export default function LearningLibrary() {
-  const { preferences } = useAuth();
+  const { preferences, maxRank, scope } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const canAdd = useLearningAccess()('add');
+  const superAdmin = maxRank >= SUPER_ADMIN_RANK && !!scope?.global;
   const listGridScale = listScale(preferences?.list_size);
 
   const [docs, setDocs] = useState<LearningDocumentListItem[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   const load = useCallback(() => {
     setError('');
-    listLearningDocuments()
+    listLearningDocuments(showArchived && superAdmin)
       .then(setDocs)
       .catch(() => { setError('Couldn’t load the library.'); setDocs((d) => d ?? []); });
-  }, []);
+  }, [showArchived, superAdmin]);
   useEffect(() => { load(); }, [load]);
 
   const {
@@ -124,10 +128,13 @@ export default function LearningLibrary() {
             {d.title}
           </Link>
         );
-      case 'version':
-        return d.current_version_no === null
+      case 'version': {
+        const version = d.current_version_no === null
           ? <span className="chip c-slate">Not published</span>
           : <span className="cell-top cell-line">v{d.current_version_no}</span>;
+        if (!d.archived_at) return version;
+        return <div className="chips">{version}<span className="chip tag">Archived</span></div>;
+      }
       case 'published': {
         const text = d.published_at ? shortDate(d.published_at) : '—';
         return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
@@ -197,6 +204,13 @@ export default function LearningLibrary() {
                 <input placeholder="Search documents…" value={query}
                        onChange={(e) => setQuery(e.target.value)} />
               </div>
+              {superAdmin && (
+                <label className="pill-check">
+                  <input type="checkbox" checked={showArchived}
+                         onChange={(e) => setShowArchived(e.target.checked)} />
+                  Show archived
+                </label>
+              )}
               <span className="result-count">{visible.length} of {docs.length} shown</span>
               <FilterSummaryChip filters={filters} onClear={clearFilters} />
               <ColumnsButton columns={orderedCols} visible={visibleCols}

@@ -292,6 +292,11 @@ Built on branch `ios-biometric-sign-in` by subagent-driven development: seven ta
 - **Undecodable answers.** A 2xx answer the app can't decode reads as "Something went wrong", not "try again", matching Android.
 - **Late answers.** A late `/challenge` answer never deletes a newer key.
 
+**Device pass, 2026-11-10.** Jimmy tested on the iPad Pro 13 with a Debug build against the dev stack.
+- Turn on enrolled an `unattested` key, and Face ID sign-in worked.
+- The offer sheet had opened half height with its buttons below the fold. That was fixed on main c224b4fe0: buttons are never behind a scroll, and UI tests cover iPad and iPhone.
+- Installs must be Debug builds, because a Release build defaults to the production API.
+
 **Owed**
 - **Device pass.** On Jimmy's iPad Pro 13 against the dev stack:
   - enroll, then sign in;

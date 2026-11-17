@@ -8,6 +8,7 @@ struct RootView: View {
     @Environment(KioskAuth.self) private var auth
     @Environment(EnrollOffer.self) private var enrollOffer
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var path: [Route] = []
 
     private var preferences: UiPreferences? {
@@ -35,7 +36,7 @@ struct RootView: View {
         .sheet(item: offerSheet) { shown in
             EnrollOfferSheet(ui: enrollOffer.sheet ?? shown, words: enrollOffer.words,
                              onTurnOn: { Task { await enrollOffer.turnOn(SystemBiometricPrompter()) } },
-                             onNotNow: { enrollOffer.notNow() })
+                             onNotNow: { enrollOffer.notNow() }, compactWidth: sizeClass == .compact)
         }
         .environment(\.goHome, GoHomeAction { [path = $path] in path.wrappedValue.removeAll() })
         .kioskTheme(accent: preferences?.accent ?? "amber",

@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.delay
 
@@ -46,7 +47,8 @@ fun ScanInput(
         onValueChange = onValueChange,
         enabled = enabled,
         singleLine = true,
-        placeholder = { Text(placeholder) },
+        // One line, always: a long hint trails off with "…" instead of making the box two lines tall.
+        placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done, autoCorrectEnabled = false),
         keyboardActions = KeyboardActions(onDone = { val v = value.trim(); if (v.isNotEmpty()) onSubmit(v) }),
         trailingIcon = trailingIcon,

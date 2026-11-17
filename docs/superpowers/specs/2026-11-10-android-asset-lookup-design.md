@@ -40,7 +40,7 @@ touch targets.
 
 - **Header:** `PageHeader("Kiosk · Asset Lookup", "Asset Lookup", setup?.headerLine() ?: "Finish Kiosk Setup first.")`.
 - **Scan box:** the shared `ScanInput` (typed + Done, keeps focus) with
-  placeholder "Scan or type an asset tag, serial, RFID, or name", the camera
+  placeholder "Asset tag, serial, RFID, or name" (shortened from the web's "Scan or type an asset tag, serial, RFID, or name" on 2026-11-10 so it fits one line on a phone; Jimmy), the camera
   button when the device has a camera, then **Search** and **Clear** buttons,
   as on the web.
 - **Inputs:** typed text, Zebra DataWedge barcode scans and the camera, all
@@ -178,3 +178,5 @@ The view model does not check setup. The route is wrapped in `SetupGate`, and th
 
 - A device check at 320 dp on the MC2200 (the layout was only checked under Robolectric).
 - The live check against the dev API: dev asset 102466 `atl1-web-001` by each of its four values (asset tag, serial, RFID, name), as a worker and as an admin.
+
+One-line scan box (2026-11-10, Jimmy on the Pixel): the shared `ScanInput` keeps its placeholder to one line, trailing off with "…" when it can't fit, so a long hint never makes the box two lines tall on any screen (Scanning, RFID Enroll, Print Labels, Asset Lookup). `ScanInputWrapTest` checks it at 443 dp, at 443 dp with larger text, and at 320 dp.

@@ -5,7 +5,9 @@
    happens to paint. */
 
 .toast-host {
-  position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column;
+  /* top right, just under the 54px topbar (chrome.css) and its bell;
+     the newest toast is first in the list, so it sits on top */
+  position: fixed; right: 18px; top: 66px; display: flex; flex-direction: column;
   /* above .modal-scrim (80) and the command palette (90), below the
      auth scrim (1400) — an inbox toast can land while a modal is open */
   gap: 10px; z-index: 1300; max-width: 380px; pointer-events: none;

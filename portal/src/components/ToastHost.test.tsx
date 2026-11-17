@@ -6,14 +6,17 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 const ctx = vi.hoisted(() => ({
   newItems: [] as { id: string; kind: string; title: string; body: string; link: string | null; payload: Record<string, unknown> }[],
-  dismissNew: vi.fn(), markRead: vi.fn(() => Promise.resolve()), local: [] as { id: number; message: string; action?: { label: string; onClick: () => void } }[],
+  dismissNew: vi.fn(), markRead: vi.fn(() => Promise.resolve()), refresh: vi.fn(() => Promise.resolve()), local: [] as { id: number; message: string; action?: { label: string; onClick: () => void } }[],
   dismissLocal: vi.fn(),
 }));
 vi.mock('../lib/notificationsContext', () => ({
   useNotifications: () => ctx,
   useLocalToasts: () => ({ toasts: ctx.local, dismiss: ctx.dismissLocal }),
 }));
-const api = vi.hoisted(() => ({ getReportRunDownloadUrl: vi.fn() }));
+const api = vi.hoisted(() => ({
+  getReportRunDownloadUrl: vi.fn(), clearAddressBlock: vi.fn(() => Promise.resolve({})),
+  blockAddressPermanently: vi.fn(() => Promise.resolve({})),
+}));
 vi.mock('../lib/api', async (importActual) => ({ ...(await importActual<typeof import('../lib/api')>()), ...api }));
 
 vi.mock('../lib/inboxLinks', async (importActual) => ({
@@ -155,4 +158,108 @@ it('inbox toasts dismiss themselves after INBOX_TOAST_MS', async () => {
   act(() => { vi.advanceTimersByTime(1); });
   expect(ctx.dismissNew).toHaveBeenCalledWith('n3');
   vi.useRealTimers();
+});
+
+const HOUR = 3_600_000;
+const blocked = (over: Record<string, unknown> = {}) => ({
+  id: 'b1', kind: 'address_blocked', body: '', link: '/system/blocked-addresses',
+  title: 'Sign-ins blocked from 203.0.113.7 for 1 hour (10 failed attempts)',
+  payload: { address: '203.0.113.7', level: 1, ends_at: new Date(Date.now() + HOUR).toISOString(),
+    failure_count: 10, state: 'open', ...over },
+});
+
+it('an address_blocked toast shows the three actions instead of Open and does not fade', async () => {
+  vi.useFakeTimers();
+  ctx.newItems = [blocked()];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  expect(screen.getByRole('status').textContent).toContain('Sign-ins blocked from 203.0.113.7 for 1 hour (10 failed attempts)');
+  expect(screen.getByRole('button', { name: 'Clear block' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Block permanently' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Leave as is' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+  act(() => { vi.advanceTimersByTime(INBOX_TOAST_MS * 3); });
+  expect(ctx.dismissNew).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Clear block' })).toBeTruthy();
+  vi.useRealTimers();
+});
+
+it('an address_blocked toast does not hold back the fade of the other toasts', () => {
+  vi.useFakeTimers();
+  ctx.newItems = [blocked(), { id: 'n3', kind: 'report_failed', title: 'Move Report failed', body: 'x', link: '/reports', payload: {} }];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  act(() => { vi.advanceTimersByTime(INBOX_TOAST_MS); });
+  expect(ctx.dismissNew).toHaveBeenCalledTimes(1);
+  expect(ctx.dismissNew).toHaveBeenCalledWith('n3');
+  vi.useRealTimers();
+});
+
+it('Clear block clears the address, marks the item read and closes the toast', async () => {
+  const user = userEvent.setup();
+  ctx.newItems = [blocked()];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Clear block' }));
+  expect(api.clearAddressBlock).toHaveBeenCalledWith('203.0.113.7');
+  expect(api.blockAddressPermanently).not.toHaveBeenCalled();
+  await waitFor(() => expect(ctx.markRead).toHaveBeenCalledWith('b1'));
+  expect(ctx.dismissNew).toHaveBeenCalledWith('b1');
+});
+
+it('Block permanently blocks the address permanently and marks the item read', async () => {
+  const user = userEvent.setup();
+  ctx.newItems = [blocked()];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Block permanently' }));
+  expect(api.blockAddressPermanently).toHaveBeenCalledWith('203.0.113.7');
+  await waitFor(() => expect(ctx.markRead).toHaveBeenCalledWith('b1'));
+});
+
+it('Leave as is marks the item read and calls no block API', async () => {
+  const user = userEvent.setup();
+  ctx.newItems = [blocked()];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Leave as is' }));
+  await waitFor(() => expect(ctx.markRead).toHaveBeenCalledWith('b1'));
+  expect(ctx.dismissNew).toHaveBeenCalledWith('b1');
+  expect(api.clearAddressBlock).not.toHaveBeenCalled();
+  expect(api.blockAddressPermanently).not.toHaveBeenCalled();
+});
+
+it('a 409 from another admin\'s decision refreshes instead of showing an error', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.clearAddressBlock.mockRejectedValueOnce(new ApiError(409, 'block_not_active'));
+  const user = userEvent.setup();
+  ctx.newItems = [blocked()];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Clear block' }));
+  await waitFor(() => expect(ctx.markRead).toHaveBeenCalledWith('b1'));
+  expect(ctx.dismissNew).toHaveBeenCalledWith('b1');
+  expect(document.querySelector('.pf-error')).toBeNull();
+});
+
+it('a failed decision keeps the toast and says so', async () => {
+  api.clearAddressBlock.mockRejectedValueOnce(new Error('offline'));
+  const user = userEvent.setup();
+  ctx.newItems = [blocked()];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Clear block' }));
+  expect(await screen.findByText('Network error — try again.')).toBeTruthy();
+  expect(ctx.markRead).not.toHaveBeenCalled();
+  expect(ctx.dismissNew).not.toHaveBeenCalled();
+});
+
+it('a permanent block offers no Block permanently', () => {
+  ctx.newItems = [blocked({ level: 5, ends_at: null })];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  expect(screen.getByRole('button', { name: 'Clear block' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Block permanently' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Leave as is' })).toBeTruthy();
+});
+
+it('a timed-out block shows no actions, only that it ended', () => {
+  ctx.newItems = [blocked({ ends_at: new Date(Date.now() - 1000).toISOString() })];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  expect(screen.queryByRole('button', { name: 'Clear block' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Block permanently' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Leave as is' })).toBeNull();
+  expect(screen.getByText('Ended')).toBeTruthy();
 });

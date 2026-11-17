@@ -35,3 +35,20 @@ export function assetDistribution(
     }))
     .sort((a, b) => b.count - a.count);
 }
+
+/** Fleet distribution from server-side per-status counts (restricted logins).
+ *  Same labels, colors and ordering as `assetDistribution`. */
+export function assetDistributionFromCounts(
+  byStatus: Record<string, number>, statuses: StatusValue[],
+): DistEntry[] {
+  const vocab = new Map(statuses.map((s) => [s.key, s]));
+  return Object.entries(byStatus)
+    .filter(([, count]) => count > 0)
+    .map(([key, count]) => ({
+      key,
+      label: vocab.get(key)?.label ?? key,
+      color: vocab.get(key)?.color ?? '#51606f',
+      count,
+    }))
+    .sort((a, b) => b.count - a.count);
+}

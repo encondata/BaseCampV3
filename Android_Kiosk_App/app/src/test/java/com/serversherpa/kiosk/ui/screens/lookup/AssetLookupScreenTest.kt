@@ -158,7 +158,7 @@ class AssetLookupScreenTest {
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskApp() } }
         compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("tile-LOOKUP") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("tile-LOOKUP").performScrollTo().performClick()
-        waitForText("Scan or type an asset tag, serial, RFID, or name")
+        waitForText("Asset tag, serial, RFID, or name")
         compose.waitForIdle()                                            // the navigation's fade
         compose.onNodeWithTag("tile-LOOKUP").assertDoesNotExist()
         compose.onNodeWithText("KIOSK · ASSET LOOKUP").assertIsDisplayed()   // PageHeader capitalizes the eyebrow

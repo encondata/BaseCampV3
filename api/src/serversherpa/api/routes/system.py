@@ -21,8 +21,7 @@ from sqlalchemy import update, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from serversherpa.api.deps import (
-    AuthContext, DbSession, authenticate_token, ensure_super_admin, password_change_owed,
-    require_permission,
+    AuthContext, DbSession, ensure_super_admin, require_permission,
 )
 from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image
 from serversherpa.api.schemas import (
@@ -31,6 +30,9 @@ from serversherpa.api.schemas import (
     AiLookupConfigIn, AiLookupConfigOut,
     AdminConfigIn, AdminConfigOut, AppsStatusOut, BackgroundStatusOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
+)
+from serversherpa.api.ws_auth import (
+    WS_AUTH_SUBPROTOCOL, authenticate_portal_ws, session_still_live,
 )
 from serversherpa.config import get_settings
 from serversherpa.learning.access import require_manager
@@ -606,25 +608,6 @@ async def clear_process_logs(
     return {"deleted": deleted}
 
 
-# The live tail's auth subprotocol. The browser opens the socket with the
-# subprotocol list ["ss-bearer", "<access token>"], which the handshake
-# carries as `Sec-WebSocket-Protocol: ss-bearer, <token>`; the server
-# accepts "ss-bearer" so the browser completes the handshake.
-WS_AUTH_SUBPROTOCOL = "ss-bearer"
-
-
-def _token_from_subprotocols(header: str | None) -> str | None:
-    """Pull the access token out of a `Sec-WebSocket-Protocol` header of
-    the form `ss-bearer, <token>`. None when the header is missing, the
-    first entry is not ss-bearer, or there is no second entry."""
-    if not header:
-        return None
-    parts = [p.strip() for p in header.split(",")]
-    if len(parts) < 2 or parts[0] != WS_AUTH_SUBPROTOCOL or not parts[1]:
-        return None
-    return parts[1]
-
-
 @router.websocket("/processes/{name}/logs/stream")
 async def stream_process_logs(ws: WebSocket, name: str) -> None:
     """Live tail. Browsers cannot set Authorization on WebSockets, so the
@@ -641,34 +624,14 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
 
     Read-only maintenance mode is deliberately NOT applied here: a tail is
     a read, and enforce_read_only only gates mutating HTTP methods."""
-    token = _token_from_subprotocols(ws.headers.get("sec-websocket-protocol"))
     min_level = ws.query_params.get("min_level")
     q = ws.query_params.get("q")
 
-    if token is None:
-        # no header, or the token offered some other way (e.g. `?token=`)
-        await ws.close(code=4401)
-        return
-
     maker = get_sessionmaker()
     async with maker() as db:
-        try:
-            actor = await authenticate_token(db, token)
-        except HTTPException:
-            await ws.close(code=4401)
-            return
-        # Mirror of get_current_user's kiosk-scope guard (403 kiosk_session
-        # on HTTP): a kiosk login skips the 2FA challenge, so its session
-        # may reach only the kiosk routes — never a portal-only log tail.
-        if actor.session.client == "kiosk":
-            await ws.close(code=4403)
-            return
-        # Mirror of get_current_user's forced-password-change guard (403
-        # password_change_required on HTTP): a temp-password session, or
-        # one that signed in with an already-expired password, may only
-        # finish the auth lifecycle, so it may not open a tail either.
-        if await password_change_owed(db, actor):
-            await ws.close(code=4403)
+        actor = await authenticate_portal_ws(db, ws)
+        if isinstance(actor, int):
+            await ws.close(code=actor)
             return
         if not actor.access.can("devtools", "change"):
             await ws.close(code=4403)
@@ -693,15 +656,10 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
         while True:
             async with maker() as db:
                 poll_count += 1
-                if poll_count % STREAM_REAUTH_POLLS == 0:
-                    session = await db.get(AuthSession, actor.session.id)
-                    if (
-                        session is None
-                        or session.revoked_at is not None
-                        or session.expires_at <= datetime.now(UTC)
-                    ):
-                        await ws.close(code=4401)
-                        return
+                if (poll_count % STREAM_REAUTH_POLLS == 0
+                        and not await session_still_live(db, actor.session.id)):
+                    await ws.close(code=4401)
+                    return
                 stmt = _logs_query(name, min_level, q).where(
                     LogEntry.id > cursor
                 ).order_by(LogEntry.id).limit(STREAM_BATCH_CAP)

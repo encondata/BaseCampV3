@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Notification, Person
 from serversherpa.notifications.inbox import notify
+from serversherpa.notifications.live import signal_inbox, signal_inboxes
 from serversherpa.notifications.requests import approver_ids
 
 KIND = "password_reset_request"
@@ -36,6 +37,7 @@ async def open_or_bump(db: AsyncSession, person: Person) -> int:
             card.read_at = None
             card.dismissed_at = None
             card.created_at = now
+            await signal_inbox(db, card.person_id)
         await db.flush()
         return len(existing)
     title = f"{person.first_name} {person.last_name} asked for a password reset"
@@ -52,10 +54,11 @@ async def resolve(db: AsyncSession, person_id: uuid.UUID, resolved_by: str) -> N
     """Mark every open card for this person resolved, and read for every
     approver: nothing is left to act on. A card already read keeps its first
     read time; the card still says who resolved it."""
-    await db.execute(text(
+    changed = await db.scalars(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', 'resolved', 'resolved_by', CAST(:by AS text)), "
         "read_at = COALESCE(read_at, now()) "
         "WHERE kind = :kind AND payload ->> 'target_person_id' = CAST(:pid AS text) "
-        "AND payload ->> 'state' = 'open'"),
+        "AND payload ->> 'state' = 'open' RETURNING person_id"),
         {"by": resolved_by, "kind": KIND, "pid": str(person_id)})
+    await signal_inboxes(db, changed.all())

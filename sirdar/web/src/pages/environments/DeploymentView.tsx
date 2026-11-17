@@ -1,6 +1,7 @@
 /** One deployment: its steps with live logs (polled while it runs), Cancel,
  *  Retry from step and, after a failed Update, Roll back; after a failed first
- *  deploy, Clean up. Logs render as text only (already redacted server-side). */
+ *  deploy, Clean up; after a failed Delete, Force delete (the Delete dialog with
+ *  force on). Logs render as text only (already redacted server-side). */
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -14,6 +15,7 @@ import {
 } from '../../lib/sirdarApi';
 
 import CleanupModal from './CleanupModal';
+import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import {
   CHANGE_MODES, DEPLOYMENT_STATUS, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, deploymentLabel,
   dumpTakenAt, duration, onBluegreen, onDo, retryNeedsName, shortSha, stoppedStep, when,
@@ -49,6 +51,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const [retrying, setRetrying] = useState(false);
   /** The Clean up dialog: keep settings (cleanup) or remove everything (teardown). */
   const [cleaning, setCleaning] = useState<{ keep: boolean } | null>(null);
+  const [forcing, setForcing] = useState(false);
   const retryingRef = useRef(false);
   const [actionError, setActionError] = useState('');
   const finished = useRef(onFinished);
@@ -136,6 +139,9 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const restoring = !!dep && dep.steps.some((s) => s.key === 'restore');
   // A failed first deploy (or a clean-up that stopped partway) can remove what it built instead of retrying.
   const mayCleanUp = !!dep && isLatest === true && env.never_deployed && (dep.mode === 'update' || dep.mode === 'cleanup')
+    && RETRYABLE.includes(dep.status) && can('deploy', 'add') && can('deploy', 'change');
+  // A failed Delete that wasn't forced: Force delete starts a new, forced one (never a retry).
+  const mayForce = !!dep && isLatest === true && dep.mode === 'teardown' && !dep.force
     && RETRYABLE.includes(dep.status) && can('deploy', 'add') && can('deploy', 'change');
   // Production keeps Delete's rules: it must be retiring first.
   const cleanUpBlocked = onDo(env) && env.type === 'production' && !env.retiring;
@@ -366,11 +372,25 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
           <p className="page-hint">The same, and the environment is deleted from Sirdar.</p>
         </div>
       )}
+      {mayForce && (
+        <div className="sirdar-rollback">
+          <h3 className="sirdar-sub">Force delete</h3>
+          <p className="page-hint">If Sirdar can't reach {env.name}, force delete removes it from Sirdar anyway.</p>
+          <div className="sirdar-actions">
+            <button type="button" className="btn-solid btn-danger" disabled={retrying || hostKey.open}
+                    onClick={() => setForcing(true)}>Force delete…</button>
+          </div>
+        </div>
+      )}
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
       {hostKey.modal}
       {cleaning && (
         <CleanupModal env={env} keep={cleaning.keep} onClose={() => setCleaning(null)}
                       onStarted={(started) => { setCleaning(null); onRetried(started); }} />
+      )}
+      {forcing && (
+        <DeleteEnvironmentModal env={env} force onClose={() => setForcing(false)}
+                                onStarted={(started) => { setForcing(false); onRetried(started); }} />
       )}
     </section>
   );

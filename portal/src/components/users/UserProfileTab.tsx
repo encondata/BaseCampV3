@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataTable from '../DataTable';
+import GroupChips, { useClientGroupNames } from '../clients/GroupChips';
 import { ApiError, type UserDetailOut } from '../../lib/api';
 import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
@@ -22,6 +23,15 @@ const SOURCE_LABEL: Record<string, string> = {
   v2_import: 'Imported from V2',
   import: 'Imported from V2',
 };
+
+/** Read-only group chips on a client affiliation (staff only; names come from
+ *  the client's groups). */
+function AffiliationGroups({ org, ids }: {
+  org: { kind: string; id: string }; ids: string[] | undefined;
+}) {
+  const names = useClientGroupNames(org.kind === 'client' && ids && ids.length > 0 ? org.id : null);
+  return <GroupChips ids={ids} names={names} />;
+}
 
 // `mode` is accepted (not just canManageUsers) so callers keep passing the
 // same DetailMode they compute for the rest of the page; this component
@@ -184,7 +194,10 @@ export default function UserProfileTab({
                 key: `${r.role}:${r.org!.id}`,
                 cells: [
                   <Link key="org" to={`/stakeholders/${r.org!.kind}s/${r.org!.id}`}>{r.org!.name}</Link>,
-                  <span key="role" className="chip tag">{r.label}</span>,
+                  <div key="role" className="chips">
+                    <span className="chip tag">{r.label}</span>
+                    <AffiliationGroups org={r.org!} ids={r.group_ids} />
+                  </div>,
                   longDate(r.granted_at),
                 ],
               }))} />

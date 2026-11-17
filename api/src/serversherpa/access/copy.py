@@ -2,7 +2,9 @@
 
 Parts: global roles, access groups, per-cell overrides. Replace makes the
 target's part equal the source's; Add unions them (the source wins an
-override conflict). Org-anchored roles are never copied or revoked."""
+override conflict). Org-anchored roles are never copied or revoked. A
+target who is a client contact is skipped (`client_worker_conflict`) when
+the copy would give them the worker role."""
 
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +17,7 @@ from serversherpa.access.apply import (
     current_global_roles, current_groups, current_overrides, current_roles,
 )
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.role_mix import CONFLICT_CODE, WORKER_ROLE, client_contact_ids
 from serversherpa.db.models import AccessGroup, Person, Role, UserAccount
 from serversherpa.services.storage import presign_get
 
@@ -123,6 +126,10 @@ async def plan_copy(
             new_roles = row.desired.roles - tgt.roles
             if any(not can_touch_rank(actor_rank, role_rows[r].rank) for r in new_roles):
                 row.status, row.reason = "skipped", "role_rank_too_low"
+                continue
+            if WORKER_ROLE in new_roles and await client_contact_ids(db, [tid]):
+                # a client contact can't also be a worker (access/role_mix.py)
+                row.status, row.reason = "skipped", CONFLICT_CODE
                 continue
             org_roles = {r for r in held if role_rows.get(r) and role_rows[r].scope_anchor in ORG_ANCHORS}
             if row.desired.roles != tgt.roles:

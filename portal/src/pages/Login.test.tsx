@@ -197,3 +197,41 @@ it('the eye toggle shows and hides the password', async () => {
   await user.click(screen.getByRole('button', { name: 'Hide password' }));
   expect(password.getAttribute('type')).toBe('password');
 });
+
+const BLOCKED_TIMED = 'Too many failed sign-in attempts from this network. Try again in 60 minutes.';
+const BLOCKED_FOREVER = 'This network is blocked from signing in. Contact your administrator.';
+
+it('a blocked address shows the timed message on the password form', async () => {
+  const user = userEvent.setup();
+  auth.login.mockRejectedValue(new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: 3600 }));
+  const { email, password } = renderLogin();
+  await user.type(email, 'jimmy@example.com');
+  await user.type(password, 'pw');
+  fireEvent.submit(email.closest('form')!);
+  expect(await screen.findByText(BLOCKED_TIMED)).toBeTruthy();
+});
+
+it('a permanently blocked address shows the permanent message', async () => {
+  const user = userEvent.setup();
+  auth.login.mockRejectedValue(new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: null }));
+  const { email, password } = renderLogin();
+  await user.type(email, 'jimmy@example.com');
+  await user.type(password, 'pw');
+  fireEvent.submit(email.closest('form')!);
+  expect(await screen.findByText(BLOCKED_FOREVER)).toBeTruthy();
+});
+
+it('address_blocked on the code step drops back to the password form with the message', async () => {
+  const user = userEvent.setup();
+  auth.login.mockResolvedValue({ status: 'totp_verify', challenge_token: 'ch', backup_codes_remaining: 8 });
+  api.totpVerify.mockRejectedValue(new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: 3600 }));
+  const { email, password } = renderLogin();
+  await user.type(email, 'jimmy@example.com');
+  await user.type(password, 'pw');
+  fireEvent.submit(email.closest('form')!);
+  await waitFor(() => expect(screen.queryByLabelText('Digit 1')).toBeTruthy());
+  await user.type(screen.getAllByLabelText(/^Digit \d$/)[0], '000000');
+  expect(await screen.findByText(BLOCKED_TIMED)).toBeTruthy();
+  expect(screen.queryByLabelText('Digit 1')).toBeNull();
+  expect(screen.getByLabelText('Email')).toBeTruthy();
+});

@@ -20,6 +20,8 @@ const api = vi.hoisted(() => ({
   rejectMembershipRequest: vi.fn(() => Promise.resolve()),
   approveRouter: vi.fn(() => Promise.resolve()),
   revokeRouter: vi.fn(() => Promise.resolve()),
+  clearAddressBlock: vi.fn(() => Promise.resolve({})),
+  blockAddressPermanently: vi.fn(() => Promise.resolve({})),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()),
@@ -407,4 +409,49 @@ it('shows the repeat count on an open password reset request', async () => {
   })];
   renderPanel();
   expect(await screen.findByText('Asked 3 times')).toBeTruthy();
+});
+
+const blockedRow = (id: string, payload: Record<string, unknown> = {}): InboxItem => item(id, {
+  kind: 'address_blocked', category: 'security', body: '', link: '/system/blocked-addresses',
+  title: 'Sign-ins blocked from 203.0.113.7 for 1 hour (10 failed attempts)',
+  payload: { address: '203.0.113.7', level: 1, ends_at: new Date(Date.now() + 3_600_000).toISOString(),
+    failure_count: 10, state: 'open', ...payload },
+});
+
+it('an open address_blocked row offers the three actions; Clear block clears and refreshes without navigating', async () => {
+  const user = userEvent.setup();
+  ctx.items = [blockedRow('b1')];
+  const onClose = renderPanel();
+  expect(screen.getByRole('button', { name: 'Block permanently' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Leave as is' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Clear block' }));
+  expect(api.clearAddressBlock).toHaveBeenCalledWith('203.0.113.7');
+  expect(ctx.markRead).toHaveBeenCalledWith('b1');
+  expect(ctx.refresh).toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('Leave as is on a row marks it read and leaves the block alone', async () => {
+  const user = userEvent.setup();
+  ctx.items = [blockedRow('b1')];
+  const onClose = renderPanel();
+  await user.click(screen.getByRole('button', { name: 'Leave as is' }));
+  expect(ctx.markRead).toHaveBeenCalledWith('b1');
+  expect(api.clearAddressBlock).not.toHaveBeenCalled();
+  expect(api.blockAddressPermanently).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('a decided address_blocked row shows who decided it and no buttons', () => {
+  ctx.items = [
+    blockedRow('b1', { state: 'cleared', decided_by: 'Ada Admin' }),
+    blockedRow('b2', { state: 'permanent', decided_by: 'Bo Boss', ends_at: null }),
+    blockedRow('b3', { ends_at: new Date(Date.now() - 1000).toISOString() }),
+  ];
+  renderPanel();
+  expect(screen.getByText('Cleared by Ada Admin')).toBeTruthy();
+  expect(screen.getByText('Blocked permanently by Bo Boss')).toBeTruthy();
+  expect(screen.getByText('Ended')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Clear block' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Leave as is' })).toBeNull();
 });

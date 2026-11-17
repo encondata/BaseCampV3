@@ -7,9 +7,10 @@
  * and the SVG geometry lives in `RackElevation` (RackElevation.tsx),
  * shared verbatim with the report worker's server-side renderer. What is
  * left here is the hover state, the tooltip, the device manifest beside
- * the elevations, the category legend, the Print layout sheet and the
- * modal chrome; the helpers are re-exported below so existing importers
- * (and their tests) keep resolving them through this module.
+ * the elevations, the category legend, the Print layout sheet, Export PDF
+ * (lib/rackPdf.ts) and the modal chrome; the helpers are re-exported
+ * below so existing importers (and their tests) keep resolving them
+ * through this module.
  *
  * Print-friendly redesign: two independent, self-contained rack frames
  * (FRONT and REAR) side by side, each with its own posts/caps and U
@@ -41,6 +42,7 @@ import {
   rackLayout, nodeBlocks, deviceListRows, legendCategories,
 } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
+import { exportRackPdf } from '../../lib/rackPdf';
 import { buildRackPrintHtml } from '../../lib/rackPrint';
 
 import RackDeviceList from './RackDeviceList';
@@ -57,7 +59,9 @@ export type { DisplayBlock, LaneRect, NodeColumnRect, TooltipRow } from './RackE
 
 interface HoverState { block: DisplayBlock; x: number; y: number; }
 
-export default function RackViewModal({ rackName, side, rows, onClose }: {
+export default function RackViewModal({ moveName, rackName, side, rows, onClose }: {
+  /** the move's name, for the Export PDF file name */
+  moveName: string;
   rackName: string;
   side: 'source' | 'destination';
   rows: InitiativeAssetRow[];
@@ -73,6 +77,8 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportFailed, setExportFailed] = useState(false);
 
   const blocks = rackLayout(rows, rackName, side);
   // Rows assigned to this rack but with no usable RU (0 or blank) are never
@@ -130,16 +136,19 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
 
   const sideLabel = side === 'source' ? 'Source' : 'Destination';
 
-  const handlePrint = () => {
-    // Read the frames off the rendered DOM — heading and SVG together —
-    // so the sheet captions whatever is actually on screen (FRONT, FRONT ·
-    // NODES, REAR, REAR · NODES) without re-deriving the conditions here.
-    const frames = [...(containerRef.current?.querySelectorAll('.rack-elevation') ?? [])]
+  // Read the frames off the rendered DOM — heading and SVG together — so
+  // the paper outputs caption whatever is actually on screen (FRONT,
+  // FRONT · NODES, REAR, REAR · NODES) without re-deriving the conditions.
+  const renderedFrames = () =>
+    [...(containerRef.current?.querySelectorAll('.rack-elevation') ?? [])]
       .map((el) => ({
         heading: el.querySelector('.rack-elevation-heading')?.textContent ?? '',
-        svg: el.querySelector('.rack-svg')?.outerHTML ?? '',
+        svg: el.querySelector<SVGSVGElement>('svg.rack-svg'),
       }))
-      .filter((f) => f.svg);
+      .filter((f): f is { heading: string; svg: SVGSVGElement } => f.svg !== null);
+
+  const handlePrint = () => {
+    const frames = renderedFrames().map((f) => ({ heading: f.heading, svg: f.svg.outerHTML }));
     const win = window.open('', '_blank');
     if (!win) return; // popup blocked — quiet no-op
     win.document.write(buildRackPrintHtml({
@@ -147,6 +156,22 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
       legend: categories,
     }));
     win.document.close();
+  };
+
+  const handleExportPdf = async () => {
+    setExporting(true);
+    setExportFailed(false);
+    try {
+      await exportRackPdf({
+        moveName, rackName, sideLabel, frames: renderedFrames(), listRows,
+        grouped: showRear, legend: categories,
+      });
+    } catch (err) {
+      console.error('Export PDF failed', err);
+      setExportFailed(true);
+    } finally {
+      setExporting(false);
+    }
   };
 
   // A node cell's id IS its roster row's id (see `nodeBlocks`), so one
@@ -254,9 +279,20 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
               Planned
             </span>
           </div>
-          <button className="mini-btn" type="button" onClick={handlePrint}>
-            Print layout
-          </button>
+          <div className="rack-modal-actions">
+            <button className="mini-btn" type="button" onClick={handlePrint}>
+              Print layout
+            </button>
+            <button className="mini-btn" type="button" onClick={handleExportPdf}
+                    disabled={exporting}>
+              {exporting ? 'Exporting…' : 'Export PDF'}
+            </button>
+          </div>
+          {exportFailed && (
+            <p className="pf-error rack-modal-error" role="alert">
+              Couldn&apos;t make the PDF. Use Print layout instead.
+            </p>
+          )}
         </div>
       </div>
     </div>

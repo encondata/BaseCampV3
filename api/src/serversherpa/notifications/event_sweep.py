@@ -70,6 +70,7 @@ from serversherpa.db.models import (
     StatusRule,
 )
 from serversherpa.notifications.access import active_ids, thing_exists, viewers, visible_among
+from serversherpa.notifications.asset_watches import openable_places
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.events import Thing
 from serversherpa.notifications.inbox import notify
@@ -513,6 +514,23 @@ async def _opens_any(db: AsyncSession, person_id: uuid.UUID,
     return False
 
 
+async def _asset_watch_recheck(db: AsyncSession, notification: Notification) -> str | None:
+    """`no_access` when the person can no longer open the place an asset watch's notice came
+    from (its payload's asset and initiative), else None. A notice written before its payload
+    named them has nothing to check against: None."""
+    payload = notification.payload or {}
+    try:
+        asset_id = uuid.UUID(payload["asset_id"])
+        raw = payload.get("initiative_id")
+        initiative_id = uuid.UUID(raw) if raw is not None else None
+    except (KeyError, TypeError, ValueError):
+        return None
+    place = (notification.person_id, asset_id, initiative_id)
+    if place not in await openable_places(db, [place]):
+        return "no_access"
+    return None
+
+
 async def watch_recheck(db: AsyncSession, notification: Notification) -> str | None:
     """Why the email of a notification this sweep wrote should no longer go out, as a reason
     code, or None when it still should. This is the part of the send-time re-check
@@ -527,11 +545,18 @@ async def watch_recheck(db: AsyncSession, notification: Notification) -> str | N
       (their own, or an Active group's they belong to): `candidates`, asked again now. So
       deleting a watch, pausing a group and leaving one each end a route.
 
+    An asset watch's notice (`asset_watch`, written by the asset-watch check) names no events:
+    it is `no_access` once the person can no longer open the place its watch was set, by the
+    rule that set and fired it (asset_watches.openable_places), so a watch that fired before a
+    client login's groups narrowed doesn't email a hidden asset (`_asset_watch_recheck`).
+
     None, with nothing asked, for a notification that names no events (every other kind), and
     when none of the events it names is stored any more (the Logging retention removes old
     ones): there is nothing to check the person against. `payload.subjects` is de-duplicated,
     so it does not line up with `payload.events`; the two are never paired by position. Reads
     only."""
+    if notification.kind == "asset_watch":
+        return await _asset_watch_recheck(db, notification)
     event_ids = notification.payload.get("events")
     if not event_ids:
         return None

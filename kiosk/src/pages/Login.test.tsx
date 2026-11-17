@@ -294,3 +294,23 @@ it('on the laptop itself there is no encryption notice', () => {
     delete window.__KIOSK_CONFIG__;
   }
 });
+
+it('a blocked address shows the blocked message on the password form', async () => {
+  auth.login.mockRejectedValue(new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: 3600 }));
+  renderLogin();
+  await userEvent.type(screen.getByLabelText('Email'), 'w@x.test');
+  await userEvent.type(screen.getByLabelText('Password'), 'pw');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText(
+    'Too many failed sign-in attempts from this network. Try again in 60 minutes.')).toBeTruthy();
+});
+
+it('a blocked address shows the blocked message on the move password form', async () => {
+  auth.loginWithMovePassword.mockRejectedValue(
+    new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: null }));
+  renderLogin();
+  await openMoveForm();
+  await userEvent.type(screen.getByLabelText('Move password'), 'nope');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText('This network is blocked from signing in. Contact your administrator.')).toBeTruthy();
+});

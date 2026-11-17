@@ -1,16 +1,21 @@
 /** Stacked toasts (max 3) for new inbox items + local messages. Generic:
- *  the only kind-specific bit is the action mapping below. A local message
- *  may carry its own action (the plan sheet's Undo). */
+ *  the kind-specific bits are the action mapping below and `address_blocked`,
+ *  which carries its decision buttons and stays until it is decided or
+ *  dismissed. A local message may carry its own action (the plan sheet's Undo). */
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { getReportRunDownloadUrl } from '../lib/api';
+import { ADDRESS_BLOCKED_KIND } from '../lib/addressBlocked';
 import { leaveFor, resolveInboxLink } from '../lib/inboxLinks';
 import { useLocalToasts, useNotifications } from '../lib/notificationsContext';
 import { openPresigned } from '../lib/reports';
 import '../styles/toast.css';
 
-/** Inbox toasts fade themselves out; the item stays unread in the bell. */
+import AddressBlockedActions from './notifications/AddressBlockedActions';
+
+/** Inbox toasts fade themselves out; the item stays unread in the bell.
+ *  An address-block toast doesn't: it waits for a decision. */
 export const INBOX_TOAST_MS = 10_000;
 
 interface Props {
@@ -32,7 +37,7 @@ export default function ToastHost({ openLink }: Props = {}) {
   };
 
   const shown = newItems.slice(0, 3);
-  const shownIds = shown.map((i) => i.id).join(',');
+  const shownIds = shown.filter((i) => i.kind !== ADDRESS_BLOCKED_KIND).map((i) => i.id).join(',');
   useEffect(() => {
     if (!shownIds) return;
     const timers = shownIds.split(',').map(
@@ -53,7 +58,15 @@ export default function ToastHost({ openLink }: Props = {}) {
 
   return (
     <div className="toast-host">
-      {shown.map((item) => (
+      {shown.map((item) => (item.kind === ADDRESS_BLOCKED_KIND ? (
+        <div key={item.id} className="toast" role="status">
+          <div className="toast-text">
+            <div className="toast-title">{item.title}</div>
+            <AddressBlockedActions item={item} variant="toast" onDone={() => dismissNew(item.id)} />
+          </div>
+          <button className="toast-dismiss" aria-label="Dismiss" onClick={() => dismissNew(item.id)}>×</button>
+        </div>
+      ) : (
         <div key={item.id} className="toast" role="status">
           <div className="toast-text">
             <div className="toast-title">{item.title}</div>
@@ -64,7 +77,7 @@ export default function ToastHost({ openLink }: Props = {}) {
           </button>
           <button className="toast-dismiss" aria-label="Dismiss" onClick={() => dismissNew(item.id)}>×</button>
         </div>
-      ))}
+      )))}
       {toasts.map((t) => (
         <div key={t.id} className="toast toast-local" role="status">
           <div className="toast-text">{t.message}</div>

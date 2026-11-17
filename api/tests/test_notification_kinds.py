@@ -56,15 +56,17 @@ def test_kind_table_matches_the_spec():
         "device_offline": "devices", "status_rule_matched": "status_rules",
         "bulk_action_finished": "bulk_actions", "bulk_action_failed": "bulk_actions",
         "password_expiring": "security", "totp_enrolled": "security",
+        "address_blocked": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
     # registry order is the order the portal shows: the new kinds follow learning, the asset
     # watch and the plan kinds beside the initiative's own
-    assert list(KINDS)[-13:] == ["initiative_status_changed", "asset_watch",
+    assert list(KINDS)[-14:] == ["initiative_status_changed", "asset_watch",
                                  "plan_task_assigned", "plan_task_due", "plan_task_overdue",
                                  "plan_overdue_digest", "truck_status_changed", "device_offline",
                                  "status_rule_matched", "bulk_action_finished",
-                                 "bulk_action_failed", "password_expiring", "totp_enrolled"]
+                                 "bulk_action_failed", "password_expiring", "totp_enrolled",
+                                 "address_blocked"]
     assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label,
             KINDS["device_offline"].label) == (
         "Initiative status changed", "Truck status changed", "Device offline")
@@ -99,6 +101,7 @@ def test_flags_match_the_spec():
         "plan_overdue_digest": (False, False, False),
         "password_expiring": (False, True, True),
         "totp_enrolled": (True, True, True),
+        "address_blocked": (False, False, False),
     }
     # the announced kinds are emailed in full, to whoever hears them, like the defaults
     for kind in ("initiative_status_changed", "truck_status_changed", "device_offline",
@@ -160,7 +163,7 @@ KIND_CONST = re.compile(r"""^KIND(?:_[A-Z]+)?\s*=\s*["']([a-z_]+)["']""", re.MUL
 # announce(db, "literal", ...) — the kind is the second positional argument
 ANNOUNCE_CALL = re.compile(r"""\bannounce\(\s*[\w.]+\s*,\s*["']([a-z_]+)["']""")
 # the modules that name their kinds in module-level KIND / KIND_<X> constants
-KIND_CONST_FILES = ("notifications/reset_requests.py", "notifications/password_reminders.py",
+KIND_CONST_FILES = ("notifications/reset_requests.py", "notifications/address_blocks.py", "notifications/password_reminders.py",
                     "learning/scheduler.py", "plans/reminders.py", "plans/notices.py",
                     "imports/notices.py")
 

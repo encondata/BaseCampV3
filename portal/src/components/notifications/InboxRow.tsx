@@ -15,6 +15,7 @@ import {
   type InboxItem,
 } from '../../lib/api';
 import { GROUP_ERRORS } from '../../lib/notificationGroups';
+import AddressBlockedActions from './AddressBlockedActions';
 /* .portal-shell's --list-* tokens live in directory.css and the shell does
    not import it — without this the row would lose Settings on any page that
    doesn't happen to load a directory list. */
@@ -330,6 +331,7 @@ export default function InboxRow({ item: n, onOpen, onMarkRead, onMarkUnread, on
         {n.kind === 'router_approval' && (
           <RouterApprovalStrip payload={n.payload as unknown as RouterApprovalPayload} onChanged={onChanged} />
         )}
+        {n.kind === 'address_blocked' && <AddressBlockedActions item={n} onDone={onChanged} />}
         {n.kind === 'password_reset_request' && (
           <ResetRequestOutcome payload={n.payload as unknown as ResetRequestPayload} />
         )}

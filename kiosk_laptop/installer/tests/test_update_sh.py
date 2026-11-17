@@ -467,6 +467,48 @@ def test_launch_without_browser_uses_default_opener(tmp_path):
 
 
 
+def _session_launch(tmp_path, rc):
+    calls = tmp_path / "calls"
+    body = (f'session_ready() {{ :; }}; run_session() {{ echo "run $*" >> "{calls}"; return {rc}; }}; '
+            f'restore_session_desktop() {{ echo restore >> "{calls}"; }}; kiosk_answers() {{ :; }}; '
+            f'stop_session_chrome() {{ echo "stop-chrome $*" >> "{calls}"; }}; '
+            f'run_browser() {{ echo "app $*" >> "{calls}"; }}; OS=Linux; main; echo rc=$?')
+    r = _launch(tmp_path, body)
+    return r, (calls.read_text().splitlines() if calls.exists() else [])
+
+
+def test_launch_session_exit_zero_is_a_normal_exit(tmp_path):
+    r, calls = _session_launch(tmp_path, 0)
+    assert calls == ["run /usr/bin/google-chrome"] and "rc=0" in r.stdout
+
+
+@pytest.mark.parametrize("rc", [1, 3])   # 3: the kiosk app has no lockdown (RC_NO_LOCKDOWN)
+def test_launch_session_crash_closes_chrome_restores_then_opens_the_app_window(tmp_path, rc):
+    r, calls = _session_launch(tmp_path, rc)
+    assert calls == ["run /usr/bin/google-chrome", "stop-chrome /usr/bin/google-chrome", "restore",
+                     "app /usr/bin/google-chrome --app=http://localhost:8090"]
+
+
+def test_launch_stop_session_chrome_calls_the_helper(tmp_path):
+    calls = tmp_path / "calls"
+    body = (f'python3() {{ echo "py $*" >> "{calls}"; return 1; }}; '
+            f'stop_session_chrome /usr/bin/google-chrome; restore_session_desktop; echo rc=$?')
+    r = _launch(tmp_path, body)
+    assert calls.read_text().splitlines() == [
+        f"py {tmp_path}/kiosk_session.py stop-chrome --browser /usr/bin/google-chrome",
+        f"py {tmp_path}/kiosk_session.py restore"]
+    assert "rc=0" in r.stdout          # a failing helper never stops the fallback
+
+
+def test_the_no_lockdown_code_matches_launch_sh(tmp_path):
+    """launch.sh's fallback comment and kiosk_session.py agree on rc 3."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ks_rc", LAUNCH_SH.parent / "kiosk_session.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.RC_NO_LOCKDOWN == 3 and "3 = the kiosk app has no lockdown" in LAUNCH_SH.read_text()
+
+
 def test_launch_detects_browser_when_none_configured_linux(tmp_path):
     bindir = tmp_path / "bin"; bindir.mkdir()
     for name in ("microsoft-edge", "chromium"):
@@ -704,3 +746,226 @@ def test_helper_hostnet_run_is_time_limited(tmp_path):
     assert time.time() - t0 < 10
     assert "rc=0" in r.stdout and "hostnet.sh: refreshed" in r.stdout
     assert "didn't finish" in r.stdout
+
+
+# ── kiosk lockdown: launch.sh hands off to kiosk_session.py on Linux ──
+def test_launch_hands_off_to_the_session_on_linux(tmp_path):
+    (tmp_path / "kiosk_session.py").write_text("#!/usr/bin/env python3\n")
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; run_session() {{ echo "session $*" >> "{calls}"; }}; '
+            f'run_browser() {{ echo "app $*" >> "{calls}"; }}; kiosk_answers() {{ :; }}; OS=Linux; main')
+    _launch(tmp_path, body)
+    assert calls.read_text().splitlines() == ["session /usr/bin/google-chrome"]
+
+
+def test_launch_without_the_session_file_keeps_the_app_window(tmp_path):
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; run_session() {{ echo "session $*" >> "{calls}"; }}; '
+            f'run_browser() {{ echo "app $*" >> "{calls}"; }}; kiosk_answers() {{ :; }}; OS=Linux; main')
+    _launch(tmp_path, body)
+    assert calls.read_text().splitlines() == ["app /usr/bin/google-chrome --app=http://localhost:8090"]
+
+
+def test_launch_never_hands_off_on_macos(tmp_path):
+    (tmp_path / "kiosk_session.py").write_text("#!/usr/bin/env python3\n")
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; run_session() {{ echo "session $*" >> "{calls}"; }}; '
+            f'kiosk_answers() {{ :; }}; open() {{ echo "open $*" >> "{calls}"; }}; OS=Darwin; main')
+    _launch(tmp_path, body, config="KIOSK_BROWSER=/Applications/Google Chrome.app\n")
+    assert calls.read_text().splitlines() == ["open -na /Applications/Google Chrome.app --args --app=http://localhost:8090"]
+
+
+def test_launch_without_a_browser_restores_the_desktop_then_opens_the_default(tmp_path):
+    (tmp_path / "kiosk_session.py").write_text("#!/usr/bin/env python3\n")
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; find_browser() {{ :; }}; kiosk_answers() {{ :; }}; '
+            f'restore_session_desktop() {{ echo restore >> "{calls}"; }}; '
+            f'xdg-open() {{ echo "xdg $*" >> "{calls}"; }}; OS=Linux; main')
+    _launch(tmp_path, body, config="KIOSK_BROWSER=\n")
+    assert calls.read_text().splitlines() == ["restore", "xdg http://localhost:8090"]
+
+
+# ── kiosk lockdown: update.sh refreshes kiosk_session.py on Linux ─────
+GOOD_PY = "#!/usr/bin/env python3\nprint('new session')\n"
+
+
+def test_session_py_is_refreshed_on_linux(tmp_path):
+    r, k = _helpers(tmp_path, {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET},
+                    {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET, "kiosk_session.py": GOOD_PY},
+                    body='OS=Linux; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout and "kiosk_session.py: refreshed" in r.stdout
+    assert (k / "kiosk_session.py").read_text() == GOOD_PY
+    assert oct((k / "kiosk_session.py").stat().st_mode & 0o777) == "0o755"
+
+
+def test_session_py_is_never_refreshed_on_macos(tmp_path):
+    r, k = _helpers(tmp_path, {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET},
+                    {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET, "kiosk_session.py": GOOD_PY},
+                    body='OS=Darwin; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout and "kiosk_session.py" not in r.stdout
+    assert not (k / "kiosk_session.py").exists()
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("#!/usr/bin/env bash\necho hi\n", "no python3 shebang"),
+    ("#!/usr/bin/env python3\ndef broken(:\n", "syntax error"),
+])
+def test_a_bad_session_py_is_rejected_and_the_old_one_kept(tmp_path, bad, why):
+    r, k = _helpers(tmp_path, {"kiosk_session.py": GOOD_PY}, {"kiosk_session.py": bad},
+                    body='OS=Linux; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout and f"kiosk_session.py: failed ({why})" in r.stdout
+    assert (k / "kiosk_session.py").read_text() == GOOD_PY
+
+
+# ── release channels: the helper scripts follow the running image's commit ──
+SHA_A = "a" * 40
+SHA_B = "0123456789abcdef0123456789abcdef01234567"
+REVISION_FMT = '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+
+# A fake docker whose images carry a revision label. refid = what the channel
+# tag names; `compose pull` points it at sha256:new; `tag SRC REF` points it
+# at SRC (:previous is sha256:old); `compose up -d` runs it. LABELS maps an
+# image ID to its revision label (no entry = no label: docker's "<no value>").
+# Health is unhealthy for sha256:new when the file "bad" exists.
+LABEL_DOCKER = r'''#!/bin/sh
+D="$(dirname "$0")/ld"
+echo "$*" >> "$D/docker.log"
+last() { for a in "$@"; do l="$a"; done; printf '%s' "$l"; }
+resolve() {
+  case "$1" in
+    sha256:*) echo "$1" ;;
+    *:previous) echo sha256:old ;;
+    *) cat "$D/refid" ;;
+  esac
+}
+label_of() { v=$(grep "^$1 " "$D/labels" | cut -d' ' -f2); echo "${v:-<no value>}"; }
+case "$1" in
+  inspect)
+    run=$(cat "$D/running")
+    [ -n "$run" ] || { echo "Error: No such object" >&2; exit 1; }
+    case "$*" in
+      *State.Health*) if [ "$run" = sha256:new ] && [ -f "$D/bad" ]; then echo unhealthy; else echo healthy; fi ;;
+      *"{{.Image}}"*) echo "$run" ;;
+      *Labels*) [ -f "$D/no-image-inspect" ] || exit 0; label_of "$run" ;;
+    esac ;;
+  image)
+    case "$*" in
+      *Labels*) [ ! -f "$D/no-image-inspect" ] || { echo "Error: No such image" >&2; exit 1; }
+                label_of "$(last "$@")" ;;
+      *"{{.Id}}"*) resolve "$(last "$@")" ;;
+    esac ;;
+  tag) case "$3" in *:previous) ;; *) resolve "$2" > "$D/refid" ;; esac ;;
+  compose)
+    case "$*" in
+      *" pull") echo sha256:new > "$D/refid" ;;
+      *" up -d") cat "$D/refid" > "$D/running" ;;
+    esac ;;
+esac
+exit 0
+'''
+
+
+def _label_run(tmp_path, labels, body='main; echo rc=$?', config="", running="sha256:old",
+               bad=False, no_image_inspect=False):
+    """update.sh against LABEL_DOCKER, helpers downloaded through a curl stub;
+    returns (CompletedProcess, curl.log text, update.log text)."""
+    k = tmp_path / "k"; k.mkdir()
+    (k / "hostnet.sh").write_text(OLD_HOSTNET); (k / "launch.sh").write_text(OLD_HOSTNET)
+    if config:
+        (k / "config.env").write_text(config)
+    d = tmp_path / "ld"; d.mkdir()
+    (d / "running").write_text(running)
+    (d / "refid").write_text(running)
+    (d / "labels").write_text("".join(f"{i} {v}\n" for i, v in labels.items()))
+    if bad:
+        (d / "bad").write_text("")
+    if no_image_inspect:
+        (d / "no-image-inspect").write_text("")
+    fake = tmp_path / "docker"; fake.write_text(LABEL_DOCKER); fake.chmod(0o755)
+    st = tmp_path / "status.json"; st.write_text(IDLE)
+    bindir = _curl_stub(tmp_path)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k), "TMPDIR": str(tmp_path),
+           "PATH": f"{bindir}:{os.environ['PATH']}"}
+    env.pop("KIOSK_TEMPLATE_DIR", None)
+    r = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); '
+                        f'status_json() {{ cat "{st}"; }}; HEALTH_POLL_S=0; HEALTH_TIMEOUT_S=0; {body}'],
+                       capture_output=True, text=True, env=env)
+    curl = (bindir / "curl.log").read_text() if (bindir / "curl.log").exists() else ""
+    log = (k / "update.log").read_text() if (k / "update.log").exists() else ""
+    return r, curl, log
+
+
+@pytest.mark.parametrize("config", ["", "KIOSK_INSTALLER_REF=\n", "KIOSK_INSTALLER_REF=main\n"])
+def test_helper_ref_is_the_running_images_revision_label(tmp_path, config):
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref', config=config)
+    assert r.stdout == SHA_B
+    assert f"the running image's revision label ({SHA_B})" in r.stderr
+    assert f"image inspect --format {REVISION_FMT} sha256:old" in (tmp_path / "ld" / "docker.log").read_text()
+
+
+def test_helper_refresh_downloads_from_the_revision(tmp_path):
+    r, curl, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout
+    assert f"/BaseCampV3/{SHA_B}/kiosk_laptop/installer/hostnet.sh" in curl
+    assert f"/{SHA_B}/kiosk_laptop/installer/launch.sh" in curl
+    assert "/main/" not in curl
+    assert f"Refreshing helper scripts (ref {SHA_B})" in r.stdout
+
+
+@pytest.mark.parametrize("label", [
+    None,                                         # built before this change: no label at all
+    "",                                           # a local build (KIOSK_REVISION left empty)
+    "a" * 39, "a" * 41, "A" * 40,                 # wrong length, uppercase
+    "g" * 40, "main", "0123456789abcdef0123456789abcdef0123456;",
+])
+def test_helper_ref_falls_back_to_main_without_a_valid_label(tmp_path, label):
+    labels = {} if label is None else {"sha256:old": label}
+    r, _, _ = _label_run(tmp_path, labels, body='installer_ref')
+    assert r.stdout == "main"
+    assert "no usable revision label" in r.stderr and "using main" in r.stderr
+
+
+def test_helper_ref_is_main_when_no_kiosk_container_runs(tmp_path):
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref', running="")
+    assert r.stdout == "main" and "using main" in r.stderr
+
+
+def test_helper_ref_reads_the_containers_labels_when_the_image_cant_be_inspected(tmp_path):
+    # Docker Desktop's containerd store can't find an image by ID once no name is left.
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref', no_image_inspect=True)
+    assert r.stdout == SHA_B
+
+
+@pytest.mark.parametrize("pinned", ["feature-x", "release/1.2", SHA_A])
+def test_a_pinned_installer_ref_beats_the_label(tmp_path, pinned):
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref',
+                         config=f"KIOSK_INSTALLER_REF={pinned}\n")
+    assert r.stdout == pinned
+    assert f"pinned by KIOSK_INSTALLER_REF in config.env ({pinned})" in r.stderr
+    calls = tmp_path / "ld" / "docker.log"
+    assert not calls.exists() or "Labels" not in calls.read_text()   # the label isn't even read
+
+
+def test_a_40_hex_ref_passes_validation(tmp_path):
+    k = tmp_path / "k"; k.mkdir()
+    (k / "config.env").write_text(f"KIOSK_INSTALLER_REF={SHA_B}\n")
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k)}
+    out = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=(false); installer_ref'],
+                         capture_output=True, text=True, env=env)
+    assert out.stdout == SHA_B and "Ignoring" not in out.stderr
+
+
+def test_the_refresh_follows_the_image_the_update_just_started(tmp_path):
+    r, curl, log = _label_run(tmp_path, {"sha256:old": SHA_A, "sha256:new": SHA_B})
+    assert "rc=0" in r.stdout, log
+    assert (tmp_path / "ld" / "running").read_text().strip() == "sha256:new"
+    assert f"/{SHA_B}/kiosk_laptop/installer/hostnet.sh" in curl and SHA_A not in curl
+    assert log.index("updated to sha256:new") < log.index(f"Refreshing helper scripts (ref {SHA_B})")
+
+
+def test_the_refresh_follows_the_image_a_rollback_put_back(tmp_path):
+    r, curl, log = _label_run(tmp_path, {"sha256:old": SHA_A, "sha256:new": SHA_B}, bad=True)
+    assert "rc=1" in r.stdout, log
+    assert (tmp_path / "ld" / "running").read_text().strip() == "sha256:old"
+    assert f"/{SHA_A}/kiosk_laptop/installer/hostnet.sh" in curl and SHA_B not in curl
+    assert log.index("rolled back to sha256:old") < log.index(f"Refreshing helper scripts (ref {SHA_A})")

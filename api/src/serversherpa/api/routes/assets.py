@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from sqlalchemy import select
 
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.scope import roster_row_condition, scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -315,7 +315,8 @@ async def list_asset_moves(
 
     Scoped by INITIATIVE, not only by asset: one asset can sit on two
     clients' moves, and a client-anchored actor must not learn another
-    client's move exists through an asset they can legitimately see."""
+    client's move exists through an asset they can legitimately see. Rows
+    also pass the client-groups row rule."""
     await _get_asset(db, asset_id, actor)
 
     query = (
@@ -328,6 +329,10 @@ async def list_asset_moves(
     cond = scope_conditions("initiatives", actor.access, actor.person.id)
     if cond is not None:
         query = query.where(cond)
+    # client groups: only the roster rows a restricted login may see
+    row_cond = roster_row_condition(actor.access)
+    if row_cond is not None:
+        query = query.where(row_cond)
     rows = (await db.execute(query)).all()
 
     init_labels = await status_labels(db, "initiative")

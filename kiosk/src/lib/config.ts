@@ -20,6 +20,9 @@ declare global {
       /** The laptop edge serves this true when the page was reached through
        *  a LAN address rather than localhost (plain HTTP on the network). */
       lanAccess?: boolean;
+      /** The laptop edge serves "linux" when hostnet.sh reported a Linux
+       *  laptop (the kiosk lockdown is Linux-only); null elsewhere. */
+      hostOs?: string | null;
     };
   }
 }

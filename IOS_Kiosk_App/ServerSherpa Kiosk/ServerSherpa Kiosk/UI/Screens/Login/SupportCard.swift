@@ -11,31 +11,38 @@ struct SupportCard: View {
                 .ignoresSafeArea()
                 .onTapGesture(perform: onClose)
                 .accessibilityHidden(true)
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Text("ACCOUNT RECOVERY")
-                        .font(KioskType.mono(12))
-                        .tracking(0.3 * 12)
-                        .foregroundStyle(LoginTokens.orange)
-                        .fixedSize()
-                    Rectangle().fill(LoginTokens.line).frame(height: 1)
+            // Got it never scrolls: when the card is taller than the screen (very large text, an
+            // iPhone in landscape) only the text above it scrolls.
+            PinnedActions(padding: EdgeInsets(top: 36, leading: 32, bottom: 30, trailing: 32)) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Text("ACCOUNT RECOVERY")
+                            .font(KioskType.mono(12))
+                            .tracking(0.3 * 12)
+                            .foregroundStyle(LoginTokens.orange)
+                            // Its full width first (the rule takes the rest), but it wraps rather
+                            // than widen the card past an iPhone's screen at the largest text sizes.
+                            .layoutPriority(1)
+                        Rectangle().fill(LoginTokens.line).frame(height: 1)
+                    }
+                    Text("📞")
+                        .font(.system(size: 38))
+                        .frame(width: 80, height: 80)
+                        .background(Color(hex: 0xFFA12E, alpha: 0.16), in: Circle())
+                        .padding(.top, 22)
+                        .padding(.bottom, 14)
+                        .accessibilityHidden(true)
+                    Text("Call Jimmy")
+                        .font(KioskType.sans(23, .semibold))
+                        .tracking(-0.015 * 23)
+                        .foregroundStyle(LoginTokens.ink)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("He'll help you get back in.")
+                        .font(KioskType.sans(15, .light))
+                        .foregroundStyle(LoginTokens.slate)
+                        .padding(.top, 8)
                 }
-                Text("📞")
-                    .font(.system(size: 38))
-                    .frame(width: 80, height: 80)
-                    .background(Color(hex: 0xFFA12E, alpha: 0.16), in: Circle())
-                    .padding(.top, 22)
-                    .padding(.bottom, 14)
-                    .accessibilityHidden(true)
-                Text("Call Jimmy")
-                    .font(KioskType.sans(23, .semibold))
-                    .tracking(-0.015 * 23)
-                    .foregroundStyle(LoginTokens.ink)
-                    .accessibilityAddTraits(.isHeader)
-                Text("He'll help you get back in.")
-                    .font(KioskType.sans(15, .light))
-                    .foregroundStyle(LoginTokens.slate)
-                    .padding(.top, 8)
+            } actions: {
                 Button(action: onClose) {
                     Text("Got it")
                         .font(KioskType.sans(18, .semibold))
@@ -48,9 +55,6 @@ struct SupportCard: View {
                 .buttonStyle(.plain)
                 .padding(.top, 24)
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 36)
-            .padding(.bottom, 30)
             .frame(maxWidth: 404)
             .background(LoginTokens.canvas, in: RoundedRectangle(cornerRadius: 18))
             .overlay(alignment: .topTrailing) {

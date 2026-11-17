@@ -135,7 +135,7 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
         } else {
             ScanInput(
                 ui.value, vm::onValueChange, onSubmit = { if (ready) vm.onScan(it) },
-                placeholder = "Scan or type an asset tag, serial, RFID, or name",
+                placeholder = "Asset tag, serial, RFID, or name",
                 enabled = ready, keepFocus = !camera,
                 trailingIcon = if (container.hasCamera) ({ CameraFieldButton(ready) { camera = true } }) else null,
             )

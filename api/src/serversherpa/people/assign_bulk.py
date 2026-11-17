@@ -24,6 +24,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.role_mix import (
+    CONFLICT_ROW_ERROR,
+    assert_no_client_worker_mix,
+    client_contact_ids,
+)
 from serversherpa.db.models import (
     ContactProfile,
     Initiative,
@@ -227,6 +232,9 @@ async def load_reference(db: AsyncSession, initiative_id: uuid.UUID,
         "site_names": site_names, "partner_names": partner_names,
         "email_owner_names": email_owner_names, "role_labels": role_labels,
         "status_labels": status_labels, "account_ids": account_ids, "max_rank": max_rank,
+        # a client contact can't also be a worker (access/role_mix.py)
+        "client_contacts": {str(pid) for pid in await client_contact_ids(
+            db, [cand.person.id for cand in people.values() if not cand.is_worker])},
     }
 
 
@@ -482,6 +490,10 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
         commits = r["action"] in ("assign", "create") or (
             r["action"] == "already_assigned" and change == "update"
             and bool(kinds & set(CHANGE_KINDS)))
+        if commits and r["becomes_worker"] and r["person_id"] in ref["client_contacts"]:
+            # this row would make a client contact a worker: it fails, with the reason
+            r["errors"].append(CONFLICT_ROW_ERROR)
+            r["action"], commits = "error", False
         r["_writes"] = {"commits": commits,
                         "profile_partner_id": _profile_partner(ref, r, partner_id, change)}
         # "(becomes a worker)" only on a row this commit would write
@@ -733,6 +745,8 @@ async def _update_person(db: AsyncSession, actor_id: uuid.UUID, r: dict, ref: di
 
     if not cand.is_worker:
         # a revoked role is history: grant a new one, as the workers import does
+        # (the preview refuses a client contact; one added since is refused here)
+        await assert_no_client_worker_mix(db, person.id, "worker")
         db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
         changes["worker_role"] = {"from": None, "to": "granted"}
 

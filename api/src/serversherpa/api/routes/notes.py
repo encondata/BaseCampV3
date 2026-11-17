@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from serversherpa.access.hosts import NOTE_HOSTS, authorize_host_view
+from serversherpa.access.hosts import NOTE_HOSTS, authorize_host_view, host_items_hidden
 from serversherpa.access.visibility import can_set_visibility, visible_levels
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
@@ -34,13 +34,13 @@ def _err(status: int, code: str, **extra) -> HTTPException:
 async def _authorize_host(
     db: DbSession, actor: AuthContext, entity_type: str,
     entity_id: uuid.UUID, action: str,
-) -> None:
-    """view: the shared host read rule (host view + scope, 404 outside).
+) -> bool:
+    """view: the shared host read rule (host view + scope, 404 outside);
+    False when the host's notes are hidden from the actor (client groups).
     write: host resource change + global anchor (client tiers are read-only).
     The global anchor spans every row, so no scope probe is needed."""
     if action == "view":
-        await authorize_host_view(db, actor, entity_type, entity_id)
-        return
+        return await authorize_host_view(db, actor, entity_type, entity_id)
     host = NOTE_HOSTS.get(entity_type)
     if host is None:
         raise _err(422, "unknown_entity_type")
@@ -52,6 +52,7 @@ async def _authorize_host(
     row = await db.get(model, entity_id)
     if row is None:
         raise _err(404, "entity_not_found")
+    return True
 
 
 def _out(note: Note, authors: dict) -> NoteOut:
@@ -77,7 +78,8 @@ async def list_notes(
     db: DbSession,
     actor: CurrentUser,
 ) -> list[NoteOut]:
-    await _authorize_host(db, actor, entity_type, entity_id, "view")
+    if not await _authorize_host(db, actor, entity_type, entity_id, "view"):
+        return []
     notes = (await db.scalars(
         select(Note).where(Note.entity_type == entity_type,
                            Note.entity_id == entity_id,
@@ -115,7 +117,8 @@ async def _get_live_note(
 ) -> Note:
     note = await db.get(Note, note_id)
     if note is None or note.deleted_at is not None \
-            or note.visibility not in visible_levels(actor.access):
+            or note.visibility not in visible_levels(actor.access) \
+            or await host_items_hidden(db, actor, note.entity_type, note.entity_id):
         raise _err(404, "note_not_found")
     return note
 

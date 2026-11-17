@@ -430,9 +430,15 @@ async def test_patch_validates_settings_and_archive(client, db, seeded_user, ren
     assert resp.status_code == 204, resp.text
     assert (await client.get(url, headers=hdrs)).json()["archived_at"] is not None
     assert (await client.get("/learning/documents", headers=hdrs)).json() == []
+    # only a super admin or above sees archived documents (Library › Show archived)
+    resp = await client.get("/learning/documents?include_archived=true", headers=hdrs)
+    assert resp.status_code == 403, resp.text
+    super_hdrs = await _make(db, client, "super_admin",
+                             f"lib-super-{uuid.uuid4().hex[:8]}@test.example.com")
     listed = (await client.get("/learning/documents?include_archived=true",
-                               headers=hdrs)).json()
+                               headers=super_hdrs)).json()
     assert [d["id"] for d in listed] == [doc["id"]]
+    assert listed[0]["archived_at"] is not None
     actions = await _actions(db, doc["id"])
     assert actions[0] == "learning_document_create"
     assert actions[-1] == "learning_document_archive"
