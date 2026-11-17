@@ -636,10 +636,13 @@ class RfidPanelTest {
         val rfidBefore = saved(c)
         switch.performClick()
         compose.waitUntilIdlingMain { runBlocking { !c.prefs.sledFlash.first() } }
+        // The panel reads the setting back from DataStore, one IO hop after the write: wait for the switch itself.
+        compose.waitUntilIdlingMain { runCatching { compose.onNodeWithTag("sled-flash").assertIsOff() }.isSuccess }
         switch.assertIsOff()
         assertEquals("the RFID settings are untouched", rfidBefore, saved(c))
         switch.performClick()
         compose.waitUntilIdlingMain { runBlocking { c.prefs.sledFlash.first() } }
+        compose.waitUntilIdlingMain { runCatching { compose.onNodeWithTag("sled-flash").assertIsOn() }.isSuccess }
         switch.assertIsOn()
     }
 
