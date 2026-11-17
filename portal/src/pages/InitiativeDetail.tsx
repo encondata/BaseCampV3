@@ -2,7 +2,8 @@
  * InitiativeDetail — the Full Details page for one initiative
  * (/initiatives/:id), in the spirit of BaseCampV2's ProjectDetail/
  * MoveDetail: header with every top-level field, then section cards.
- * Field edits still route through InitiativeEditModal — this page only
+ * Field edits live in the Edit tab (InitiativeEditTab, the same fields and
+ * saving as the /initiatives list's InitiativeEditModal) — this page only
  * owns its own data load plus the sections below the header (People,
  * Linked initiatives, Notes & Attachments follow the same run()/refetch
  * pattern as InitiativeRowDetail in Initiatives.tsx).
@@ -18,7 +19,7 @@ import { useAuth } from '../auth/AuthContext';
 import AssetLocation from '../components/assets/AssetLocation';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
-import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
+import InitiativeEditTab from '../components/initiatives/InitiativeEditTab';
 import RackViewModal from '../components/initiatives/RackViewModal';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import InlineTextField from '../components/InlineTextField';
@@ -110,7 +111,8 @@ const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
  *  with project_plans:view. Learning is offered only to
  *  Learning managers: every call behind it is a manager call (the roster
  *  and summary refuse anyone else), so there is nothing a plain
- *  workers:view holder could read there. */
+ *  workers:view holder could read there. Edit (the initiative's fields,
+ *  Save and Archive) is offered only with initiatives:change. */
 const DETAIL_TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'full', label: 'Full Picture' },
@@ -120,6 +122,7 @@ const DETAIL_TABS = [
   { key: 'time', label: 'Time' },
   { key: 'notes', label: 'Notes and files' },
   { key: 'learning', label: 'Learning' },
+  { key: 'edit', label: 'Edit' },
 ] as const;
 type DetailTab = typeof DETAIL_TABS[number]['key'];
 
@@ -240,7 +243,8 @@ export default function InitiativeDetail() {
   const [partners, setPartners] = useState<OrgRef[]>([]);
   const [workers, setWorkers] = useState<WorkerOption[]>([]);
   const [allInitiatives, setAllInitiatives] = useState<InitiativeItem[]>([]);
-  const [editing, setEditing] = useState(false);
+  // bumped once the refetch after the Edit tab's own save lands
+  const [editSaved, setEditSaved] = useState(0);
 
   // People section
   const [editingPerson, setEditingPerson] = useState<InitiativePersonRow | null>(null);
@@ -327,7 +331,7 @@ export default function InitiativeDetail() {
   const canSeeLearning = useLearningAccess()('view');
   const canSeePlan = can('project_plans', 'view');
   const tabs = DETAIL_TABS.filter((t) => (t.key !== 'learning' || canSeeLearning)
-    && (t.key !== 'plan' || canSeePlan));
+    && (t.key !== 'plan' || canSeePlan) && (t.key !== 'edit' || canChange));
   const tab: DetailTab = tabs.some((t) => t.key === tabParam)
     ? tabParam as DetailTab : 'overview';
   const selectTab = (next: DetailTab) => {
@@ -339,6 +343,10 @@ export default function InitiativeDetail() {
       return p;
     }, { replace: true });
   };
+  // The Edit tab mounts the first time it is opened, then stays mounted
+  // (hidden) so a draft survives a look at another tab.
+  const [editOpened, setEditOpened] = useState(false);
+  useEffect(() => { if (tab === 'edit') setEditOpened(true); }, [tab]);
   const showOverview = tab === 'overview' || tab === 'full';
   const showAssets = tab === 'assets' || tab === 'full';
   // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
@@ -799,7 +807,7 @@ export default function InitiativeDetail() {
             </Link>
           )}
           {canChange && (
-            <button className="btn-solid" onClick={() => setEditing(true)}>
+            <button className="btn-solid" onClick={() => selectTab('edit')}>
               Edit
             </button>
           )}
@@ -1325,24 +1333,36 @@ export default function InitiativeDetail() {
           </div>
         )}
 
+        {/* Once opened, kept mounted (hidden) on the other tabs, so a draft
+            survives a look elsewhere; its own save refetches here, then
+            bumps editSaved. */}
+        {canChange && (editOpened || tab === 'edit') && (
+          <div className="idet-edit-tab" hidden={tab !== 'edit'}>
+            <InitiativeEditTab
+              initiative={initiative}
+              statuses={statuses} types={types} subTypes={subTypes}
+              shippingTypes={shippingTypes}
+              sites={sites} clients={clients} partners={partners}
+              isAdmin={isAdmin}
+              savedCount={editSaved}
+              onSaved={async () => {
+                try {
+                  setInitiative(await getInitiative(initiative.id));
+                } catch {
+                  load();
+                }
+                setEditSaved((n) => n + 1);
+              }}
+            />
+          </div>
+        )}
+
         {tab === 'learning' && (
           <div className="idet-learning">
             <InitiativeLearningTab initiativeId={initiative.id} />
           </div>
         )}
       </div>
-
-      {editing && (
-        <InitiativeEditModal
-          initiative={initiative}
-          statuses={statuses} types={types} subTypes={subTypes}
-          shippingTypes={shippingTypes}
-          sites={sites} clients={clients} partners={partners}
-          isAdmin={isAdmin} canChange={canChange}
-          onClose={() => setEditing(false)}
-          onSaved={() => load()}
-        />
-      )}
 
       {editingPerson && (
         <PersonEditDialog
