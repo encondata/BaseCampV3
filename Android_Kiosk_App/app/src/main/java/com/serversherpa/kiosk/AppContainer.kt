@@ -1,9 +1,14 @@
 package com.serversherpa.kiosk
 
+import android.Manifest
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.core.content.ContextCompat
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
@@ -11,6 +16,11 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.serversherpa.kiosk.core.labels.SavedPrinter
+import com.serversherpa.kiosk.core.rfid.SledBarcode
+import com.serversherpa.kiosk.core.rfid.SledInfo
+import com.serversherpa.kiosk.core.rfid.SledScannerState
+import com.serversherpa.kiosk.core.scan.SledScanGuard
+import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.data.api.AndroidSecretStore
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.OkHttpKioskApi
@@ -57,12 +67,16 @@ import com.serversherpa.kiosk.data.station.StationStatus
 import com.serversherpa.kiosk.data.station.issueAndStore
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.input.ScanBus
+import com.serversherpa.kiosk.input.ScanEvent
+import com.serversherpa.kiosk.input.ScanSource
 import com.serversherpa.kiosk.input.camera.hasCamera
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.input.datawedge.DataWedgeReceiver
+import com.serversherpa.kiosk.input.datawedge.isZebraHost
 import com.serversherpa.kiosk.input.rfid.RfidController
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
+import com.serversherpa.kiosk.input.rfid.SledNudgeReceiver
 import com.serversherpa.kiosk.input.rfid.ZebraRfidReader
 import com.serversherpa.kiosk.nettest.InternetTest // INTERNET-TEST
 import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
@@ -71,11 +85,13 @@ import com.serversherpa.kiosk.ui.screens.login.EnrollOffer
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -171,6 +187,7 @@ class AppContainer(
     val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
+    val isZebraHost: Boolean = isZebraHost(app)
     val hasCamera: Boolean = hasCamera(app)
     val heartbeat = Heartbeat(api, identity, config, prefs, deviceInfo = {
         mapOf(
@@ -188,8 +205,45 @@ class AppContainer(
     // Every test passes rfidReaderOverride (see TestContainer.kt) so it never
     // constructs the real Zebra reader. Nothing above the interface can tell
     // the difference between this and the fake.
-    val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope)
-    val rfid = RfidController(rfidReader, prefs.rfid, scope)
+    val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope, isZebraHost)
+    val rfid = RfidController(
+        rfidReader, prefs.rfid, scope, zebraHost = isZebraHost, printerBusy = { printerLock.isLocked }, sledFlashesOn = prefs.sledFlash,
+    )
+
+    /** Delivers each sled scan once, typed or through the sled's scanner, whichever comes first
+     *  (ruling 3). MainActivity provides it to the scan boxes; typing counts as sled activity. */
+    val sledScanGuard = SledScanGuard(log = { Log.i(SLED_LOG_TAG, it) }, onTyping = { rfid.noteActivity() })
+
+    /** The Settings tab on screen while Settings is composed, else null (ruling 33): with the
+     *  route, it tells the controller whether Settings › RFID, a sled screen, is open. */
+    val settingsTab = MutableStateFlow<SettingsTabId?>(null)
+
+    /** Bluetooth on, or the sled's link appearing: a nudge for the reconnect (registered while
+     *  in front, by [processLifecycle]). Whose link counts is the controller's own rule
+     *  (`nudgeAddress()`: the last or saved sled while it is still paired), so the two filters
+     *  never disagree. */
+    internal val sledNudgeReceiver = SledNudgeReceiver(
+        nudge = { reason, address, name -> rfid.nudge(reason, address, name) },
+        lastSledAddress = { rfid.nudgeAddress() },
+        canReadDevices = { context ->
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        },
+    )
+
+    private val scannerInputSent = AtomicBoolean(false)
+
+    /** Ruling 2: on a Zebra host, turns DataWedge's scanner input back on once per process (an
+     *  earlier build's plugin setting could have left the handheld's own scanner off). Called
+     *  from MainActivity's onResume, after [start] has configured DataWedge. */
+    fun enableScannerInputOnce(context: Context) {
+        if (!isZebraHost) return
+        if (scannerInputSent.compareAndSet(false, true)) {
+            DataWedge.enableScannerInput(context)
+            // Hardware script step 30 counts this line: one per process.
+            Log.i(DATAWEDGE_LOG_TAG, "Sent DataWedge's ENABLE_PLUGIN for the scanner input (once per process).")
+        }
+    }
 
     /** The app coming to the front and going to the background (ProcessLifecycleOwner; [start]
      *  registers it). */
@@ -210,12 +264,14 @@ class AppContainer(
             // of how long the enabled/permission check or the connect
             // itself then takes. See RfidController's class doc.
             rfid.connectForLifecycle { prefs.rfid.first().enabled && RfidPermissions.granted(app) }
+            sledNudgeReceiver.register(app)
             // Back from Settings, say: Android sends nothing when a permission is granted.
             zebraBluetooth.refreshAvailability()
         }
         override fun onStop(owner: LifecycleOwner) {
             foreground.value = false
             rfid.disconnectForLifecycle()
+            sledNudgeReceiver.unregister(app)
             outbox.stop()
             // No Bluetooth in the background: a label already going out finishes, then the link closes.
             zebraBluetooth.close()
@@ -245,6 +301,57 @@ class AppContainer(
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycle)
         DataWedge.configure(app)
         rfid.start()
+        startSledWiring()
+    }
+
+    /** The sled's scanner state into the guard, its barcodes onto the scan bus once, and the
+     *  address of a sled the adapter chose by itself saved. Called by [start]. */
+    private fun startSledWiring() {
+        scope.launch { rfidReader.scanner.collect { sledScanGuard.scannerReady = it == SledScannerState.Ready } }
+        scope.launch { rfidReader.barcodes.collect { onSledBarcode(it) } }
+        scope.launch { rfidReader.info.collect { onSledInfo(it) } }
+    }
+
+    /**
+     * A barcode from the sled's scanner session: held while a typed copy may still be arriving,
+     * then offered to the guard, then published as [ScanSource.SLED] while the app is in front
+     * (ruling 19: in the background it is dropped, as a DataWedge scan is). The hold advances by
+     * the waits it made rather than by reading the clock again, so it always ends.
+     */
+    private suspend fun onSledBarcode(barcode: SledBarcode) {
+        val arrived = SystemClock.elapsedRealtime()
+        var waited = 0L
+        while (true) {
+            val hold = sledScanGuard.sessionHoldMs(arrived, arrived + waited)
+            if (hold == 0L) break
+            delay(hold)
+            waited += hold
+        }
+        if (!sledScanGuard.acceptSession(barcode.value, arrived + waited)) return
+        if (!foreground.value) {
+            Log.i(SLED_LOG_TAG, "A sled barcode arrived with the app in the background; dropped (${barcode.value.length} characters).")
+            return
+        }
+        scanBus.publish(ScanEvent(barcode.value, ScanSource.SLED, barcode.label))
+        // The positive line for the route (hardware script step 18): length and type, never the value.
+        Log.i(SLED_LOG_TAG, "Delivered a sled scan through the scanner session (${barcode.value.length} characters, ${barcode.label ?: "type unknown"}).")
+        rfid.noteActivity()
+    }
+
+    /**
+     * Ruling 38: the address of a sled the adapter chose by itself is saved, so the next connect
+     * goes straight to it. The edit re-checks the saved address: a sled the operator picked
+     * meanwhile (one still paired) is kept.
+     */
+    private suspend fun onSledInfo(info: SledInfo?) {
+        if (info == null || !info.autoChosen) return
+        val address = info.address ?: return
+        if (prefs.rfid.first().readerAddress.equals(address, ignoreCase = true)) return
+        val paired = rfidReader.pairedSleds()
+        prefs.updateRfid { s ->
+            val saved = s.readerAddress
+            if (saved == null || paired.none { it.address.equals(saved, ignoreCase = true) }) s.copy(readerAddress = address) else s
+        }
     }
 
     /**
@@ -322,3 +429,9 @@ class AppContainer(
 }
 
 val LocalAppContainer = staticCompositionLocalOf<AppContainer> { error("No AppContainer provided") }
+
+/** The log tag of the sled scan path: the guard, sled barcodes and the external keyboard log. */
+internal const val SLED_LOG_TAG = "SledScanGuard"
+
+/** The tag of the one DataWedge line the container writes (its ENABLE_PLUGIN broadcast). */
+internal const val DATAWEDGE_LOG_TAG = "DataWedge"

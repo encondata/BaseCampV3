@@ -38,33 +38,27 @@ enum class RfidSession(val wire: String, val label: String) {
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
 }
 
-/** Which physical engine the sled's trigger drives once connected — the RFID
- *  radio, or its barcode imager. A field an operator can flip on the device to
- *  diagnose a sled that connects but keeps firing its imager instead of the
- *  radio (see `ZebraRfidReader.configureTriggerMode`'s doc for the story).
- *  Applied only at connect time, never by the live settings push — see
- *  `RfidController`'s settings collector, which excludes this field from the
- *  push comparison the same way it already excludes `enabled`/`region`. */
-enum class RfidTriggerPersonality(val wire: String, val label: String, val hint: String) {
-    RFID("rfid", "RFID", "The trigger drives the RFID radio. Takes effect on the next connect."),
-    BARCODE("barcode", "Barcode", "The trigger drives the sled's barcode imager instead of the radio. Takes effect on the next connect."),
-    ;
-    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
+/**
+ * What the sled's two triggers do (ruling 1): both read tags, both scan
+ * barcodes, or the upper reads tags and the lower scans ("Both" on screen,
+ * [SPLIT] in code). It applies live; the controller writes it to the sled.
+ * On a Zebra host, or for a sled known to have no scanner, the sled gets the
+ * RFID layout whatever this says (see `effectiveLayout`).
+ */
+enum class SledTriggerLayout(val wire: String, val label: String) {
+    RFID("rfid", "RFID"), BARCODE("barcode", "Barcode"), SPLIT("split", "Both");
+
+    /** What the triggers do in this layout, in the operator's words. */
+    val hint: String get() = SledWords.hint(this)
+
+    companion object { fun fromWire(s: String?): SledTriggerLayout? = entries.firstOrNull { it.wire == s } }
 }
 
-/** Whether connecting also asks the SDK to stand down the host's barcode
- *  scanner plugin — Zebra's `updateScannerPlugin` flag on `setTriggerMode`.
- *  AUTOMATIC is today's behavior (follow whether DataWedge is installed) and
- *  the default, so nothing regresses; YES/NO let an operator override that
- *  guess on a host — like a bare Pixel — where the guess might be wrong.
- *  Applied only at connect time; see [RfidTriggerPersonality]'s doc for why
- *  it is excluded from the live settings push the same way. */
-enum class ScannerPluginMode(val wire: String, val label: String, val hint: String) {
-    AUTO("auto", "Automatic", "Follows whether DataWedge is installed on this device. Takes effect on the next connect."),
-    ON("on", "Yes", "Also asks the reader to stand down the host's barcode scanner plugin. Takes effect on the next connect."),
-    OFF("off", "No", "Leaves the host's barcode scanner plugin alone. Takes effect on the next connect."),
-    ;
-    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
+/** The layout an older build's "Trigger drives" value means (ruling 16): `rfid` or `barcode`. */
+private fun layoutFromOldTriggerPersonality(s: String?): SledTriggerLayout? = when (s) {
+    "rfid" -> SledTriggerLayout.RFID
+    "barcode" -> SledTriggerLayout.BARCODE
+    else -> null
 }
 
 const val RFID_POWER_MIN = 5
@@ -76,6 +70,10 @@ const val RFID_POPULATION_MAX = 1000
  * Everything the operator can set about the reader, kiosk-local like the rest
  * of the settings. `powerDbm` is the one most likely to need tuning on site:
  * high power is what makes a sweep pull in the next rack.
+ *
+ * `enabled`, `region`, `triggerLayout` and `readerAddress` are not part of the
+ * radio push (`RfidReader.apply` never reads them). [readerAddress] is the
+ * chosen sled's Bluetooth address, null when none is saved.
  */
 data class RfidSettings(
     val enabled: Boolean = false,
@@ -86,11 +84,10 @@ data class RfidSettings(
     val session: RfidSession = RfidSession.S1,
     val tagPopulation: Int = 30,
     val uniqueTagReport: Boolean = true,
-    val ledOnRead: Boolean = true,
     val dpo: Boolean = true,
     val region: String? = null,
-    val triggerPersonality: RfidTriggerPersonality = RfidTriggerPersonality.RFID,
-    val scannerPluginMode: ScannerPluginMode = ScannerPluginMode.AUTO,
+    val triggerLayout: SledTriggerLayout = SledTriggerLayout.RFID,
+    val readerAddress: String? = null,
 )
 
 val DEFAULT_RFID_SETTINGS = RfidSettings()
@@ -114,14 +111,15 @@ fun RfidSettings.toJson(): String = buildJsonObject {
     put("session", session.wire)
     put("tagPopulation", tagPopulation)
     put("uniqueTagReport", uniqueTagReport)
-    put("ledOnRead", ledOnRead)
     put("dpo", dpo)
     if (region != null) put("region", region)
-    put("triggerPersonality", triggerPersonality.wire)
-    put("scannerPluginMode", scannerPluginMode.wire)
+    put("triggerLayout", triggerLayout.wire)
+    if (readerAddress != null) put("readerAddress", readerAddress)
 }.toString()
 
-/** A bad field falls back to its default; a bad document falls back to all of them. */
+/** A bad field falls back to its default; a bad document falls back to all of them. Keys an
+ *  older build wrote and this one dropped (`scannerPluginMode`, `ledOnRead`) are ignored. An
+ *  absent or unknown `triggerLayout` is read from the old `triggerPersonality` key instead. */
 fun parseRfidSettings(raw: String?): RfidSettings {
     val obj = try { raw?.let { json.parseToJsonElement(it).jsonObject } } catch (e: Exception) { null }
         ?: return DEFAULT_RFID_SETTINGS
@@ -142,10 +140,11 @@ fun parseRfidSettings(raw: String?): RfidSettings {
         session = RfidSession.fromWire(str("session")) ?: d.session,
         tagPopulation = int("tagPopulation") ?: d.tagPopulation,
         uniqueTagReport = bool("uniqueTagReport") ?: d.uniqueTagReport,
-        ledOnRead = bool("ledOnRead") ?: d.ledOnRead,
         dpo = bool("dpo") ?: d.dpo,
         region = str("region"),
-        triggerPersonality = RfidTriggerPersonality.fromWire(str("triggerPersonality")) ?: d.triggerPersonality,
-        scannerPluginMode = ScannerPluginMode.fromWire(str("scannerPluginMode")) ?: d.scannerPluginMode,
+        triggerLayout = SledTriggerLayout.fromWire(str("triggerLayout"))
+            ?: layoutFromOldTriggerPersonality(str("triggerPersonality"))
+            ?: d.triggerLayout,
+        readerAddress = str("readerAddress"),
     ).clamped()
 }

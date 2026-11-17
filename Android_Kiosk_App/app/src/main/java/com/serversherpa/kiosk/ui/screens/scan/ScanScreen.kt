@@ -3,6 +3,8 @@ package com.serversherpa.kiosk.ui.screens.scan
 import com.serversherpa.kiosk.core.model.headerLine
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,7 +30,6 @@ import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
 import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
-import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
@@ -50,6 +51,7 @@ private fun tone(s: OutboxStatus) = when (s) {
     OutboxStatus.FAILED, OutboxStatus.NOMATCH -> ChipTone.RED
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ScanScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
@@ -61,7 +63,6 @@ fun ScanScreen(nav: NavHostController) {
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
     val rfidSession by container.rfid.session.collectAsStateWithLifecycle()
     val rfidSettings by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
-    val rfidConnection by container.rfid.connection.collectAsStateWithLifecycle()
     var camera by remember { mutableStateOf(false) }
     val empty = ui.loadStatus == LoadStatus.READY && ui.rosterSize == 0
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
@@ -110,31 +111,19 @@ fun ScanScreen(nav: NavHostController) {
         // The grey empty-roster line above already says it; the red toast is for a scan that arrived anyway.
         if (ui.error != null && !empty) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
-        // A transition into Failed, not a static read of the current state: a
-        // reader already Failed before this screen was ever opened (e.g.
-        // enabled but never paired — AppContainer retries the connect on
-        // every foreground) must not pin a permanent red banner here. Seeded
-        // from the first composition's own value so that case shows nothing,
-        // then updated only on a later PRESSED-like transition into Failed;
-        // it clears again once the connection leaves Failed. KioskToast never
-        // auto-dismisses, so this is the only thing keeping the message from
-        // sitting forever.
-        var shownRfidFailure by remember { mutableStateOf<String?>(null) }
-        var rfidWasFailed by remember { mutableStateOf(rfidConnection is RfidConnection.Failed) }
-        LaunchedEffect(rfidConnection) {
-            val nowFailed = rfidConnection is RfidConnection.Failed
-            shownRfidFailure = when {
-                nowFailed && !rfidWasFailed -> (rfidConnection as RfidConnection.Failed).reason
-                !nowFailed -> null
-                else -> shownRfidFailure
-            }
-            rfidWasFailed = nowFailed
-        }
-        KioskToast(shownRfidFailure, error = true)
         ScanTools(showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
+        // The sled's one line, under the tool row so a line coming or going (the sled's
+        // scanner starting after a tap on Sled triggers) never moves a control under the
+        // operator's finger, and below the box, which never moves: nothing while the sled is
+        // connected and working; red for a drop during this visit, muted for what was there at open.
+        SledSlot()
         val counts = snapshot.counts
         Text("Queued ${counts.queued} · Sent ${counts.accepted} · Failed ${counts.failed} · No match ${counts.nomatch}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(top = 8.dp))
-        Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            Modifier.padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             MiniButton("Retry failed", { vm.retryFailed() }, enabled = counts.failed > 0)
             MiniButton("Clear sent", { vm.clearSent() }, enabled = counts.accepted + counts.nomatch > 0)
             MiniButton("Discard failed", { vm.askDiscard() }, enabled = counts.failed > 0)

@@ -1,6 +1,9 @@
 package com.serversherpa.kiosk.input.datawedge
 
+import android.app.Application
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.os.Bundle
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.input.ScanSource
@@ -13,7 +16,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowBuild
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -47,6 +52,39 @@ class DataWedgeTest {
         assertEquals("A-100", ev.value); assertEquals(ScanSource.DATAWEDGE, ev.source); assertEquals("CODE128", ev.symbology)
         assertNull(DataWedge.parseScan(Intent("other")))
         assertNull(DataWedge.parseScan(Intent(DataWedge.SCAN_ACTION)))
+    }
+
+    /** Ruling 2: one broadcast repairs a scanner an earlier build may have left switched off. It
+     *  goes even where DataWedge looks absent (detection can be off on an MC2200). */
+    @Test fun enableScannerInputSendsOneEnablePluginBroadcast() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        assertFalse(DataWedge.isPresent(app))
+        DataWedge.enableScannerInput(app)
+        val sent = Shadows.shadowOf(app).broadcastIntents
+        assertEquals(1, sent.size)
+        val intent = sent.single()
+        assertEquals("com.symbol.datawedge.api.ACTION", intent.action)
+        assertEquals("com.symbol.datawedge", intent.`package`)
+        assertEquals("ENABLE_PLUGIN", intent.getStringExtra("com.symbol.datawedge.api.SCANNER_INPUT_PLUGIN"))
+        assertEquals(setOf("com.symbol.datawedge.api.SCANNER_INPUT_PLUGIN"), intent.extras!!.keySet())
+    }
+
+    @Test fun isZebraHostForDataWedgeOrAZebraManufacturer() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        assertFalse(isZebraHost(app))
+
+        ShadowBuild.setManufacturer("Zebra Technologies")
+        assertTrue(isZebraHost(app))
+        ShadowBuild.setManufacturer("zebra technologies")
+        assertTrue("the manufacturer check ignores case", isZebraHost(app))
+        ShadowBuild.setManufacturer("Google")
+        assertFalse(isZebraHost(app))
+
+        Shadows.shadowOf(app.packageManager).installPackage(PackageInfo().apply {
+            packageName = DataWedge.PACKAGE
+            applicationInfo = ApplicationInfo().apply { packageName = DataWedge.PACKAGE }
+        })
+        assertTrue(isZebraHost(app))
     }
 
     @OptIn(DelicateCoroutinesApi::class)

@@ -57,4 +57,42 @@ class EnrollGateTest {
     @Test fun theAssetsOwnTagIsNotReportedAsAConflict() {
         assertEquals(EnrollTagIssue.SAME_TAG_ON_THIS_ASSET, checkEnrollTag(index, emptyList(), tagged, "0100348")?.issue)
     }
+
+    // ── The web's raw check (ruling 13): a barcode is not a tag ──
+
+    @Test fun aTagEqualToThisAssetsOwnAssetIdIsRefused() {
+        val v = checkEnrollRaw(index, rack, "A-1")
+        assertEquals(EnrollTagIssue.OWN_ASSET_ID, v?.issue)
+        assertEquals("That's this asset's own asset ID, not an RFID tag.", enrollTagText(v!!))
+    }
+
+    @Test fun aTagEqualToThisAssetsOwnSerialIsRefused() {
+        val v = checkEnrollRaw(index, rack, "SN1")
+        assertEquals(EnrollTagIssue.OWN_SERIAL, v?.issue)
+        assertEquals("That's this asset's own serial, not an RFID tag.", enrollTagText(v!!))
+    }
+
+    @Test fun anotherAssetsAssetIdIsRefusedWithItsName() {
+        val v = checkEnrollRaw(index, rack, "A-2")
+        assertEquals(EnrollTagVerdict(EnrollTagIssue.OTHER_ASSET_ID, "Tagged rack"), v)
+        assertEquals("That's the asset ID for Tagged rack, not an RFID tag.", enrollTagText(v!!))
+    }
+
+    @Test fun anotherAssetsSerialFallsBackToItsAssetId() {
+        val nameless = Row("a3", "A-3", name = null, serialNumber = "SN3")
+        val withNameless = buildScanIndex(listOf(rack, tagged, nameless))
+        val v = checkEnrollRaw(withNameless, rack, "SN3")
+        assertEquals(EnrollTagVerdict(EnrollTagIssue.OTHER_SERIAL, "A-3"), v)
+        assertEquals("That's the serial for A-3, not an RFID tag.", enrollTagText(v!!))
+    }
+
+    @Test fun noIndexMeansNoRawCheck() {
+        assertNull(checkEnrollRaw<Row>(null, rack, "A-1"))
+        assertNull(checkEnrollRaw(index, rack, "000000000000000000100349"))
+    }
+
+    @Test fun theRawValueIsTrimmedBeforeMatching() {
+        assertEquals(EnrollTagIssue.OWN_ASSET_ID, checkEnrollRaw(index, rack, "  a-1\n")?.issue)
+        assertEquals(EnrollTagIssue.OTHER_SERIAL, checkEnrollRaw(index, rack, "\tSN2 ")?.issue)
+    }
 }

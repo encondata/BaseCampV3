@@ -2,6 +2,8 @@ package com.serversherpa.kiosk.ui.screens.labels
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
 import androidx.navigation.compose.rememberNavController
@@ -9,7 +11,9 @@ import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
+import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.data.printer.FakeBluetoothLe
+import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import com.serversherpa.kiosk.waitUntilIdlingMain
@@ -62,5 +66,20 @@ class PrintLabelsScreenTest {
         compose.waitUntilIdlingMain { fake.connects.size == 2 && container.zebraBluetooth.link.value.connected }
         assertTrue(fake.links.first().closed)
         assertEquals(listOf(address, address), fake.connects)
+    }
+
+    /** Print Labels keeps its tool row call as it is; the sled's controls come with it. */
+    @Test fun theSledControlsShowWhileTheSledIsConnected() {
+        val address = "AC:3F:A4:00:00:01"
+        fake.printer(address)
+        runBlocking {
+            container.labelSettings.setPrinter(SavedPrinter(PrinterConnection.Bluetooth(FakeBluetoothLe.SERIAL, address), "ZD421", FakeBluetoothLe.SERIAL, 300))
+        }
+        (container.rfidReader as FakeRfidReader).setConnection(RfidConnection.Connected("Fake RFD40", 80))
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides container) { KioskTheme { PrintLabelsScreen(rememberNavController()) } }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Barcode").assertIsDisplayed()
     }
 }

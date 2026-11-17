@@ -3,7 +3,8 @@ package com.serversherpa.kiosk.input
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
-enum class ScanSource { KEYBOARD, DATAWEDGE, CAMERA }
+/** Where a scan came from. [SLED] is the sled's own barcode scanner, through its session (not typed). */
+enum class ScanSource { KEYBOARD, DATAWEDGE, CAMERA, SLED }
 
 data class ScanEvent(val value: String, val source: ScanSource, val symbology: String? = null)
 

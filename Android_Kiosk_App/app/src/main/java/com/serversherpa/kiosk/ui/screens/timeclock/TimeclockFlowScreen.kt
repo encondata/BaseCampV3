@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.timeclock
 
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.size
@@ -35,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.components.CameraIcon
+import com.serversherpa.kiosk.ui.components.LocalSledScanGuard
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.TcStep
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.TimeclockFlowViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.firstNameOf
@@ -59,7 +61,7 @@ import kotlinx.coroutines.delay
  * the view model needs — scans from the [com.serversherpa.kiosk.input.ScanBus] (DataWedge and the
  * camera sheet), hardware keys on Welcome (a reader that types like a keyboard; on Enter Your Name
  * the search box is a real text field with the system keyboard), and every touch or key for the
- * idle countdown. All state is the view model's.
+ * idle countdown. Both typed routes go through [LocalSledScanGuard]. All state is the view model's.
  *
  * Station mode (Task 4) passes [onSettings] for the gear on Welcome, and [paused] / [keyMissing]
  * when the station key is lapsed or missing; Welcome then takes nobody.
@@ -72,6 +74,7 @@ fun TimeclockFlowScreen(
     keyMissing: Boolean = false,
 ) {
     val container = LocalAppContainer.current
+    val guard = LocalSledScanGuard.current
     val ui by vm.state.collectAsStateWithLifecycle()
     var camera by rememberSaveable { mutableStateOf(false) }
     val step = ui.step
@@ -127,11 +130,19 @@ fun TimeclockFlowScreen(
                 if (!catchesKeys) return@onPreviewKeyEvent false
                 val query = vm.state.value.query
                 when (e.key) {
-                    Key.Enter, Key.NumPadEnter -> { vm.onSearch(); true }
+                    // A code the sled's scanner already delivered: cleared, not searched again.
+                    Key.Enter, Key.NumPadEnter -> {
+                        if (query.isBlank() || guard.acceptTyped(query, SystemClock.elapsedRealtime())) vm.onSearch() else vm.onType("")
+                        true
+                    }
                     Key.Backspace -> { vm.onType(query.dropLast(1)); true }
                     else -> {
                         val cp = e.utf16CodePoint
-                        if (cp >= 32 && !e.isCtrlPressed && !e.isAltPressed) { vm.onType(query + String(Character.toChars(cp))); true } else false
+                        if (cp >= 32 && !e.isCtrlPressed && !e.isAltPressed) {
+                            guard.noteTyping(SystemClock.elapsedRealtime())
+                            vm.onType(query + String(Character.toChars(cp)))
+                            true
+                        } else false
                     }
                 }
             }
@@ -151,8 +162,19 @@ fun TimeclockFlowScreen(
                 onScan = { if (container.hasCamera) camera = true },
                 onName = { vm.enterName() },
             )
+            // The search box goes through the guard like a scan box (ruling 3): a sled that types
+            // a code and also sends it through its scanner, whose copy the bus above hands to
+            // onScan, acts once. A code the scanner already delivered is cleared, not searched.
             TcStep.NAME -> EnterName(
-                query = ui.query, onQueryChange = vm::onType, onSearch = vm::onSearch,
+                query = ui.query,
+                onQueryChange = { next ->
+                    if (next.length > vm.state.value.query.length) guard.noteTyping(SystemClock.elapsedRealtime())
+                    vm.onType(next)
+                },
+                onSearch = {
+                    val query = vm.state.value.query
+                    if (query.isBlank() || guard.acceptTyped(query, SystemClock.elapsedRealtime())) vm.onSearch() else vm.onType("")
+                },
                 results = ui.results, noMatches = ui.noMatches, message = ui.shownMessage,
                 disabled = ui.looking, onPick = vm::pick, focusRequester = nameFocus, fit = fit,
                 trailing = if (container.hasCamera) ({

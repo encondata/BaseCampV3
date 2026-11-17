@@ -19,11 +19,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
+import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
+import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.core.setup.SetupState
@@ -112,7 +114,7 @@ fun DeveloperPanel(goHome: () -> Unit = {}) {
                             // .start() collects reader.connection itself, so it sees this
                             // Connected transition and fires the push regardless of who called
                             // connect().
-                            fakeReader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
+                            fakeReader.connect(SledConnectRequest(null, SledTriggerLayout.RFID))
                             fakeReader.emitTrigger(TriggerEvent.PRESSED)
                             for (tag in listOf("100348", "100349", "100350", "100348")) {
                                 fakeReader.emitTag(tag)
@@ -125,6 +127,22 @@ fun DeveloperPanel(goHome: () -> Unit = {}) {
                     }
                 })
             }
+        }
+        // Ruling 35: the one on-screen text that names the vendor's SDK, for developers only. It
+        // shows the reader's own state; nothing is saved.
+        val vendorLogging by container.rfidReader.vendorLogging.collectAsStateWithLifecycle()
+        SettingsRow("Zebra SDK logging", SledWords.VENDOR_LOGGING_HINT) {
+            Switch(checked = vendorLogging, onCheckedChange = { on -> container.rfidReader.setVendorLogging(on) }, modifier = Modifier.testTag("vendor-logging"))
+        }
+        // H6 (Jimmy, 2026-11-17): Both in Sled triggers is for developers unless this offers it to
+        // everyone. A device setting, saved on this kiosk only; never part of a sled push.
+        val offerSledBoth by container.prefs.offerSledBothToEveryone.collectAsStateWithLifecycle(initialValue = false)
+        SettingsRow("Offer Both in Sled triggers to everyone", "Off: only developers see Both. A sled already set to Both keeps it.") {
+            Switch(
+                checked = offerSledBoth,
+                onCheckedChange = { on -> scope.launch { container.prefs.setOfferSledBothToEveryone(on) } },
+                modifier = Modifier.testTag("offer-sled-both"),
+            )
         }
         LocalDataInspector()
     }

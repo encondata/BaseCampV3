@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -21,6 +22,8 @@
     <!-- Zebra label printers over Bluetooth LE (the same permissions; asked for when Bluetooth is
          first picked in Printer Setup). Optional: a device without it prints over the network. -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- Zebra's RFID library asks for this for its USB scanner path, which the app never uses. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
 
     <application
         android:name=".KioskApplication"
@@ -34,7 +37,9 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
             android:label="@string/app_name"
             android:theme="@style/Theme.ServerSherpaKiosk">
             <intent-filter>
