@@ -1,6 +1,7 @@
 """Where a container is on a map: the truck's newest GPS report, else the
 site's pin, else nothing — and the route that serves it."""
 
+import uuid
 from datetime import timedelta
 
 from serversherpa.assets.placement import Position, container_position
@@ -94,6 +95,13 @@ async def test_site_without_pin_is_none(db):
     assert await container_position(db, box, FULL, PID) == Position("none")
 
 
+async def test_archived_site_is_none(db):
+    site = await _site(db)
+    site.archived_at = T0
+    box = await _box(db, await _asset(db), site_id=site.id)
+    assert await container_position(db, box, FULL, PID) == Position("none")
+
+
 async def test_without_sites_view_is_none(db):
     site = await _site(db)
     box = await _box(db, await _asset(db), site_id=site.id)
@@ -120,7 +128,6 @@ async def test_route_returns_position(client, db, seeded_user):
 
 
 async def test_route_404_for_missing_and_archived(client, db, seeded_user):
-    import uuid
     hdrs = await login(client)
     box = await _box(db, await _asset(db))
     box.archived_at = T0

@@ -104,7 +104,7 @@ async def container_position(
     """Where a container is, for a map. The caller has loaded it and passed
     the container gate. Its latest in-scope truck wins when the actor may
     view trucks (coordinates from that truck's newest report that has them,
-    none when it has none; never the site). Otherwise its site's pin when
+    none when it has none; never the site). Otherwise its live (not archived) site's pin when
     the actor may view sites; otherwise nothing."""
     if access.can("trucks", "view"):
         tq = (
@@ -136,7 +136,7 @@ async def container_position(
 
     if container.site_id is not None and access.can("sites", "view"):
         sq = sa.select(Site.name, Site.latitude, Site.longitude).where(
-            Site.id == container.site_id)
+            Site.id == container.site_id, Site.archived_at.is_(None))
         scond = scope_conditions("sites", access, person_id)
         if scond is not None:
             sq = sq.where(scond)
