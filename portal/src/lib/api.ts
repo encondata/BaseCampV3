@@ -16,6 +16,7 @@
 import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { Flow } from './matchingRules';
 import type { Day } from './notifications';
 import type { OrgItem } from './orgs';
 import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
@@ -7402,6 +7403,192 @@ export async function searchWiki(
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+// ── matching rules (/devtools/matching-rules) ──
+// Developer › Matching rules: versioned flows that decide how a scanned value finds an asset.
+// Reads need `devtools:view`, writes `devtools:change`. The shapes mirror
+// api/src/serversherpa/matching_rules/schemas.py.
+
+export type MatchingPlace = 'printing' | 'scanning';
+export type MatchingState = 'draft' | 'standby' | 'live' | 'retired';
+
+export interface MatchingCheckSummary {
+  passed: number;
+  total: number;
+  ok: boolean;
+  checked_at: string | null;
+}
+
+export interface MatchingProblem {
+  message: string;
+  node_ids: string[];
+}
+
+export interface MatchingCheckItem {
+  code: string;
+  label: string;
+  ok: boolean;
+  problems: MatchingProblem[];
+}
+
+export interface MatchingTestRowResult {
+  row_id: string;
+  test_asset_id: string;
+  asset_tag: number;
+  asset_name: string;
+  value: string;
+  expected: string;
+  outcome: 'found' | 'not_found' | 'stopped';
+  found_asset_tag: number | null;
+  found_field: string | null;
+  passed: boolean;
+}
+
+export interface MatchingCheck {
+  ok: boolean;
+  structure_ok: boolean;
+  tests_ok: boolean;
+  passed: number;
+  total: number;
+  structure: MatchingCheckItem[];
+  tests: MatchingTestRowResult[];
+}
+
+export interface MatchingVersion {
+  id: string;
+  place: MatchingPlace;
+  version: number;
+  state: MatchingState;
+  based_on_version: number | null;
+  saved_by_name: string | null;
+  saved_at: string;
+  state_changed_at: string | null;
+  checked: MatchingCheckSummary | null;
+  current: MatchingCheckSummary;
+}
+
+export interface MatchingVersionDetail extends MatchingVersion {
+  flow: Flow;
+  check: MatchingCheck;
+}
+
+export interface MatchingHit {
+  id: string;
+  asset_tag: number | null;
+  name: string | null;
+  rfid: string | null;
+  serial: string | null;
+  sits: 'move' | 'client';
+}
+
+export interface MatchingTraceStep {
+  node_id: string;
+  kind: string;
+  value_in: string;
+  value_out: string | null;
+  output: string | null;
+  hits: MatchingHit[] | null;
+}
+
+export interface MatchingRun {
+  outcome: 'found' | 'not_found' | 'stopped';
+  stop_reason: string | null;
+  end_node_id: string | null;
+  asset: MatchingHit | null;
+  field: string | null;
+  action: string | null;
+  message: string | null;
+  trace: MatchingTraceStep[];
+}
+
+export interface MatchingTestRowIn {
+  place: MatchingPlace;
+  value: string;
+  expected: string;
+}
+
+export interface MatchingTestRow extends MatchingTestRowIn {
+  id: string;
+  test_asset_id: string;
+}
+
+export interface MatchingTestAssetIn {
+  asset_tag: number;
+  name: string;
+  rfid?: string | null;
+  serial?: string | null;
+  sits?: 'move' | 'client';
+}
+
+export interface MatchingTestAsset extends MatchingTestAssetIn {
+  id: string;
+  rfid: string | null;
+  serial: string | null;
+  sits: 'move' | 'client';
+  rows: MatchingTestRow[];
+}
+
+const MATCHING = '/devtools/matching-rules';
+// Every id goes into its path through encodeURIComponent: an id from the
+// address bar is already decoded, and a `../` in it must stay one segment.
+
+async function matchingCall<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const resp = await apiFetch(`${MATCHING}${path}`, body === undefined ? { method } : {
+    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.status === 204 ? (undefined as T) : resp.json();
+}
+
+export const listMatchingVersions = (place: MatchingPlace): Promise<MatchingVersion[]> =>
+  matchingCall(`/versions?place=${encodeURIComponent(place)}`, 'GET');
+
+export const getMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}`, 'GET');
+
+export const createMatchingDraft = (
+  body: { place: MatchingPlace; flow: Flow; based_on_id?: string | null },
+): Promise<MatchingVersionDetail> => matchingCall('/versions', 'POST', body);
+
+export const updateMatchingDraft = (id: string, flow: Flow): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}`, 'PUT', { flow });
+
+export const standbyMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}/standby`, 'POST');
+
+export const deployMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}/deploy`, 'POST');
+
+export const rollbackMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
+  matchingCall(`/versions/${encodeURIComponent(id)}/rollback`, 'POST');
+
+export const checkMatchingFlow = (place: MatchingPlace, flow: Flow): Promise<MatchingCheck> =>
+  matchingCall('/check', 'POST', { place, flow });
+
+export const testRunMatchingFlow = (body: {
+  place: MatchingPlace; flow: Flow; value: string; against: 'test_set' | 'move'; initiative_id?: string;
+}): Promise<MatchingRun> => matchingCall('/test-run', 'POST', body);
+
+export const listMatchingTestAssets = (): Promise<MatchingTestAsset[]> =>
+  matchingCall('/test-assets', 'GET');
+
+export const createMatchingTestAsset = (body: MatchingTestAssetIn): Promise<MatchingTestAsset> =>
+  matchingCall('/test-assets', 'POST', body);
+
+export const updateMatchingTestAsset = (id: string, body: MatchingTestAssetIn): Promise<MatchingTestAsset> =>
+  matchingCall(`/test-assets/${encodeURIComponent(id)}`, 'PATCH', body);
+
+export const deleteMatchingTestAsset = (id: string): Promise<void> =>
+  matchingCall(`/test-assets/${encodeURIComponent(id)}`, 'DELETE');
+
+export const createMatchingTestRow = (assetId: string, body: MatchingTestRowIn): Promise<MatchingTestRow> =>
+  matchingCall(`/test-assets/${encodeURIComponent(assetId)}/rows`, 'POST', body);
+
+export const updateMatchingTestRow = (id: string, body: MatchingTestRowIn): Promise<MatchingTestRow> =>
+  matchingCall(`/test-rows/${encodeURIComponent(id)}`, 'PATCH', body);
+
+export const deleteMatchingTestRow = (id: string): Promise<void> =>
+  matchingCall(`/test-rows/${encodeURIComponent(id)}`, 'DELETE');
 
 /* ── client groups (staff, global scope) ───────────────────────── */
 
