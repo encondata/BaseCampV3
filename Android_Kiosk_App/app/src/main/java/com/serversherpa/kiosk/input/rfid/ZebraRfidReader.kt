@@ -201,7 +201,8 @@ sealed interface VendorOpen {
  * (`interimKeys`) first; the session opens from that read-back
  * (`layoutInForceUsesScanner`), and when the engine turns `Ready` for the
  * current generation the real keys are written on the worker, once, unless a
- * newer layout or generation came first (during a sweep, after its stop). A
+ * newer layout or generation came first (during a sweep, after its stop).
+ * `Ready` means the sled acknowledged the scanner engine's scan enable. A
  * scanner that does not start keeps
  * the no-beam keys; Try again's `Ready` writes the real ones. A sled that
  * refuses the no-beam keys gets the real keys at once.

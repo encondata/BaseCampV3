@@ -13,7 +13,10 @@ import org.junit.Test
  * throw, calls that change the sled's stored setup or start scanning for other
  * devices, and the second scanner SDK. `Dispose(` may appear once, inside
  * `tearDownVendor`, and `saveConfig(` only inside the batch-mode prevention,
- * recovery and teardown functions. It also fails on `Thread.stop()`, which
+ * recovery and teardown functions. `DCSSDK_DEVICE_SCAN_ENABLE` may appear
+ * once, inside `scanEnable`: `VendorScannerSdk`'s, which the engine calls for
+ * its checked scan enable after each establish. `DCSSDK_DEVICE_SCAN_DISABLE`
+ * may appear nowhere. It also fails on `Thread.stop()`, which
  * the leaked-reader reaper must never use (it only interrupts): any `.stop(`
  * or `::stop` whose receiver is not the radio's `Inventory`.
  *
@@ -48,6 +51,14 @@ class SledNeverCallTest {
         val stripped = sources.associate { (name, text) -> name to stripCommentsAndStrings(text) }
         assertTrue("the teardown's Dispose( call is in view", "vendor.readers.Dispose()" in stripped.getValue("ZebraRfidReader.kt"))
         assertTrue("the scanner SDK's constructor call is in view", "SDKHandler(appContext, false)" in stripped.getValue("ZebraBarcodeEngine.kt"))
+        val engine = stripped.getValue("ZebraBarcodeEngine.kt")
+        val scanEnableAt = engine.indexOf("DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE")
+        assertTrue("the checked scan enable's opcode is in view", scanEnableAt >= 0)
+        assertEquals(
+            "the checked scan enable's opcode sits in VendorScannerSdk",
+            "VendorScannerSdk",
+            CLASS.findAll(engine.substring(0, scanEnableAt)).lastOrNull()?.groupValues?.get(1),
+        )
 
         val findings = vendorFindings(sources)
 
@@ -126,6 +137,9 @@ class SledNeverCallTest {
             "    Thread.currentThread()?.stop()",
             "    threads.forEach(Thread::stop)",
             "}",
+            "fun scanEnable(id: Int) = command(DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE, id)",
+            "fun armScanner(id: Int) = command(DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE, id)",
+            "fun standDown(id: Int) = command(DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_DISABLE, id)",
         ).joinToString("\n")
 
         assertEquals(
@@ -140,7 +154,10 @@ class SledNeverCallTest {
                 "Fixture.kt:21 in reap(): $THREAD_STOP",
                 "Fixture.kt:22 in reap(): $THREAD_STOP",
                 "Fixture.kt:23 in reap(): $THREAD_STOP",
+                "Fixture.kt:26 in armScanner(): DCSSDK_DEVICE_SCAN_ENABLE outside scanEnable",
+                "Fixture.kt:27 in standDown(): DCSSDK_DEVICE_SCAN_DISABLE",
                 "Dispose( appears 2 times; at most once, in tearDownVendor",
+                "DCSSDK_DEVICE_SCAN_ENABLE appears 2 times; at most once, in scanEnable",
             ),
             vendorFindings(listOf("Fixture.kt" to fixture)),
         )
@@ -177,6 +194,7 @@ class SledNeverCallTest {
     private fun vendorFindings(sources: List<Pair<String, String>>): List<String> {
         val findings = mutableListOf<Finding>()
         var disposeCount = 0
+        var scanEnableCount = 0
         for ((name, source) in sources) {
             val code = stripCommentsAndStrings(source)
             val functions = FUN.findAll(code).map { it.range.first to it.groupValues[1] }.toList()
@@ -211,9 +229,16 @@ class SledNeverCallTest {
                     findings += Finding(it.range.first, "${at(it.range.first)}: Dispose( outside $DISPOSE_HOME")
                 }
             }
+            Regex("""\b$SCAN_ENABLE\b""").findAll(code).forEach {
+                scanEnableCount++
+                if (enclosing(it.range.first) != SCAN_ENABLE_HOME) {
+                    findings += Finding(it.range.first, "${at(it.range.first)}: $SCAN_ENABLE outside $SCAN_ENABLE_HOME")
+                }
+            }
         }
         val lines = findings.sortedWith(compareBy({ it.text.substringBefore(':') }, { it.offset })).map { it.text }.toMutableList()
         if (disposeCount > 1) lines += "Dispose( appears $disposeCount times; at most once, in $DISPOSE_HOME"
+        if (scanEnableCount > 1) lines += "$SCAN_ENABLE appears $scanEnableCount times; at most once, in $SCAN_ENABLE_HOME"
         return lines
     }
 
@@ -406,7 +431,6 @@ class SledNeverCallTest {
             "dcssdkEnableBluetoothScannersDiscovery",
             "dcssdkClose(",
             "DCSSDK_DEVICE_SCAN_DISABLE",
-            "DCSSDK_DEVICE_SCAN_ENABLE",
             "DCSSDK_OPMODE_BT_LE",
             "DCSSDK_OPMODE_SNAPI",
             "DCSSDK_OPMODE_USB_CDC",
@@ -432,6 +456,11 @@ class SledNeverCallTest {
         val INVENTORY_RECEIVER = Regex("""\bInventory\s*\??\s*$""")
 
         const val DISPOSE_HOME = "tearDownVendor"
+
+        /** The scan enable's opcode, allowed once: in `VendorScannerSdk.scanEnable`, the engine's checked scan enable (hardware, 2026-11-17). */
+        const val SCAN_ENABLE = "DCSSDK_DEVICE_SCAN_ENABLE"
+        const val SCAN_ENABLE_HOME = "scanEnable"
+
         val SAVE_CONFIG_HOMES = setOf("preventBatchMode", "recoverFromBatchMode", "tearDownVendor")
         const val SAVE_CONFIG_HOMES_TEXT = "preventBatchMode, recoverFromBatchMode and tearDownVendor"
 
@@ -450,6 +479,9 @@ class SledNeverCallTest {
 
         /** A function declaration and its name: `fun name(`, `fun <T> name(`, `fun Receiver.name(`. */
         val FUN = Regex("""\bfun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?(\w+)\s*\(""")
+
+        /** A class declaration and its name (`class Name`, `enum class Name`, ...). */
+        val CLASS = Regex("""\bclass\s+(\w+)""")
         val TRUE = Regex("""\btrue\b""")
     }
 }
