@@ -53,6 +53,7 @@ from serversherpa.notifications.company import (
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.live import get_hub, signal_inbox
+from serversherpa.notifications.push import on_read_or_hidden
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.watches import (
     EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of,
@@ -579,6 +580,7 @@ async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DbS
     if row.read_at is None:
         row.read_at = datetime.now(UTC)
         await signal_inbox(db, user.person.id)
+        await on_read_or_hidden(db, [row.id], user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -605,6 +607,7 @@ async def inbox_hide(notification_id: uuid.UUID, user: CurrentUser, db: DbSessio
     if row.dismissed_at is None:
         row.dismissed_at = datetime.now(UTC)
         await signal_inbox(db, user.person.id)
+        await on_read_or_hidden(db, [row.id], user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -619,6 +622,7 @@ async def inbox_mark_all_read(user: CurrentUser, db: DbSession) -> Response:
         row.read_at = now
     if rows:
         await signal_inbox(db, user.person.id)
+        await on_read_or_hidden(db, [row.id for row in rows], user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -633,6 +637,7 @@ async def inbox_clear_read(user: CurrentUser, db: DbSession) -> Response:
         row.dismissed_at = now
     if rows:
         await signal_inbox(db, user.person.id)
+        await on_read_or_hidden(db, [row.id for row in rows], user.person.id)
         await db.commit()
     return Response(status_code=204)
 

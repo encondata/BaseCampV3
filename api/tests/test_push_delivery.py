@@ -5,7 +5,6 @@ Spec: docs/superpowers/specs/2026-11-17-android-push-notifications-design.md"""
 
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from sqlalchemy import select
 
 from serversherpa.db.models import (
@@ -17,15 +16,7 @@ from serversherpa.notifications import worker as worker_mod
 from serversherpa.notifications.inbox import notify
 from serversherpa.push.delivery import drain_push
 from serversherpa.push.fcm import FcmClient, SendResult
-from tests.test_notification_push_decide import (  # noqa: F401 - fixtures
-    KIND,
-    NOW,
-    _admin,
-    _company,
-    _phone,
-    clock,
-    fcm_on,
-)
+from tests.push_helpers import KIND, NOW, _admin, _company, _phone
 
 
 class FakeClient:
@@ -140,8 +131,8 @@ async def test_hidden_before_send_drops(db, fcm_on, clock):
 async def test_quiet_hours_at_send_time_drops(db, fcm_on, clock):
     _, _, _, row = await _queued(db, clock)
     quiet = datetime(2026, 10, 7, 8, 0, tzinfo=UTC)   # 03:00 in Chicago
-    from tests.test_notification_push_decide import _quiet_prefs
     from serversherpa.db.models import UserAccount
+    from tests.test_notification_push_decide import _quiet_prefs
     acct = await db.scalar(select(UserAccount).where(UserAccount.person_id == row.person_id))
     acct.ui_prefs = _quiet_prefs()
     await db.flush()

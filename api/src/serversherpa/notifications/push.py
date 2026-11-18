@@ -16,9 +16,9 @@ Spec: docs/superpowers/specs/2026-11-17-android-push-notifications-design.md"""
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
@@ -37,6 +37,9 @@ from serversherpa.notifications.email import (
 from serversherpa.notifications.kinds import KindInfo
 from serversherpa.notifications.schedule import state_at
 from serversherpa.services.biometric import shared_station
+
+# How long the phone's Snooze action waits before the notification pushes again.
+SNOOZE = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -161,3 +164,77 @@ async def maybe_push(db: AsyncSession, notification: Notification, *,
     record(db, "push_queued", channel="push", person_id=notification.person_id,
            notification_id=notification.id, kind=notification.kind,
            category=category, detail=detail)
+
+
+async def snooze(db: AsyncSession, notification: Notification, *, now: datetime) -> datetime:
+    """Push this notification again in SNOOZE: set `push_snoozed_until`, move
+    the one queued notification row to reason "snooze" at now + SNOOZE (a
+    second snooze restarts the wait) and log `push_snoozed`. Returns the
+    until time. A read or hidden notification can't be snoozed: ValueError
+    ("not_live")."""
+    if notification.read_at is not None or notification.dismissed_at is not None:
+        raise ValueError("not_live")
+    until = now + SNOOZE
+    notification.push_snoozed_until = until
+    row = await queue_push(db, notification, reason="snooze", send_at=until)
+    record(db, "push_snoozed", channel="push", person_id=notification.person_id,
+           notification_id=notification.id, kind=notification.kind,
+           detail={"push_outbox_id": str(row.id), "until": until.isoformat()})
+    return until
+
+
+async def on_read_or_hidden(db: AsyncSession, notification_ids: list[uuid.UUID],
+                            person_id: uuid.UUID) -> None:
+    """These notifications were just read or hidden: cancel any push still
+    queued for them (state dropped, reason "read"), end their snooze, and, when
+    push is set up and the person has a live phone, queue one `clear` message
+    each so the phone removes the shade entry. Cheap when nothing is queued
+    and push is not set up: one UPDATE ... RETURNING, plus one for snoozes."""
+    ids = list(dict.fromkeys(notification_ids))
+    if not ids:
+        return
+    now = _now()
+    cancelled = (await db.execute(
+        update(PushOutbox)
+        .where(PushOutbox.notification_id.in_(ids), PushOutbox.state == "queued",
+               PushOutbox.message_type == "notification")
+        .values(state="dropped", last_error="read", handled_at=now)
+        .returning(PushOutbox.id, PushOutbox.notification_id))).all()
+    for outbox_id, notification_id in cancelled:
+        record(db, "push_dropped", channel="push", person_id=person_id,
+               notification_id=notification_id, reason="read",
+               detail={"push_outbox_id": str(outbox_id)})
+    if cancelled:
+        await db.execute(
+            update(Notification)
+            .where(Notification.id.in_([n for _, n in cancelled]),
+                   Notification.push_snoozed_until.is_not(None))
+            .values(push_snoozed_until=None))
+    if not push_enabled():
+        return
+    if not await live_registrations(db, person_id, now):
+        return
+    already = set(await db.scalars(select(PushOutbox.notification_id).where(
+        PushOutbox.notification_id.in_(ids), PushOutbox.message_type == "clear",
+        PushOutbox.state == "queued")))
+    for notification_id in ids:
+        if notification_id in already:
+            continue
+        row = PushOutbox(notification_id=notification_id, person_id=person_id,
+                         send_at=now, reason="clear", state="queued",
+                         message_type="clear", created_at=datetime.now(UTC))
+        db.add(row)
+        await db.flush()
+        record(db, "push_queued", channel="push", person_id=person_id,
+               notification_id=notification_id, reason="clear",
+               detail={"push_outbox_id": str(row.id), "message_type": "clear"})
+
+
+async def on_rows_read(db: AsyncSession, rows) -> None:
+    """on_read_or_hidden() for (notification id, person id) pairs, such as
+    the rows of a bulk UPDATE ... RETURNING: grouped by person."""
+    by_person: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for notification_id, person_id in rows:
+        by_person.setdefault(person_id, []).append(notification_id)
+    for person_id, ids in by_person.items():
+        await on_read_or_hidden(db, ids, person_id)
