@@ -9,7 +9,7 @@ import zlib
 import pytest
 from PIL import Image
 
-from serversherpa_devices.packages import PackageError, inspect_package
+from serversherpa_devices.packages import PackageError, inspect_package, ipa
 from serversherpa_devices.packages.cgbi import decode
 from serversherpa_devices.packages.ipa import inspect_ipa
 
@@ -46,13 +46,33 @@ def test_ipa_reads_info_plist(tmp_path):
     assert info.name == "Hello Display"
     assert info.version_name == "1.4"
     assert info.build == "1.10"
-    assert info.build_sort == (1 << 48) | (10 << 32)
+    assert info.build_sort == 10**27 + 10 * 10**18
     assert info.min_os == "16.0"
     assert info.signing_digest is None
     assert _pixels(info.icon_png) == ((180, 180), big)   # the largest AppIcon60x60 match
     assert info.provision.kind == "adhoc"
     assert info.provision.devices == UDIDS
     assert inspect_package(ipa).identifier == "com.example.hello"
+
+
+def test_ipa_icon_candidates_are_capped(tmp_path, monkeypatch):
+    # 40 matching icons, each n x n, the biggest last: only the first 32 are
+    # ranked (by their headers), and only the winner is read in full.
+    icons = {f"Payload/Hello.app/AppIcon60x60@{n}.png": make_cgbi(n, n, gradient_pixels(n, n))
+             for n in range(1, 41)}
+    path = make_ipa(tmp_path / "Hello.ipa", info=hello_info_plist(), files=icons)
+    full_reads = []
+    real_read_member = ipa.read_member
+
+    def spy(zf, name, *, limit):
+        full_reads.append(name)
+        return real_read_member(zf, name, limit=limit)
+
+    monkeypatch.setattr(ipa, "read_member", spy)
+    info = inspect_ipa(path)
+    assert [n for n in full_reads if n.endswith(".png")] == [
+        "Payload/Hello.app/AppIcon60x60@32.png"]
+    assert _pixels(info.icon_png) == ((32, 32), gradient_pixels(32, 32))
 
 
 def test_ipa_name_falls_back_to_bundle_name(tmp_path):
@@ -109,7 +129,8 @@ def test_ipa_missing_identity_raises(tmp_path):
     with pytest.raises(PackageError) as caught:
         inspect_ipa(bad_build)
     assert caught.value.message == (
-        "The build number 1.0b3 isn't up to four numbers separated by dots")
+        "The build number 1.0b3 isn't up to four numbers of at most 9 digits, "
+        "separated by dots")
 
 
 def test_cgbi_round_trip_matches_original_pixels():

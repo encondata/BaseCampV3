@@ -21,6 +21,10 @@ from serversherpa_devices.packages.versions import ios_build_sort
 _APP_PLIST = re.compile(r"Payload/([^/]+\.app)/Info\.plist")
 _PLIST_LIMIT = 4 * 1024 * 1024
 _ICON_LIMIT = 8 * 1024 * 1024
+_MAX_ICON_CANDIDATES = 32
+# A plain PNG's IHDR width and height end at byte 24; a CgBI file's 16-byte
+# CgBI chunk comes first, pushing them to byte 40.
+_ICON_HEAD_BYTES = 48
 _PROFILE_LIMIT = 4 * 1024 * 1024
 
 
@@ -46,7 +50,8 @@ def inspect_ipa(path: Path) -> PackageInfo:
             build_sort = ios_build_sort(build)
         except ValueError:
             raise PackageError(
-                f"The build number {build} isn't up to four numbers separated by dots"
+                f"The build number {build} isn't up to four numbers of at most 9 digits, "
+                "separated by dots"
             ) from None
 
         profile_bytes = read_member(zf, app_dir + "embedded.mobileprovision",
@@ -96,32 +101,48 @@ def _icon_names(info: dict) -> list[str]:
 def _icon_png(zf: zipfile.ZipFile, app_dir: str, info: dict, names: list[str]) -> bytes | None:
     """The largest file in the bundle matching a CFBundleIconFiles entry
     ("AppIcon60x60" matches AppIcon60x60.png, AppIcon60x60@3x.png and
-    AppIcon60x60@2x~ipad.png), decoded from CgBI."""
+    AppIcon60x60@2x~ipad.png), decoded from CgBI. Only the first
+    _MAX_ICON_CANDIDATES matches are ranked, by the IHDR size in their first
+    bytes (then by declared size), and only the winner is read in full."""
     bases = _icon_names(info)
-    candidates = []
+    ranked = []
     for name in names:
+        if len(ranked) >= _MAX_ICON_CANDIDATES:
+            break
         if not name.startswith(app_dir) or not name.endswith(".png"):
             continue
         file = name[len(app_dir):]
         if "/" in file:
             continue
         stem = file.removesuffix(".png")
-        if any(stem == base or stem.startswith((base + "@", base + "~")) for base in bases):
-            data = read_member(zf, name, limit=_ICON_LIMIT)
-            if data is not None:
-                candidates.append((_png_area(data), len(data), data))
-    for _, _, data in sorted(candidates, key=lambda c: c[:2], reverse=True):
-        png = cgbi.decode(data)
-        if png is not None and png.startswith(cgbi.PNG_SIGNATURE):
-            return png
-    return None
+        if not any(stem == base or stem.startswith((base + "@", base + "~")) for base in bases):
+            continue
+        size = zf.getinfo(name).file_size
+        if size <= _ICON_LIMIT:
+            ranked.append((_png_area(_head(zf, name)), size, name))
+    if not ranked:
+        return None
+    best = max(ranked)[2]
+    data = read_member(zf, best, limit=_ICON_LIMIT)
+    png = cgbi.decode(data) if data is not None else None
+    return png if png is not None and png.startswith(cgbi.PNG_SIGNATURE) else None
 
 
-def _png_area(data: bytes) -> int:
-    """Width x height from the IHDR chunk, wherever it sits (CgBI puts a chunk
-    ahead of it); 0 when there isn't one."""
-    at = data.find(b"IHDR", 8, 64)
-    if at < 0 or len(data) < at + 12:
+def _head(zf: zipfile.ZipFile, name: str) -> bytes:
+    """The first _ICON_HEAD_BYTES of a member, or b"" when it can't be read."""
+    try:
+        with zf.open(name) as f:
+            return f.read(_ICON_HEAD_BYTES)
+    except (KeyError, zipfile.BadZipFile, OSError, ValueError, NotImplementedError,
+            EOFError, RuntimeError):
+        return b""
+
+
+def _png_area(head: bytes) -> int:
+    """Width x height from the IHDR chunk, wherever it sits in the first bytes
+    (CgBI puts a chunk ahead of it); 0 when there isn't one."""
+    at = head.find(b"IHDR", 8)
+    if at < 0 or len(head) < at + 12:
         return 0
-    width, height = struct.unpack(">II", data[at + 4:at + 12])
+    width, height = struct.unpack(">II", head[at + 4:at + 12])
     return width * height

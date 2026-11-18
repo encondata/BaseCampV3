@@ -4,6 +4,7 @@ answer, never as foreign keys."""
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -11,12 +12,13 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.types import Text
+from sqlalchemy.types import Text, TypeDecorator
 
 JOB_KINDS = ("register_device", "rebuild_profiles", "sign_build", "ensure_bundle",
              "disable_device", "sync_devices")
@@ -32,6 +34,20 @@ class Base(DeclarativeBase):
         datetime: TIMESTAMP(timezone=True),
         str: Text,
     }
+
+
+class BuildSort(TypeDecorator):
+    """numeric(38,0) read and written as a Python int: an iOS build's sort key
+    (four 9-digit parts) doesn't fit bigint."""
+
+    impl = Numeric(38, 0)
+    cache_ok = True
+
+    def process_bind_param(self, value: int | None, dialect) -> Decimal | None:
+        return None if value is None else Decimal(int(value))
+
+    def process_result_value(self, value: Decimal | None, dialect) -> int | None:
+        return None if value is None else int(value)
 
 
 def _id() -> Mapped[uuid.UUID]:
@@ -91,8 +107,8 @@ class AppVersion(Base):
     app_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apps.id", ondelete="CASCADE"))
     version_name: Mapped[str]
     build: Mapped[str]
-    # Android versionCode; iOS a natural-sort key of the build string.
-    build_sort: Mapped[int] = mapped_column(BigInteger)
+    # Android versionCode; iOS packages.versions.ios_build_sort(build).
+    build_sort: Mapped[int] = mapped_column(BuildSort)
     notes: Mapped[str] = mapped_column(server_default="")
     file_key: Mapped[str]
     size: Mapped[int] = mapped_column(BigInteger)

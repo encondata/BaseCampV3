@@ -2,13 +2,14 @@
 
 import io
 import re
+import struct
 import zipfile
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from serversherpa_devices.packages import PackageError, inspect_package
+from serversherpa_devices.packages import PackageError, apk, inspect_package
 from serversherpa_devices.packages.apk import inspect_apk
 from serversherpa_devices.packages.ipa import inspect_ipa
 
@@ -68,3 +69,41 @@ def test_apk_with_broken_manifest_raises_package_error(tmp_path):
         zf.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00garbage")
     with pytest.raises(PackageError):
         inspect_apk(broken)
+
+
+def _zip_declaring(path, members: dict[str, bytes], declared: dict[str, int]):
+    """A stored zip whose central directory claims `declared` uncompressed
+    sizes for some members (what a zip bomb would claim, or lie about)."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    raw = bytearray(path.read_bytes())
+    at = raw.find(b"PK\x01\x02")
+    while at >= 0:
+        (name_len,) = struct.unpack("<H", raw[at + 28:at + 30])
+        name = raw[at + 46:at + 46 + name_len].decode()
+        if name in declared:
+            raw[at + 24:at + 28] = struct.pack("<I", declared[name])
+        at = raw.find(b"PK\x01\x02", at + 46)
+    path.write_bytes(bytes(raw))
+    return path
+
+
+@pytest.mark.parametrize("declared", [
+    {"AndroidManifest.xml": 32 * 1024 * 1024 + 1},
+    {"resources.arsc": 0x7FFFFFFF},
+    {"classes.dex": 0x7FFFFFFF, "classes2.dex": 0x7FFFFFFF},   # over 2 GB in all
+])
+def test_apk_rejects_oversized_manifest_declared_size(tmp_path, monkeypatch, declared):
+    def never(*args, **kwargs):
+        raise AssertionError("androguard was handed an oversized APK")
+
+    monkeypatch.setattr(apk, "APK", never)
+    members = {"AndroidManifest.xml": b"\x03\x00\x08\x00", "resources.arsc": b"",
+               "classes.dex": b"", "classes2.dex": b""}
+    path = _zip_declaring(tmp_path / "big.apk", members, declared)
+    with zipfile.ZipFile(path) as zf:   # the claim is what zipfile reports
+        assert {n: zf.getinfo(n).file_size for n in declared} == declared
+    with pytest.raises(PackageError) as caught:
+        inspect_apk(path)
+    assert caught.value.message == "This APK is too large to inspect."

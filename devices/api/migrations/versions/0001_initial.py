@@ -50,7 +50,7 @@ def upgrade() -> None:
           app_id uuid NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
           version_name text NOT NULL,
           build text NOT NULL,
-          build_sort bigint NOT NULL,
+          build_sort numeric(38,0) NOT NULL,
           notes text NOT NULL DEFAULT '',
           file_key text NOT NULL,
           size bigint NOT NULL,

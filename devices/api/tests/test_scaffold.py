@@ -141,3 +141,26 @@ async def test_schema_rules(db):
     db.add(App(platform="windows", identifier="x", name="X"))
     with pytest.raises(IntegrityError):
         await db.commit()
+
+
+async def test_build_sort_round_trips_as_int(db):
+    """build_sort is numeric(38,0) (iOS keys exceed bigint) but reads back as
+    a Python int, and sorts numerically in SQL."""
+    from serversherpa_devices.db.models import App, AppVersion
+    from serversherpa_devices.packages.versions import ios_build_sort
+
+    app = App(platform="ios", identifier="com.example.hello", name="Hello")
+    db.add(app)
+    await db.flush()
+    keys = [ios_build_sort(b) for b in ("1.9", "1.10", "999999999.999999999.999999999.1")]
+    for i, key in enumerate(keys):
+        db.add(AppVersion(app_id=app.id, version_name="1", build=str(i), build_sort=key,
+                          file_key=f"ipa/{i}.ipa", size=1, sha256="0" * 64,
+                          uploaded_by=uuid.uuid4(), uploaded_by_name="Test"))
+    await db.commit()
+    stored = (await db.scalars(select(AppVersion.build_sort)
+                               .order_by(AppVersion.build_sort.desc()))).all()
+    assert stored == sorted(keys, reverse=True)
+    assert all(type(v) is int for v in stored)
+    assert (await db.scalar(select(AppVersion.build_sort)
+                            .where(AppVersion.build_sort > 10**35))) == keys[2]
