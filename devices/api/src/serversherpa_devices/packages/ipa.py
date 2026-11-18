@@ -7,9 +7,11 @@ import zipfile
 from pathlib import Path
 
 from serversherpa_devices.packages import (
+    ZIP_ERRORS,
     PackageError,
     PackageInfo,
     cgbi,
+    converts_errors,
     open_zip,
     provision,
     read_member,
@@ -25,9 +27,12 @@ _MAX_ICON_CANDIDATES = 32
 # A plain PNG's IHDR width and height end at byte 24; a CgBI file's 16-byte
 # CgBI chunk comes first, pushing them to byte 40.
 _ICON_HEAD_BYTES = 48
-_PROFILE_LIMIT = 4 * 1024 * 1024
+_PROFILE_LIMIT = provision.RAW_LIMIT
+_MAX_ICON_BASES = 32
+UNREADABLE = "The IPA can't be read"
 
 
+@converts_errors(UNREADABLE)
 def inspect_ipa(path: Path) -> PackageInfo:
     with open_zip(path) as zf:
         names = zf.namelist()
@@ -50,7 +55,7 @@ def inspect_ipa(path: Path) -> PackageInfo:
             build_sort = ios_build_sort(build)
         except ValueError:
             raise PackageError(
-                f"The build number {build} isn't up to four numbers separated by dots "
+                f"The build number {build[:40]} isn't up to four numbers separated by dots "
                 "(the first at most 11 digits, the rest at most 9)"
             ) from None
 
@@ -77,6 +82,8 @@ def _info_plist(zf: zipfile.ZipFile, app_dir: str) -> dict:
     data = read_member(zf, app_dir + "Info.plist", limit=_PLIST_LIMIT)
     try:
         info = plistlib.loads(data) if data is not None else None
+    except MemoryError:
+        raise
     except Exception:  # noqa: BLE001 (plistlib raises many types on bad input)
         info = None
     if not isinstance(info, dict):
@@ -95,7 +102,8 @@ def _icon_names(info: dict) -> list[str]:
     files = primary.get("CFBundleIconFiles") if isinstance(primary, dict) else None
     if not isinstance(files, list):
         return []
-    return [f.removesuffix(".png") for f in files if isinstance(f, str) and f]
+    bases = dict.fromkeys(f.removesuffix(".png") for f in files if isinstance(f, str) and f)
+    return list(bases)[:_MAX_ICON_BASES]
 
 
 def _icon_png(zf: zipfile.ZipFile, app_dir: str, info: dict, names: list[str]) -> bytes | None:
@@ -124,8 +132,7 @@ def _icon_png(zf: zipfile.ZipFile, app_dir: str, info: dict, names: list[str]) -
         return None
     best = max(ranked)[2]
     data = read_member(zf, best, limit=_ICON_LIMIT)
-    png = cgbi.decode(data) if data is not None else None
-    return png if png is not None and png.startswith(cgbi.PNG_SIGNATURE) else None
+    return cgbi.icon_png(cgbi.decode(data)) if data is not None else None
 
 
 def _head(zf: zipfile.ZipFile, name: str) -> bytes:
@@ -133,8 +140,7 @@ def _head(zf: zipfile.ZipFile, name: str) -> bytes:
     try:
         with zf.open(name) as f:
             return f.read(_ICON_HEAD_BYTES)
-    except (KeyError, zipfile.BadZipFile, OSError, ValueError, NotImplementedError,
-            EOFError, RuntimeError):
+    except ZIP_ERRORS:
         return b""
 
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import zipfile
+import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -11,6 +14,9 @@ if TYPE_CHECKING:
     from serversherpa_devices.packages.provision import ProvisionInfo
 
 NOT_A_PACKAGE = "This isn't an APK or IPA"
+# What zipfile and zlib raise on a damaged archive or member.
+ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, OSError, ValueError, NotImplementedError,
+              EOFError, RuntimeError, KeyError)
 
 
 class PackageError(Exception):
@@ -35,11 +41,29 @@ class PackageInfo:
     provision: ProvisionInfo | None
 
 
+def converts_errors[**P, R](message: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A public parse entry point raises only PackageError: anything else a
+    hostile file provokes in zipfile, zlib, plistlib, asn1crypto or androguard
+    becomes PackageError(message), never the library's text. MemoryError is
+    left alone, so the isolated worker dies on it."""
+    def wrap(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def guarded(*args: P.args, **kwargs: P.kwargs) -> R:
+            try:
+                return fn(*args, **kwargs)
+            except (PackageError, MemoryError):
+                raise
+            except Exception:  # noqa: BLE001 (the boundary: every other failure is "can't read")
+                raise PackageError(message) from None
+        return guarded
+    return wrap
+
+
 def open_zip(path: Path) -> zipfile.ZipFile:
     """The upload as a zip, or PackageError(NOT_A_PACKAGE)."""
     try:
         return zipfile.ZipFile(path)
-    except (zipfile.BadZipFile, OSError, ValueError):
+    except ZIP_ERRORS:
         raise PackageError(NOT_A_PACKAGE) from None
 
 
@@ -52,14 +76,15 @@ def read_member(zf: zipfile.ZipFile, name: str, *, limit: int) -> bytes | None:
             return None
         with zf.open(info) as f:
             data = f.read(limit + 1)
-    except (KeyError, zipfile.BadZipFile, OSError, ValueError, NotImplementedError,
-            EOFError, RuntimeError):
+    except ZIP_ERRORS:
         return None
     return data if len(data) <= limit else None
 
 
+@converts_errors(NOT_A_PACKAGE)
 def inspect_package(path: Path) -> PackageInfo:
-    """Inspect an APK or IPA, telling them apart by their contents."""
+    """Inspect an APK or IPA in this process, telling them apart by their
+    contents. Uploads go through isolated.inspect_package_isolated instead."""
     from serversherpa_devices.packages.apk import inspect_apk
     from serversherpa_devices.packages.ipa import inspect_ipa
 

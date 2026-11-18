@@ -1,6 +1,7 @@
 """APK inspection against the two signed fixtures (see fixtures/README.md)."""
 
 import io
+import random
 import re
 import struct
 import zipfile
@@ -107,3 +108,76 @@ def test_apk_rejects_oversized_manifest_declared_size(tmp_path, monkeypatch, dec
     with pytest.raises(PackageError) as caught:
         inspect_apk(path)
     assert caught.value.message == "This APK is too large to inspect."
+
+
+def test_corrupt_apk_raises_package_error(tmp_path):
+    from .package_fixtures import flip_member_bytes, patch_central_directory
+
+    def copy(name):
+        path = tmp_path / name
+        path.write_bytes((FIXTURES / "hello-a.apk").read_bytes())
+        return path
+
+    manifest = flip_member_bytes(copy("manifest.apk"), "AndroidManifest.xml")
+    with pytest.raises(PackageError):
+        inspect_package(manifest)
+
+    version = patch_central_directory(copy("version.apk"), extract_version=147)
+    with pytest.raises(PackageError) as caught:
+        inspect_apk(version)
+    assert caught.value.message == "This isn't an APK or IPA"
+
+    truncated = copy("truncated.apk")
+    truncated.write_bytes(truncated.read_bytes()[:5000])
+    with pytest.raises(PackageError):
+        inspect_package(truncated)
+
+    seed = (FIXTURES / "hello-a.apk").read_bytes()
+    rng = random.Random(11)
+    mutant = tmp_path / "mutant.apk"
+    for _ in range(300):
+        raw = bytearray(seed)
+        raw[rng.randrange(len(raw))] = rng.randrange(256)
+        mutant.write_bytes(bytes(raw))
+        try:
+            inspect_package(mutant)
+        except PackageError:
+            pass
+
+
+def test_androguard_logging_stays_off_the_root_logger(tmp_path, caplog):
+    import logging
+
+    # apkInspector warns through the root logger on damaged zips (and calls
+    # logging.basicConfig at import); those records go to a quiet named logger.
+    quiet: list[logging.LogRecord] = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            quiet.append(record)
+
+    collector = Collect()
+    logging.getLogger("serversherpa_devices.apkinspector").addHandler(collector)
+    root_handlers = logging.getLogger().handlers[:]
+    seed = (FIXTURES / "hello-a.apk").read_bytes()
+    rng = random.Random(11)
+    mutant = tmp_path / "mutant.apk"
+    try:
+        with caplog.at_level(logging.DEBUG):
+            for _ in range(300):
+                raw = bytearray(seed)
+                raw[rng.randrange(len(raw))] = rng.randrange(256)
+                mutant.write_bytes(bytes(raw))
+                try:
+                    inspect_apk(mutant)
+                except PackageError:
+                    pass
+    finally:
+        logging.getLogger("serversherpa_devices.apkinspector").removeHandler(collector)
+    assert any("local header" in r.getMessage() for r in quiet)
+    # (pytest attaches caplog to non-propagating loggers too, so it sees the
+    # quiet logger's records; none may come through the root logger.)
+    assert not [r for r in caplog.records if r.name == "root"]
+    assert all(r.name == "serversherpa_devices.apkinspector"
+               for r in caplog.records if "apkInspector" in r.pathname)
+    assert logging.getLogger().handlers == root_handlers

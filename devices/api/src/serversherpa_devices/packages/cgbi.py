@@ -2,7 +2,9 @@
 
 CgBI files carry a CgBI chunk before IHDR, store pixels as premultiplied
 BGRA, and deflate IDAT without the zlib header. Only 8-bit RGBA,
-non-interlaced files (what Xcode writes for icons) are converted."""
+non-interlaced files (what Xcode writes for icons) are converted.
+
+Also `icon_png`, the last check every APK and IPA icon goes through."""
 
 import io
 import struct
@@ -12,6 +14,7 @@ from PIL import Image
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MAX_PIXELS = 4096 * 4096
+ICON_FORMATS = ("PNG", "WEBP", "JPEG")
 
 
 def _chunks(png: bytes) -> list[tuple[bytes, bytes]] | None:
@@ -69,11 +72,31 @@ def decode(png: bytes) -> bytes | None:
     swapped = (PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(rows))
                + _chunk(b"IEND", b""))
     try:
-        premultiplied = Image.open(io.BytesIO(swapped)).tobytes()
-    except (OSError, ValueError, SyntaxError):
+        premultiplied = Image.open(io.BytesIO(swapped), formats=("PNG",)).tobytes()
+        # Pillow's "RGBa" is premultiplied RGBA; converting divides alpha back out.
+        image = Image.frombytes("RGBa", (width, height), premultiplied).convert("RGBA")
+        out = io.BytesIO()
+        image.save(out, "PNG")
+    except Exception:  # noqa: BLE001 (Pillow raises many types on hostile scanlines)
         return None
-    # Pillow's "RGBa" is premultiplied RGBA; converting divides alpha back out.
-    image = Image.frombytes("RGBa", (width, height), premultiplied).convert("RGBA")
-    out = io.BytesIO()
-    image.save(out, "PNG")
+    return out.getvalue()
+
+
+def icon_png(data: bytes | None) -> bytes | None:
+    """`data` as a PNG icon: a PNG within 4096x4096 comes back as is, a WebP
+    or JPEG within it is converted, and anything else gives None. Pillow reads
+    only the header before the size check."""
+    if not data:
+        return None
+    try:
+        image = Image.open(io.BytesIO(data), formats=ICON_FORMATS)
+        width, height = image.size
+        if width * height > _MAX_PIXELS:
+            return None
+        if image.format == "PNG" and data.startswith(PNG_SIGNATURE):
+            return data
+        out = io.BytesIO()
+        image.save(out, "PNG")
+    except Exception:  # noqa: BLE001 (an optional field: any Pillow failure means "no icon")
+        return None
     return out.getvalue()

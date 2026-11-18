@@ -125,3 +125,57 @@ def make_ipa(path: Path, *, info: dict | None = None,
             zf.writestr(f"Payload/{app}/Info.plist",
                         plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
     return path
+
+
+def member_data_span(path: Path, name: str) -> tuple[int, int]:
+    """(offset, length) of a member's stored (compressed) bytes in the file."""
+    with zipfile.ZipFile(path) as zf:
+        info = zf.getinfo(name)
+    raw = path.read_bytes()
+    name_len, extra_len = struct.unpack("<HH", raw[info.header_offset + 26:info.header_offset + 30])
+    return info.header_offset + 30 + name_len + extra_len, info.compress_size
+
+
+def flip_member_bytes(path: Path, name: str, count: int = 8) -> Path:
+    """Corrupt the middle of a member's compressed stream."""
+    start, length = member_data_span(path, name)
+    raw = bytearray(path.read_bytes())
+    for i in range(start + length // 3, min(start + length // 3 + count, start + length)):
+        raw[i] ^= 0x5A
+    path.write_bytes(bytes(raw))
+    return path
+
+
+def patch_central_directory(path: Path, *, extract_version: int | None = None,
+                            uncompressed: dict[str, int] | None = None,
+                            local_too: bool = False) -> Path:
+    """Rewrite central-directory fields in place: every entry's "version
+    needed to extract", and the uncompressed size of named entries (and of
+    their local headers when `local_too`)."""
+    raw = bytearray(path.read_bytes())
+    at = raw.find(b"PK\x01\x02")
+    while at >= 0:
+        (name_len,) = struct.unpack("<H", raw[at + 28:at + 30])
+        (local_at,) = struct.unpack("<I", raw[at + 42:at + 46])
+        name = raw[at + 46:at + 46 + name_len].decode()
+        if extract_version is not None:
+            raw[at + 6:at + 8] = struct.pack("<H", extract_version)
+        if uncompressed and name in uncompressed:
+            raw[at + 24:at + 28] = struct.pack("<I", uncompressed[name])
+            if local_too:
+                raw[local_at + 22:local_at + 26] = struct.pack("<I", uncompressed[name])
+        at = raw.find(b"PK\x01\x02", at + 46)
+    path.write_bytes(bytes(raw))
+    return path
+
+
+def lying_bomb_apk(path: Path, *, inflated_bytes: int) -> Path:
+    """An APK whose AndroidManifest.xml inflates to `inflated_bytes` of zeros
+    while both its local and central headers claim 1000 bytes."""
+    chunk = bytes(1024 * 1024)
+    with (zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf,
+          zf.open("AndroidManifest.xml", "w") as member):
+        for _ in range(inflated_bytes // len(chunk)):
+            member.write(chunk)
+    return patch_central_directory(path, uncompressed={"AndroidManifest.xml": 1000},
+                                   local_too=True)

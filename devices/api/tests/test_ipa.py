@@ -2,6 +2,7 @@
 
 import io
 import plistlib
+import random
 import struct
 import zipfile
 import zlib
@@ -15,11 +16,13 @@ from serversherpa_devices.packages.ipa import inspect_ipa
 
 from .package_fixtures import (
     PNG_SIGNATURE,
+    flip_member_bytes,
     gradient_pixels,
     hello_info_plist,
     make_cgbi,
     make_ipa,
     make_provision,
+    patch_central_directory,
     png_chunk,
 )
 
@@ -166,3 +169,79 @@ def test_cgbi_passes_normal_png_through_and_rejects_unsupported():
 
     truncated = make_cgbi(8, 8, gradient_pixels(8, 8))[:60]
     assert decode(truncated) is None
+
+
+def _full_ipa(path):
+    padding = {f"Key{i}": f"value number {i} " * 4 for i in range(200)}   # a long deflate stream
+    return make_ipa(path, info=hello_info_plist(**padding), files={
+        "Payload/Hello.app/AppIcon60x60@3x.png": make_cgbi(60, 60, gradient_pixels(60, 60)),
+        "Payload/Hello.app/embedded.mobileprovision": make_provision(devices=UDIDS),
+    })
+
+
+def test_corrupt_ipa_members_raise_package_error(tmp_path):
+    plist = flip_member_bytes(_full_ipa(tmp_path / "plist.ipa"), "Payload/Hello.app/Info.plist")
+    with pytest.raises(PackageError) as caught:
+        inspect_package(plist)
+    assert caught.value.message == "The app's Info.plist can't be read"
+
+    profile = flip_member_bytes(_full_ipa(tmp_path / "profile.ipa"),
+                                "Payload/Hello.app/embedded.mobileprovision")
+    with pytest.raises(PackageError) as caught:
+        inspect_package(profile)
+    assert caught.value.message == "The provisioning profile can't be read"
+
+    # A damaged icon only loses the icon.
+    icon = flip_member_bytes(_full_ipa(tmp_path / "icon.ipa"),
+                             "Payload/Hello.app/AppIcon60x60@3x.png", count=40)
+    assert inspect_package(icon).icon_png is None
+
+    # zipfile refuses a "version needed to extract" it doesn't support.
+    version = patch_central_directory(_full_ipa(tmp_path / "version.ipa"), extract_version=147)
+    for inspect in (inspect_package, inspect_ipa):
+        with pytest.raises(PackageError) as caught:
+            inspect(version)
+        assert caught.value.message == "This isn't an APK or IPA"
+
+    # Single-byte mutations anywhere: every outcome is a result or a PackageError.
+    seed = _full_ipa(tmp_path / "seed.ipa").read_bytes()
+    rng = random.Random(7)
+    mutant = tmp_path / "mutant.ipa"
+    for _ in range(300):
+        raw = bytearray(seed)
+        raw[rng.randrange(len(raw))] = rng.randrange(256)
+        mutant.write_bytes(bytes(raw))
+        try:
+            inspect_package(mutant)
+        except PackageError:
+            pass
+
+
+def test_provision_with_shared_reference_bomb_is_refused():
+    # A binary plist where each level lists the level below twice: a few
+    # hundred bytes, 2^40 nodes when walked.
+    from serversherpa_devices.packages.provision import _bounded_copy
+
+    node: object = "leaf"
+    for _ in range(40):
+        node = [node, node]
+    with pytest.raises(PackageError):
+        _bounded_copy({"deep": node})
+    node = "leaf"
+    for _ in range(20):   # within the depth limit, over the node budget
+        node = [node, node]
+    with pytest.raises(PackageError):
+        _bounded_copy({"wide": node})
+    assert _bounded_copy({"a": ["x", {"b": True}], "when": b"\x00", "n": 3}) == {
+        "a": ["x", {"b": True}], "n": 3}
+
+
+def test_ipa_icon_must_pass_the_size_and_format_check(tmp_path):
+    big = io.BytesIO()
+    Image.new("RGBA", (4097, 4096)).save(big, "PNG")
+    gif = io.BytesIO()
+    Image.new("RGB", (60, 60)).save(gif, "GIF")
+    for data in (big.getvalue(), gif.getvalue()):
+        ipa = make_ipa(tmp_path / "icon.ipa", info=hello_info_plist(),
+                       files={"Payload/Hello.app/AppIcon60x60@3x.png": data})
+        assert inspect_ipa(ipa).icon_png is None

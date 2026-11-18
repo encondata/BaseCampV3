@@ -1,25 +1,66 @@
-"""APK inspection through androguard."""
+"""APK inspection through androguard. Uploads run this in the isolated
+worker (isolated.py): androguard reads members through apkInspector, which
+trusts local-header sizes and inflates without a limit, so only the child's
+memory and CPU limits truly bound it. The declared-size check here is a cheap
+first gate."""
 
 import hashlib
-import io
-import warnings
+import logging
+import sys
 import zipfile
 from pathlib import Path
 
-from androguard.core.apk import APK
 from loguru import logger
-from PIL import Image
 
 from serversherpa_devices.packages import (
     NOT_A_PACKAGE,
     PackageError,
     PackageInfo,
+    converts_errors,
     open_zip,
     read_member,
 )
-from serversherpa_devices.packages.cgbi import PNG_SIGNATURE
+from serversherpa_devices.packages.cgbi import icon_png
 
-logger.remove()   # androguard logs every parse step through loguru
+
+def _import_androguard():
+    """androguard's APK class, with its logging kept out of the root logger:
+    apkInspector calls logging.basicConfig(level=DEBUG) at import and logs
+    through the root logger; androguard logs through loguru."""
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    from androguard.core.apk import APK
+
+    root.handlers[:] = saved_handlers   # undo apkInspector's basicConfig
+    root.setLevel(saved_level)
+    quiet = logging.getLogger("serversherpa_devices.apkinspector")
+    quiet.propagate = False
+    quiet.addHandler(logging.NullHandler())
+    for name, module in list(sys.modules.items()):
+        if name.startswith("apkInspector") and getattr(module, "logging", None) is logging:
+            module.logging = _LoggingShim(quiet)
+    logger.remove()
+    return APK
+
+
+class _LoggingShim:
+    """Stands in for the `logging` module inside apkInspector's modules: its
+    module-level logging.warning(...) calls go to a quiet named logger."""
+
+    _CALLS = frozenset({"debug", "info", "warning", "error", "exception", "critical", "log"})
+
+    def __init__(self, target: logging.Logger):
+        self._target = target
+
+    def __getattr__(self, name: str):
+        if name in self._CALLS:
+            return getattr(self._target, name)
+        if name == "basicConfig":
+            return lambda *args, **kwargs: None
+        return getattr(logging, name)
+
+
+APK = _import_androguard()
 
 UNREADABLE = "The APK can't be read"
 TOO_LARGE = "This APK is too large to inspect."
@@ -29,9 +70,9 @@ _PARSED_MEMBERS = ("AndroidManifest.xml", "resources.arsc")
 _PARSED_LIMIT = 32 * 1024 * 1024
 _TOTAL_LIMIT = 2 * 1024 * 1024 * 1024
 _ICON_LIMIT = 8 * 1024 * 1024
-_ICON_MAX_PIXELS = 4096 * 4096
 
 
+@converts_errors(UNREADABLE)
 def inspect_apk(path: Path) -> PackageInfo:
     with open_zip(path) as zf:
         if "AndroidManifest.xml" not in zf.namelist():
@@ -41,6 +82,8 @@ def inspect_apk(path: Path) -> PackageInfo:
         apk = APK(str(path))
         package = apk.get_package()
         version_code = apk.get_androidversion_code()
+    except MemoryError:
+        raise
     except Exception:  # noqa: BLE001 (androguard raises many types on a damaged manifest)
         raise PackageError(UNREADABLE) from None
     if not package or not version_code:
@@ -48,7 +91,7 @@ def inspect_apk(path: Path) -> PackageInfo:
     try:
         build_sort = int(version_code)
     except ValueError:
-        raise PackageError(f"The versionCode {version_code} isn't a number") from None
+        raise PackageError(f"The versionCode {str(version_code)[:40]} isn't a number") from None
 
     digest = _signing_digest(apk)
     if digest is None:
@@ -78,6 +121,8 @@ def _check_declared_sizes(zf: zipfile.ZipFile) -> None:
 def _safe(getter):
     try:
         return getter()
+    except MemoryError:
+        raise
     except Exception:  # noqa: BLE001 (an optional field: any androguard failure means "absent")
         return None
 
@@ -93,28 +138,11 @@ def _signing_digest(apk: APK) -> str | None:
 
 
 def _icon_png(apk: APK, path: Path) -> bytes | None:
-    """The launcher icon (up to xxxhdpi) as PNG. An adaptive icon is XML and
-    gives None; WebP and JPEG rasters are converted. The file is read through
-    the size-capped zip reader, and images over _ICON_MAX_PIXELS give None."""
+    """The launcher icon (up to xxxhdpi) as PNG, read through the size-capped
+    zip reader. An adaptive icon is XML and gives None; see cgbi.icon_png for
+    the size and format check."""
     icon_path = _safe(lambda: apk.get_app_icon(max_dpi=640))
-    if not icon_path or icon_path.endswith(".xml"):
+    if not isinstance(icon_path, str) or icon_path.endswith(".xml"):
         return None
     with open_zip(path) as zf:
-        data = read_member(zf, icon_path, limit=_ICON_LIMIT)
-    if not data:
-        return None
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            image = Image.open(io.BytesIO(data))   # reads the header only
-            width, height = image.size
-            if width * height > _ICON_MAX_PIXELS:
-                return None
-            if image.format == "PNG" and data.startswith(PNG_SIGNATURE):
-                return data
-            out = io.BytesIO()
-            image.save(out, "PNG")
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError,
-            Image.DecompressionBombWarning):
-        return None
-    return out.getvalue()
+        return icon_png(read_member(zf, icon_path, limit=_ICON_LIMIT))

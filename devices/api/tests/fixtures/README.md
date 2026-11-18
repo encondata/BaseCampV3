@@ -17,8 +17,8 @@ Signer certificate SHA-256 (as `apksigner verify --print-certs` prints it):
 - key B: `96c8b9d024605bc3455e7779a9b4efe5c57f69a5b3d528d152b2cb7710ca39a4`
 
 The keystores were throwaway files in a scratch directory and are not kept.
-Rebuilding makes new keys, so update the digests above (the tests only
-check that the digests are 64 hex characters and that the two differ).
+Rebuilding makes new keys: update the digests above and `KEY_A_DIGEST` /
+`KEY_B_DIGEST` in `tests/test_apk.py`, which asserts them exactly.
 
 Built on macOS with Android build-tools 36.0.0, platform android-35 and
 Android Studio's bundled JBR:
@@ -77,7 +77,9 @@ build 1 1.0 key-a.jks a hello-a.apk
 build 2 1.1 key-b.jks b hello-a2.apk
 ```
 
-`apksigner` signs with schemes v2 and v3 (minSdk 26 skips v1).
+`apksigner` writes all three signature schemes: the v1 (JAR) files under
+`META-INF/` as well as the v2 and v3 blocks. At minSdk 26, `apksigner verify`
+reports only v2 and v3 as verified.
 
 ## IPA fixtures
 
