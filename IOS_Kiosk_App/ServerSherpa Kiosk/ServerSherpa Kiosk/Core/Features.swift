@@ -15,6 +15,11 @@ struct KioskFeature: Equatable, Identifiable, Sendable {
     var alwaysAvailable: Bool = false
 }
 
+/// Asset Lookup (Android's Features.kt): scan or type an asset tag, serial, RFID or name and see
+/// the device. A move tile, so Home hides it until Kiosk Setup is done. It sits after Trucks.
+let LOOKUP_FEATURE = KioskFeature(id: .lookup, route: "lookup", title: "Asset Lookup",
+                                  blurb: "Scan an asset to see what it is and where it goes.")
+
 /// Same order and copy as kiosk/src/lib/features.ts, except Label Printing: asset labels only here.
 let FEATURES: [KioskFeature] = [
     KioskFeature(id: .setup, route: "setup", title: "Kiosk Setup", blurb: "Set up this kiosk for a move.", alwaysAvailable: true),
@@ -22,6 +27,7 @@ let FEATURES: [KioskFeature] = [
     KioskFeature(id: .enroll, route: "enroll", title: "RFID Enroll", blurb: "Scan an asset, then scan its RFID tag."),
     KioskFeature(id: .containers, route: "containers", title: "Containers", blurb: "Pack and unpack containers by scanning.", placeholder: true),
     KioskFeature(id: .trucks, route: "trucks", title: "Trucks", blurb: "Load and unload trucks by scanning.", placeholder: true),
+    LOOKUP_FEATURE,
     KioskFeature(id: .labels, route: "labels", title: "Label Printing", blurb: "Print asset labels."),
     KioskFeature(id: .timeclock, route: "timeclock", title: "Timeclock", blurb: "Clock in and out of a move."),
     KioskFeature(id: .settings, route: "settings", title: "Settings", blurb: "Appearance, sound, devices, and more.", alwaysAvailable: true),
@@ -40,14 +46,8 @@ let TIMECLOCK_STATION_FEATURE = KioskFeature(id: .timeclock, route: "timeclock/s
 let ROLODEX_FEATURE = KioskFeature(id: .rolodex, route: "rolodex", title: "Rolodex",
                                    blurb: "Look up workers, edit their details, and take photos.", alwaysAvailable: true)
 
-/// Asset Lookup (Android's Features.kt): scan or type an asset tag, serial, RFID or name and see
-/// the device. A move tile, so it needs Kiosk Setup. Its place on Home is after Trucks (Android's
-/// order); it joins FEATURES when its screen does.
-let LOOKUP_FEATURE = KioskFeature(id: .lookup, route: "lookup", title: "Asset Lookup",
-                                  blurb: "Scan an asset to see what it is and where it goes.")
-
-/// Every feature a route can open (`feature(_:)` finds the Rolodex and Asset Lookup too).
-private let ALL_FEATURES = FEATURES + [ROLODEX_FEATURE, LOOKUP_FEATURE]
+/// Every feature a route can open (`feature(_:)` finds the Rolodex too).
+private let ALL_FEATURES = FEATURES + [ROLODEX_FEATURE]
 
 /// What Home shows (web `homeFeatures`): a Time Clock station only Time Clock, Kiosk Setup and
 /// Settings (web `STATION_TILES.timeclock`; Jimmy owns these lists); any other kiosk every feature.

@@ -4,7 +4,7 @@ import Testing
 
 struct FeaturesTests {
     @Test func orderMatchesTheWebKiosk() {
-        #expect(FEATURES.map(\.route) == ["setup", "scan", "enroll", "containers", "trucks", "labels", "timeclock", "settings"])
+        #expect(FEATURES.map(\.route) == ["setup", "scan", "enroll", "containers", "trucks", "lookup", "labels", "timeclock", "settings"])
     }
 
     @Test func onlySetupAndSettingsAreAlwaysAvailable() {
@@ -42,7 +42,7 @@ struct FeaturesTests {
     /// never a station Home, never a non-admin. It needs no move, so it's always available.
     @Test func rolodexIsOnTheFullHomeForAdminsOnly() {
         #expect(homeFeatures(stationType: nil, isAdmin: true).map(\.id)
-                == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
+                == [.setup, .scan, .enroll, .containers, .trucks, .lookup, .labels, .timeclock, .rolodex, .settings])
         #expect(!homeFeatures(stationType: nil, isAdmin: false).map(\.id).contains(.rolodex))
         #expect(!homeFeatures(stationType: nil).map(\.id).contains(.rolodex))
         #expect(homeFeatures(stationType: "timeclock", isAdmin: true).map(\.title) == ["Time Clock", "Kiosk Setup", "Settings"])
@@ -63,8 +63,8 @@ struct FeaturesTests {
         #expect(routeAllowed(.rolodexWorker("p1"), setupState: .failed, devMode: false))
     }
 
-    /// Asset Lookup (Android's Features.kt): the tile's words, a move tile (needs setup), and its
-    /// route resolves.
+    /// Asset Lookup (Android's Features.kt): the tile's words, a move tile (needs setup), its route
+    /// resolves, and it sits on Home after Trucks. A Time Clock station's Home doesn't get it.
     @Test func lookupFeatureResolves() {
         let lookup = feature(.lookup)
         #expect(lookup == LOOKUP_FEATURE)
@@ -79,6 +79,10 @@ struct FeaturesTests {
         // Android's FeatureId order: after Trucks, before Label Printing
         let ids = FeatureId.allCases
         #expect(ids.firstIndex(of: .lookup) == ids.firstIndex(of: .trucks).map { $0 + 1 })
+        let home = FEATURES.map(\.id)
+        #expect(home.firstIndex(of: .lookup) == home.firstIndex(of: .trucks).map { $0 + 1 })
+        #expect(home.filter { $0 == .lookup }.count == 1)
+        #expect(!homeFeatures(stationType: "timeclock", isAdmin: true).map(\.id).contains(.lookup))
     }
 
     @Test func setupStateWire() {

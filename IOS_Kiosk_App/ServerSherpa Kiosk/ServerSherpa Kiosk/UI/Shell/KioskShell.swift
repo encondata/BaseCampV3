@@ -132,7 +132,13 @@ struct KioskShell<Content: View>: View {
         Group {
             if sizeClass == .compact {
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) { brand; backButton }
+                    // A phone is too narrow for the chip and a long screen title beside "‹ Home"
+                    // (Asset Lookup pushed the bar off both edges): they give way, chip first.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) { brand(showChip: true, showTitle: true); backButton }
+                        HStack(spacing: 10) { brand(showChip: false, showTitle: true); backButton }
+                        HStack(spacing: 10) { brand(showChip: false, showTitle: false); backButton }
+                    }
                     HStack(spacing: 10) { kioskName; Spacer(minLength: 0); userItems }
                 }
             } else {
@@ -159,8 +165,6 @@ struct KioskShell<Content: View>: View {
             userItems
         }
     }
-
-    private var brand: some View { brand(showChip: true, showTitle: true) }
 
     private func brand(showChip: Bool, showTitle: Bool) -> some View {
         HStack(spacing: 8) {
