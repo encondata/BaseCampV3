@@ -5,8 +5,10 @@ import UniformTypeIdentifiers
 
 /// Settings › Troubleshooting (D13): the saved printer's connection and details, ask-the-printer
 /// buttons, a speed test, a Bluetooth scan and a report to share; the command box for admins and
-/// developers, the Cut-send test for developers. Nothing here saves a printer.
+/// developers, the Cut-send test for developers. Nothing here saves a printer: with none saved,
+/// `openPrinterSetup` (when Settings can open it) goes to Printer Setup, where one is chosen.
 struct TroubleshootingPanel: View {
+    var openPrinterSetup: (() -> Void)? = nil
     @Environment(\.container) private var container
     @Environment(KioskAuth.self) private var auth
 
@@ -17,19 +19,21 @@ struct TroubleshootingPanel: View {
 
     var body: some View {
         let roles = self.roles
-        TroubleshootingBody(container: container, isAdmin: roles.admin, isDeveloper: roles.developer)
+        TroubleshootingBody(container: container, isAdmin: roles.admin, isDeveloper: roles.developer, openPrinterSetup: openPrinterSetup)
             // Another role starts the tab over, so the command box always follows who is signed in.
             .id("\(roles.admin)-\(roles.developer)")
     }
 }
 
 private struct TroubleshootingBody: View {
+    let openPrinterSetup: (() -> Void)?
     @State private var vm: TroubleshootingModel
     @State private var confirmSpeed = false
-    @State private var copied = false
     @Environment(\.kioskPalette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
 
-    init(container: AppContainer, isAdmin: Bool, isDeveloper: Bool) {
+    init(container: AppContainer, isAdmin: Bool, isDeveloper: Bool, openPrinterSetup: (() -> Void)?) {
+        self.openPrinterSetup = openPrinterSetup
         _vm = State(initialValue: TroubleshootingModel(
             settings: container.labelSettings, bluetooth: container.bluetooth,
             zebraFor: { printer in container.zebra(for: printer) },
@@ -53,6 +57,8 @@ private struct TroubleshootingBody: View {
         }
         .onAppear { vm.open() }
         .onDisappear { vm.close() }
+        // Back from Settings (Bluetooth allowed or turned on): a scan Bluetooth refused runs again.
+        .onChange(of: scenePhase) { _, phase in if phase == .active { vm.appResumed() } }
         .confirmationDialog("Print \(vm.speedRuns) speed-test labels?", isPresented: $confirmSpeed, titleVisibility: .visible) {
             Button("Print \(vm.speedRuns) labels") { vm.startSpeedTest() }
             Button("Cancel", role: .cancel) {}
@@ -70,6 +76,10 @@ private struct TroubleshootingBody: View {
             DetailLines(lines: vm.connectionLines)
         } else {
             Text(NO_TROUBLESHOOTING_PRINTER_TEXT).font(KioskType.bodyMedium).foregroundStyle(palette.textMute)
+                .fixedSize(horizontal: false, vertical: true)
+            if let openPrinterSetup {
+                SecondaryButton("Printer Setup", action: openPrinterSetup).padding(.top, 8)
+            }
         }
     }
 
@@ -210,7 +220,7 @@ private struct TroubleshootingBody: View {
             }
         }
         .padding(.top, 8)
-        KioskToast(text: vm.scanMessage, error: vm.scanMessage.map { $0 != NOTHING_HEARD_TEXT && $0 != SCAN_CUT_SHORT_TEXT } ?? false)
+        KioskToast(text: vm.scanMessage, error: vm.scanMessageIsError)
         if vm.scanMessage == BLUETOOTH_DENIED_TEXT { OpenSettingsButton() }
         ForEach(vm.found ?? []) { device in
             VStack(alignment: .leading, spacing: 2) {
@@ -233,14 +243,8 @@ private struct TroubleshootingBody: View {
         Text("Copy or share everything above as text: this device and app, the printer, every reply and speed result, and the last \(TroubleshootingModel.LOG_CAP.formatted()) log lines (\(vm.logLines.count) so far) with the Bluetooth link's own events.")
             .font(KioskType.bodySmall).foregroundStyle(palette.textMute)
         HStack(spacing: 12) {
-            SecondaryButton(copied ? "Copied" : "Copy") {
-                UIPasteboard.general.string = vm.report().text
-                copied = true
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    copied = false
-                }
-            }
+            // Built off the main actor, then put on the pasteboard (at most SHARE_MAX_CHARS).
+            SecondaryButton("Copy") { vm.copyReport { UIPasteboard.general.string = $0 } }
             ShareLink(item: TroubleshootingReportFile(vm: vm), preview: SharePreview("Printer report")) {
                 Text("Share")
                     .font(KioskType.labelLarge)
@@ -253,6 +257,19 @@ private struct TroubleshootingBody: View {
             .buttonStyle(.plain)
         }
         .padding(.top, 8)
+        // Nothing new shows unless building takes long enough to notice.
+        if vm.reportSlow {
+            HStack(spacing: 8) {
+                ProgressView().tint(palette.accent)
+                Text("Preparing the report…").font(KioskType.bodyMedium).foregroundStyle(palette.textMute)
+            }
+            .padding(.top, 8)
+        }
+        if vm.reportFailed {
+            KioskToast(text: REPORT_FAILED_TEXT, error: true)
+        } else if vm.reportCopied {
+            KioskToast(text: REPORT_COPIED_TEXT)
+        }
     }
 
     /// What the last call met in one of `sections` and the crew fixes on the iPad, as on Print Labels:
@@ -404,18 +421,14 @@ private struct SpeedTable: View {
     }
 }
 
-/// The report as a text file named printer-report-<yyyyMMdd-HHmmss>.txt, written when shared.
+/// The report as a text file named printer-report-<yyyyMMdd-HHmmss>.txt, built and written off
+/// the main actor when the share sheet asks for it (`reportFile`: a failure says so on the tab).
 private struct TroubleshootingReportFile: Transferable {
     let vm: TroubleshootingModel
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .plainText) { file in
-            let report = await file.vm.report()
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("printer-report", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let url = dir.appendingPathComponent(report.name)
-            try Data(report.text.utf8).write(to: url, options: .atomic)
-            return SentTransferredFile(url)
+            SentTransferredFile(try await file.vm.reportFile())
         }
     }
 }

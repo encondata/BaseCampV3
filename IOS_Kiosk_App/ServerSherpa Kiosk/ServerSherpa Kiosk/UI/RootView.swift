@@ -75,7 +75,7 @@ struct RootView: View {
     @ViewBuilder private func destination(_ route: Route) -> some View {
         switch route {
         case .setup: KioskSetupScreen(path: $path)
-        case .settings(let tab): SettingsScreen(initialTab: tab)
+        case .settings(let tab): SettingsScreen(initialTab: tab, path: $path)
         case .scan: ScanScreen()
         case .enroll: EnrollScreen()
         case .timeclock: TimeclockScreen()

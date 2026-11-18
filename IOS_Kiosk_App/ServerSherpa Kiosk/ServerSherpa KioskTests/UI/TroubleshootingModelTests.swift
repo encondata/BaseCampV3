@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import ServerSherpa_Kiosk
 
@@ -77,6 +78,7 @@ private let HQES_REPLY = "\u{02}\r\n\r\n  PRINTER STATUS                        
     + "   WARNINGS:       0 00000000 00000000   \r\n\u{03}"
 private let HW_REPLY = "\u{02}\r\n- DIR E:*.* \r\n* E:TT0003M_.TTF    169188       K  \r\n\r\n-  63311872 bytes free E: ONBOARD FLASH \r\n\u{03}"
 private let ZD421_SERIAL = "D8J224508535"
+private let DEVICE_TEXT = "Device: iPad16,6 (ipad), iPadOS 27.2\nApp: version 1.0 (build 7)"
 
 /// A failure that isn't one of the app's printer errors, with a message of its own (a socket's or
 /// a framework's could say anything).
@@ -106,17 +108,25 @@ final class TroubleshootingModelTests {
         settings = LabelSettingsStore(prefs: prefs)
     }
 
-    private func model(isAdmin: Bool = false, isDeveloper: Bool = false, pick: LabelPick? = nil) -> TroubleshootingModel {
+    private func model(isAdmin: Bool = false, isDeveloper: Bool = false, pick: LabelPick? = nil,
+                       device: @escaping @Sendable () throws -> String = { DEVICE_TEXT }) -> TroubleshootingModel {
         let zebra = self.zebra
         return TroubleshootingModel(settings: settings, bluetooth: bluetooth, zebraFor: { _ in zebra },
                                     printerLock: lock, printerGuard: printerGuard, isAdmin: isAdmin, isDeveloper: isDeveloper,
-                                    pick: { pick }, device: { "Device: iPad16,6 (ipad), iPadOS 27.2\nApp: version 1.0 (build 7)" })
+                                    pick: { pick }, device: device)
     }
 
     /// Print Labels' send, as the container wires it (`lockedSender` around the transport).
     private var printLabels: LabelSender {
         let zebra = self.zebra
         return lockedSender(lock, printerGuard) { _, zpl in try await zebra.send(zpl) }
+    }
+
+    /// `m`'s report written off the main actor, as Copy and Share write it: a long one would hold
+    /// up every other test waiting on the main actor.
+    private func offMainReport(_ m: TroubleshootingModel, now: Date = Date(), maxChars: Int = .max) async throws -> String {
+        let draft = m.reportDraft(now: now)
+        return try await Task.detached { try draft.report(maxChars: maxChars).text }.value
     }
 
     private func eventually(_ what: String, _ cond: @MainActor @Sendable () -> Bool) async {
@@ -136,11 +146,31 @@ final class TroubleshootingModelTests {
         #expect(SettingsTabId(rawValue: "troubleshooting") == .troubleshooting)
     }
 
+    /// With no printer saved, Connection offers Printer Setup: pushed onto the signed-in Settings'
+    /// stack. The login gear's sheet has no stack (and shows Troubleshooting to nobody: it is for
+    /// signed-in people), and while Label Printing waits for Kiosk Setup the gate would send
+    /// Printer Setup straight back to Home, so neither offers it.
+    @Test func printerSetupOpensFromTheSignedInSettingsOnly() throws {
+        var path: [Route] = [.settings(.troubleshooting)]
+        let binding = Binding(get: { path }, set: { path = $0 })
+        let open = try #require(printerSetupOpener(path: binding, setupState: .complete, devMode: false))
+        open()
+        #expect(path == [.settings(.troubleshooting), .labelsPrinter])
+        #expect(printerSetupOpener(path: binding, setupState: .incomplete, devMode: true) != nil)
+        #expect(printerSetupOpener(path: binding, setupState: .incomplete, devMode: false) == nil)
+        #expect(printerSetupOpener(path: binding, setupState: .failed, devMode: false) == nil)
+        #expect(printerSetupOpener(path: nil, setupState: .complete, devMode: true) == nil)
+        // Only with no printer saved; the note stays beside the button.
+        let m = model()
+        #expect(m.printer == nil)
+        #expect(NO_TROUBLESHOOTING_PRINTER_TEXT == "No printer set up yet. Choose one in Label Printing › Printer Setup.")
+    }
+
     @Test func nothingStartsBluetoothOrReachesThePrinterUntilTapped() async throws {
         settings.setPrinter(bluetoothPrinter)
         let m = model(isAdmin: true, isDeveloper: true)
         _ = m.connectionLines
-        _ = m.report(now: Date())
+        _ = try m.report(now: Date())
         try await Task.sleep(for: .milliseconds(30))
         #expect(bluetooth.scans == 0)
         #expect(bluetooth.connects.isEmpty)
@@ -275,6 +305,101 @@ final class TroubleshootingModelTests {
         #expect(result.milliseconds != nil)
         await admin.ask(.peeler)?.value
         #expect(admin.asks.last?.error == "No reply.")
+    }
+
+    /// A label or format typed in the command box (it starts with ^XA) goes out as a send, on the
+    /// path Print Labels' labels take: a cut font refuses it, and one cut off part-way marks the
+    /// printer for a `~JX`. Anything else is still a query.
+    @Test func aFormatInTheCommandBoxGoesOutAsASend() async throws {
+        settings.setPrinter(network)
+        let m = model(isAdmin: true)
+        let label = "  ^xa^FO10,10^A0N,30,30^FDHello^FS^XZ"
+        m.commandText = label
+        await m.sendCommand()?.value
+        #expect(zebra.events == ["\(label)\r\n"])
+        let sent = try #require(m.asks.last)
+        #expect(FORMAT_SENT_TEXT == "Sent as a label or format; no reply is read.")
+        #expect(sent.meaning == FORMAT_SENT_TEXT)
+        #expect(sent.error == nil)
+        #expect(sent.label == "Command")
+        #expect(sent.command == "\(label)\r\n")
+        #expect(sent.reply.isEmpty)
+        #expect(sent.milliseconds != nil)
+        #expect(m.running == nil)
+        #expect(m.logLines.map(\.text).contains { $0.hasPrefix("→ Command (sent as a format): ") })
+        #expect(m.logLines.map(\.text).contains { $0.hasPrefix("← Command: sent in ") && $0.hasSuffix(" ms") })
+
+        // Cut off part-way: the printer is marked, and the next call clears first.
+        zebra.failure = PrinterUnreachable(host: "10.0.0.5")
+        await m.sendCommand()?.value
+        zebra.failure = nil
+        #expect(m.asks.last?.error == "Can't reach the printer at 10.0.0.5.")
+        #expect(m.asks.last?.meaning == nil)
+        #expect(await printerGuard.state(for: network.connection) == .needsClear)
+        #expect(m.logLines.last?.text.hasSuffix(" ms: PrinterUnreachable: No printer answered at 10.0.0.5") == true)
+        zebra.replies = ["~HS\r\n": HS_REPLY]
+        m.commandText = "~HS"
+        await m.sendCommand()?.value
+        #expect(Array(zebra.events.suffix(2)) == ["~JX", "?~HS\r\n"])
+
+        // A cut font refuses the format before anything goes out; a query still goes.
+        await printerGuard.markFontCut(for: network.connection)
+        m.commandText = label
+        let before = zebra.events.count
+        await m.sendCommand()?.value
+        #expect(m.asks.last?.error == FONT_INSTALL_CUT_TEXT)
+        #expect(zebra.events.count == before)
+        m.commandText = "~HS"
+        await m.sendCommand()?.value
+        #expect(zebra.events.last == "?~HS\r\n")
+    }
+
+    /// A format holding a `^H` host command (`^HH`, `^HW`) asks the printer something, so it stays
+    /// a query and its reply is read; `^FH` (field hex) asks nothing.
+    @Test func aFormatWithAHostCommandStaysAQuery() async throws {
+        settings.setPrinter(network)
+        zebra.replies = ["^XA^HH^XZ\r\n": "\u{02}  PRINTER CONFIGURATION\u{03}", "  ^xa^hwE:*.*^xz\r\n": HW_REPLY]
+        let m = model(isAdmin: true)
+        m.commandText = "^XA^HH^XZ"
+        await m.sendCommand()?.value
+        #expect(zebra.events.last == "?^XA^HH^XZ\r\n")
+        #expect(m.asks.last?.reply == "\u{02}  PRINTER CONFIGURATION\u{03}")
+        m.commandText = "  ^xa^hwE:*.*^xz"
+        await m.sendCommand()?.value
+        #expect(zebra.events.last == "?  ^xa^hwE:*.*^xz\r\n")
+        #expect(m.asks.last?.reply == HW_REPLY)
+        // ^FH (field hex) isn't a host command: a format with it is still a send.
+        for format in ["^XA^FO10,10^FDHello^FS^XZ", "^XA^FH^FDHi_20there^FS^XZ"] {
+            m.commandText = format
+            await m.sendCommand()?.value
+            #expect(zebra.events.last == "\(format)\r\n")
+            #expect(m.asks.last?.meaning == FORMAT_SENT_TEXT)
+        }
+    }
+
+    /// A `~H` host command inside a format (`~HS`, `~HI`) asks too; `~` with any other letter, and
+    /// `^H` or `~H` with no letter after it, ask nothing.
+    @Test func aFormatWithATildeHostCommandStaysAQuery() async throws {
+        #expect(!sendsAsFormat("^XA~HS^XZ"))
+        #expect(!sendsAsFormat("^xa~hi^xz"))
+        #expect(sendsAsFormat("^XA^FDA~B^FS^XZ"))
+        // Where the text starts, and what follows ^H or ~H.
+        #expect(sendsAsFormat("\t\u{00A0} ^Xa^FDx^FS^XZ"))
+        #expect(!sendsAsFormat("~XA^FDx^FS^XZ"))
+        #expect(!sendsAsFormat("x^XA^FDx^FS^XZ"))
+        #expect(!sendsAsFormat("~HS"))
+        #expect(sendsAsFormat("^XA^FDx^FS^XZ^H"))
+        #expect(sendsAsFormat("^XA^H1^XZ"))
+        #expect(!sendsAsFormat("^XA^Hé^XZ"))
+        #expect(!sendsAsFormat("^XA^FDa^H^HZA^XZ"))
+        settings.setPrinter(network)
+        zebra.replies = ["^XA~HS^XZ\r\n": HS_REPLY]
+        let m = model(isAdmin: true)
+        m.commandText = "^XA~HS^XZ"
+        await m.sendCommand()?.value
+        #expect(zebra.events.last == "?^XA~HS^XZ\r\n")
+        #expect(m.asks.last?.reply == HS_REPLY)
+        #expect(try m.report().text.contains("␂****,0␃"))
     }
 
     @Test func cutSendTestSendsJXBeforeTheFullLabel() async throws {
@@ -507,10 +632,104 @@ final class TroubleshootingModelTests {
         #expect(bluetooth.connects.isEmpty)
         #expect(zebra.events.isEmpty)
 
+        // Bluetooth off: says so, then scans again by itself once it is on.
         bluetooth.availability = .poweredOff
         m.scan()
         await eventually("refused") { !m.scanning }
         #expect(m.scanMessage == BLUETOOTH_OFF_TEXT)
+        #expect(m.scanMessageIsError)
+        let scans = bluetooth.scans
+        bluetooth.availability = .ready
+        await eventually("scanning again") { bluetooth.scans == scans + 1 && m.scanning }
+        #expect(m.scanMessage == nil)
+        m.stopScan()
+        await eventually("scan ended") { !m.scanning }
+        #expect(m.scanMessage == NOTHING_HEARD_TEXT)
+        #expect(!m.scanMessageIsError)
+        // Once: Bluetooth going off and on again later starts nothing by itself.
+        bluetooth.availability = .poweredOff
+        bluetooth.availability = .ready
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bluetooth.scans == scans + 1)
+
+        // Not allowed: the same once it is allowed, through any other states on the way.
+        bluetooth.availability = .unauthorized
+        m.scan()
+        await eventually("refused") { !m.scanning }
+        #expect(m.scanMessage == BLUETOOTH_DENIED_TEXT)
+        let deniedAt = bluetooth.scans
+        bluetooth.availability = .poweredOff
+        try await Task.sleep(for: .milliseconds(30))
+        bluetooth.availability = .unknown
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(bluetooth.scans == deniedAt)
+        #expect(!m.scanning)
+        bluetooth.availability = .ready
+        await eventually("scanning once allowed") { bluetooth.scans == deniedAt + 1 && m.scanning }
+        m.stopScan()
+        await eventually("scan ended") { !m.scanning }
+    }
+
+    /// Back in front (from Settings, say): a scan Bluetooth refused runs again when Bluetooth reads
+    /// ready, once, however the app hears of it first.
+    @Test func comingBackWithBluetoothReadyRunsTheRefusedScan() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        m.appResumed()
+        #expect(bluetooth.scans == 0)
+        bluetooth.availability = .poweredOff
+        m.scan()
+        await eventually("refused") { !m.scanning && m.scanMessage == BLUETOOTH_OFF_TEXT }
+        let refusedAt = bluetooth.scans
+        m.appResumed()
+        #expect(bluetooth.scans == refusedAt)
+        // Ready, and the app back in front in the same turn: one scan, not two.
+        bluetooth.availability = .ready
+        m.appResumed()
+        #expect(bluetooth.scans == refusedAt + 1)
+        #expect(m.scanning)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bluetooth.scans == refusedAt + 1)
+        m.appResumed()
+        #expect(bluetooth.scans == refusedAt + 1)
+        m.stopScan()
+        await eventually("scan ended") { !m.scanning }
+    }
+
+    /// Leaving the tab, or tapping Scan again, ends the wait for Bluetooth: nothing scans by itself
+    /// while the tab is away.
+    @Test func aRefusedScanWaitsOnlyWhileTheTabShows() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        bluetooth.availability = .poweredOff
+        m.scan()
+        await eventually("refused") { !m.scanning && m.scanMessage == BLUETOOTH_OFF_TEXT }
+        let refusedAt = bluetooth.scans
+        m.close()
+        bluetooth.availability = .ready
+        m.appResumed()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bluetooth.scans == refusedAt)
+        m.open()
+        m.appResumed()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bluetooth.scans == refusedAt)
+        #expect(!m.scanning)
+
+        // Scan tapped again, refused again, then a scan that got through: nothing more waits.
+        bluetooth.availability = .poweredOff
+        m.scan()
+        await eventually("refused") { !m.scanning && m.scanMessage == BLUETOOTH_OFF_TEXT }
+        bluetooth.availability = .ready
+        await eventually("scanning again") { m.scanning }
+        let afterRescan = bluetooth.scans
+        m.stopScan()
+        await eventually("scan ended") { !m.scanning }
+        bluetooth.availability = .poweredOff
+        bluetooth.availability = .ready
+        m.appResumed()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bluetooth.scans == afterRescan)
     }
 
     /// A scan can't start while a speed test runs: it shares the radio with the label's chunk
@@ -532,6 +751,23 @@ final class TroubleshootingModelTests {
         #expect(m.scanning)
         m.stopScan()
         await eventually("scan ended") { !m.scanning }
+
+        // Nor when Bluetooth comes on during one, for a scan it refused.
+        bluetooth.availability = .poweredOff
+        m.scan()
+        await eventually("refused") { !m.scanning && m.scanMessage == BLUETOOTH_OFF_TEXT }
+        let refusedAt = bluetooth.scans
+        line.clearHeld()
+        line.hold = "START"
+        let speed2 = try #require(m.startSpeedTest())
+        await eventually("label going out") { line.held }
+        bluetooth.availability = .ready
+        try await Task.sleep(for: .milliseconds(50))
+        m.appResumed()
+        #expect(!m.scanning)
+        #expect(bluetooth.scans == refusedAt)
+        line.hold = nil
+        await speed2.value
     }
 
     /// A scan cut short by a printer call (a label going out) says so instead of "nothing heard",
@@ -558,6 +794,35 @@ final class TroubleshootingModelTests {
         #expect(m.scanMessage == nil)
     }
 
+    /// A scan something else ended before its time (another scan took over, or Bluetooth refused
+    /// it and was back by the time it ended) says so, as information, and waits for Scan again.
+    @Test func aScanEndedEarlySaysSo() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        #expect(SCAN_ENDED_EARLY_TEXT == "The scan stopped early. Scan again.")
+        m.scan()
+        bluetooth.endScanByItself(.replaced)
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == SCAN_ENDED_EARLY_TEXT)
+        #expect(!m.scanMessageIsError)
+        #expect(m.logLines.last { $0.text.hasPrefix("Bluetooth scan ended") }?.text.hasSuffix("(\(SCAN_ENDED_EARLY_TEXT))") == true)
+        m.scan()
+        bluetooth.endScanByItself(.refused)
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == SCAN_ENDED_EARLY_TEXT)
+        let scans = bluetooth.scans
+        bluetooth.availability = .poweredOff
+        bluetooth.availability = .ready
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bluetooth.scans == scans)
+        // The cut-short note is information too.
+        m.scan()
+        bluetooth.endScanByItself()
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == SCAN_CUT_SHORT_TEXT)
+        #expect(!m.scanMessageIsError)
+    }
+
     // MARK: Report
 
     /// D13 "a log, like the test screen's": the report's log carries the Bluetooth link's own
@@ -570,7 +835,7 @@ final class TroubleshootingModelTests {
         bluetooth.events = [BluetoothLinkEvent(at: now.addingTimeInterval(-60), text: "Connect to D8J224508535 started"),
                             BluetoothLinkEvent(at: now.addingTimeInterval(60), text: "Link dropped: The link closed"),
                             BluetoothLinkEvent(at: now.addingTimeInterval(61), text: "Connect failed: password=hunter2")]
-        let text = m.report(now: now).text
+        let text = try m.report(now: now).text
         let connect = try #require(text.range(of: "  Bluetooth: Connect to D8J224508535 started\n"))
         let tab = try #require(text.range(of: "  Tab line\n"))
         let drop = try #require(text.range(of: "  Bluetooth: Link dropped: The link closed\n"))
@@ -604,7 +869,7 @@ final class TroubleshootingModelTests {
         m.stopScan()
         await eventually("scan ended") { !m.scanning }
 
-        let report = m.report(now: Date(timeIntervalSince1970: 1_792_000_000))
+        let report = try m.report(now: Date(timeIntervalSince1970: 1_792_000_000))
         #expect(report.name.range(of: #"^printer-report-\d{8}-\d{6}\.txt$"#, options: .regularExpression) != nil)
         let text = report.text
         // This device and app.
@@ -662,7 +927,7 @@ final class TroubleshootingModelTests {
         await eventually("heard") { m.found?.count == 1 }
         m.stopScan()
         await eventually("scan ended") { !m.scanning }
-        let text = m.report().text
+        let text = try m.report().text
         #expect(text.contains("  \(ZD421_SERIAL) · -52 dBm · Zebra (advertises Zebra)\n"))
         #expect(!text.contains("Devices that aren't Zebras"))
     }
@@ -702,7 +967,7 @@ final class TroubleshootingModelTests {
             m.commandText = command
             await m.sendCommand()?.value
         }
-        let text = m.report().text
+        let text = try m.report().text
         for secret in [token, key, password, "Bearer", "rejected", "refresh"] {
             #expect(!text.contains(secret), "the report carries \(secret):\n\(text)")
         }
@@ -737,7 +1002,7 @@ final class TroubleshootingModelTests {
             m.commandText = command
             await m.sendCommand()?.value
         }
-        let text = m.report().text
+        let text = try m.report().text
         let words = [
             "horse7", "battery7", "staple7", "alpha7", "bravo7", "charlie7", "delta7", "echo7", "foxtrot7",
             "golf7", "hotel7", "india7", "juliet7", "kilo7", "lima7", "mike7", "november7", "oscar7",
@@ -756,7 +1021,7 @@ final class TroubleshootingModelTests {
         let m = model(isAdmin: true)
         m.commandText = "password:\thunter2"
         await m.sendCommand()?.value
-        #expect(!m.report().text.contains("hunter2"))
+        #expect(try !m.report().text.contains("hunter2"))
     }
 
     /// A stray error's own message could carry anything: the tab says only its kind, and so does
@@ -769,7 +1034,7 @@ final class TroubleshootingModelTests {
         #expect(m.asks.last?.error == "Something went wrong (StrayError).")
         await m.readDetails()?.value
         #expect(m.detailsError == "Something went wrong (StrayError).")
-        #expect(!m.report().text.contains("socket said"))
+        #expect(try !m.report().text.contains("socket said"))
     }
 
     /// The log says what kind of failure it was, and its words only when they are the app's own
@@ -813,7 +1078,7 @@ final class TroubleshootingModelTests {
             #expect(ask.shownReply.contains("␂030,0,0,0612,000,0,0,0,000,0,0,0␃␍␊"))
         }
         #expect(m.asks.first?.meaning?.hasPrefix("Ready to print.") == true)
-        let text = m.report().text
+        let text = try m.report().text
         #expect(text.contains("␂****,0␃"))
         #expect(!text.contains("␂0000,0␃"))
         // Any other reply shows as it came.
@@ -833,19 +1098,197 @@ final class TroubleshootingModelTests {
         m.commandText = "! U1 getvar \"device.dump\""
         await m.sendCommand()?.value
         var text = ""
-        let elapsed = ContinuousClock().measure { text = m.report().text }
+        let elapsed = try ContinuousClock().measure { text = try m.report().text }
         #expect(elapsed < .seconds(1), "the report took \(elapsed)")
         #expect(text.contains(String(hex.prefix(1_000))))
     }
 
-    @Test func logKeepsTheLast5000Lines() {
+    @Test func logKeepsTheLast5000LinesAndTheSharedReportFits() async throws {
         let m = model()
         for i in 1...5_010 { m.log("line \(i)") }
         #expect(m.logLines.count == 5_000)
         #expect(m.logLines.first?.text == "line 11")
-        let text = m.report(now: Date()).text
+        let text = try await offMainReport(m)
         #expect(text.contains("  line 5010\n"))
         #expect(text.contains("  line 11\n"))
         #expect(!text.contains("  line 10\n"))
+
+        // Copied, it fits the share limit: the oldest log lines go first, and it says so.
+        #expect(SHARE_MAX_CHARS == 100_000)
+        for i in 1...5_000 { m.log("a long line \(i) " + String(repeating: "x", count: 80)) }
+        let now = Date()
+        let shared = try await offMainReport(m, now: now, maxChars: SHARE_MAX_CHARS)
+        #expect(shared.utf16.count <= SHARE_MAX_CHARS)
+        #expect(shared.contains("== Saved printer =="))
+        #expect(shared.contains("a long line 5000 "))
+        #expect(shared.contains("older log lines left out to fit"))
+        #expect(!shared.contains("a long line 1 x"))
+        // Whole lines only, newest kept, the count of those left out said once.
+        let kept = shared.components(separatedBy: "\n").filter { $0.contains("a long line ") }
+        let left = try #require(shared.range(of: #"\((\d+) older log lines left out to fit the share limit\)\n"#, options: .regularExpression))
+        let leftOut = Int(shared[left].dropFirst().prefix { $0.isNumber }) ?? -1
+        #expect(leftOut + kept.count == 5_000)
+        #expect(kept.last?.hasSuffix("a long line 5000 " + String(repeating: "x", count: 80)) == true)
+        #expect(shared.hasSuffix("\n"))
+        // With no limit, nothing is left out, and up to the cap the text is the same.
+        let whole = try await offMainReport(m, now: now)
+        #expect(!whole.contains("left out to fit"))
+        #expect(whole.contains("  a long line 1 x"))
+        #expect(whole.hasSuffix(shared.components(separatedBy: "fit the share limit)\n").last ?? "-"))
+    }
+
+    /// What isn't the log (a huge reply, say) past the limit is cut, and the report says where.
+    @Test func aReportTooLongWithoutItsLogIsCutAndSaysSo() async throws {
+        settings.setPrinter(network)
+        let big = String(repeating: "0123456789", count: 15_000)
+        zebra.replies = ["! U1 getvar \"device.dump\"\r\n": "\"" + big + "\""]
+        let m = model(isAdmin: true)
+        m.commandText = "! U1 getvar \"device.dump\""
+        await m.sendCommand()?.value
+        let shared = try await offMainReport(m, maxChars: SHARE_MAX_CHARS)
+        #expect(shared.utf16.count <= SHARE_MAX_CHARS)
+        #expect(shared.utf16.count > SHARE_MAX_CHARS - 100)
+        #expect(shared.hasSuffix("\n(the report was cut here to fit the share limit)\n"))
+        #expect(shared.hasPrefix("ServerSherpa Kiosk · Printer troubleshooting report\n"))
+        // A cut never splits a character in two (each printer emoji is two UTF-16 units, so one of
+        // two neighboring limits lands inside one).
+        let emoji = String(repeating: "\u{1F5A8}", count: 60_000)
+        let wide = model(device: { "Device: \(emoji)" })
+        let now = Date()
+        for limit in 1_000...1_003 {
+            let cut = try await offMainReport(wide, now: now, maxChars: limit)
+            #expect(cut.utf16.count <= limit)
+            #expect(cut.utf16.count >= limit - 1)
+            #expect(cut.hasSuffix("\n(the report was cut here to fit the share limit)\n"))
+            #expect(cut.unicodeScalars.allSatisfy { $0 != "\u{FFFD}" })
+        }
+    }
+
+    /// Copy and Share write the report off the main actor (5,000 log lines and a pasted label take
+    /// a moment), from what the tab showed when they were tapped.
+    @Test func theSharedReportIsBuiltOffTheMainActor() async throws {
+        settings.setPrinter(network)
+        let device = DeviceLine()
+        let m = model(device: { try device.read() })
+        m.log("Tapped")
+        var pasted: String?
+        await m.copyReport { pasted = $0 }?.value
+        #expect(pasted?.hasPrefix("ServerSherpa Kiosk · Printer troubleshooting report\n") == true)
+        #expect(pasted?.contains("  Tapped\n") == true)
+        #expect(device.readsOnMain == [false])
+        let url = try await m.reportFile()
+        #expect(device.readsOnMain == [false, false])
+        let file = try String(contentsOf: url, encoding: .utf8)
+        #expect(file.hasPrefix("ServerSherpa Kiosk · Printer troubleshooting report\n"))
+        #expect(url.lastPathComponent.range(of: #"^printer-report-\d{8}-\d{6}\.txt$"#, options: .regularExpression) != nil)
+    }
+
+    /// Copy puts the report, at most `SHARE_MAX_CHARS`, on the pasteboard and says "Report copied.";
+    /// Share sends all of it, as a file (`printer-report-<stamp>.txt`).
+    @Test func copyIsCappedAndSaysSoShareSendsItAll() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        for i in 1...5_000 { m.log("a long line \(i) " + String(repeating: "x", count: 80)) }
+        #expect(REPORT_COPIED_TEXT == "Report copied.")
+        #expect(!m.reportCopied)
+        var pasted: String?
+        await m.copyReport { pasted = $0 }?.value
+        let copied = try #require(pasted)
+        #expect(copied.utf16.count <= SHARE_MAX_CHARS)
+        #expect(copied.contains("older log lines left out to fit the share limit"))
+        #expect(m.reportCopied)
+        #expect(!m.reportFailed)
+        #expect(!m.reportBuilding)
+        let url = try await m.reportFile()
+        let file = try String(contentsOf: url, encoding: .utf8)
+        #expect(file.utf16.count > SHARE_MAX_CHARS)
+        #expect(file.contains("  a long line 1 x"))
+        #expect(!file.contains("left out to fit"))
+        // Sharing takes the copied note away.
+        #expect(!m.reportCopied)
+    }
+
+    /// A report that fails to build says so, nothing is copied or shared, and the tab carries on.
+    @Test func aReportThatFailsToBuildSaysSoAndTheTabCarriesOn() async throws {
+        settings.setPrinter(network)
+        let device = DeviceLine()
+        let m = model(device: { try device.read() })
+        #expect(REPORT_FAILED_TEXT == "Couldn't build the report. Try again.")
+        await m.copyReport { _ in }?.value
+        #expect(m.reportCopied)
+        device.fails = true
+        var pasted: String?
+        await m.copyReport { pasted = $0 }?.value
+        #expect(pasted == nil)
+        #expect(m.reportFailed)
+        #expect(!m.reportCopied)
+        #expect(!m.reportBuilding)
+        await #expect(throws: (any Error).self) { try await m.reportFile() }
+        #expect(m.reportFailed)
+        // The tab still works, and the next good build clears the note.
+        await m.readDetails()?.value
+        #expect(m.hostId != nil)
+        device.fails = false
+        await m.copyReport { pasted = $0 }?.value
+        #expect(pasted != nil)
+        #expect(!m.reportFailed)
+        #expect(m.reportCopied)
+    }
+
+    /// "Preparing the report…" shows only for a build that takes longer than 400 ms; a second Copy
+    /// while one builds does nothing.
+    @Test func preparingTheReportShowsOnlyWhenItTakesAMoment() async throws {
+        settings.setPrinter(network)
+        let device = DeviceLine()
+        let m = model(device: { try device.read() })
+        await m.copyReport { _ in }?.value
+        #expect(!m.reportSlow)
+
+        device.gate = DispatchSemaphore(value: 0)
+        let started = ContinuousClock.now
+        var pasted = 0
+        let copy = try #require(m.copyReport { _ in pasted += 1 })
+        #expect(m.reportBuilding)
+        #expect(!m.reportSlow)
+        #expect(m.copyReport { _ in pasted += 1 } == nil)
+        // Generous: other tests' reports can keep the main actor busy; the build waits for the gate.
+        #expect(await waitUntil(timeout: .seconds(20)) { m.reportSlow }, "never: preparing shows")
+        #expect(ContinuousClock.now - started >= .milliseconds(400))
+        #expect(m.reportBuilding)
+        device.gate?.signal()
+        await copy.value
+        #expect(!m.reportSlow)
+        #expect(!m.reportBuilding)
+        #expect(pasted == 1)
+        #expect(m.reportCopied)
+    }
+}
+
+/// The report's device line as a test sets it: it can fail or wait, and it notes whether each read
+/// was on the main thread.
+private final class DeviceLine: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failing = false
+    private var reads: [Bool] = []
+    private var waitOn: DispatchSemaphore?
+
+    var fails: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    /// While set, a read waits for it (up to 30 s).
+    var gate: DispatchSemaphore? {
+        get { lock.withLock { waitOn } }
+        set { lock.withLock { waitOn = newValue } }
+    }
+
+    var readsOnMain: [Bool] { lock.withLock { reads } }
+
+    func read() throws -> String {
+        lock.withLock { reads.append(Thread.isMainThread) }
+        if let gate { _ = gate.wait(timeout: .now() + 30) }
+        if fails { throw StrayError(text: "the device line broke") }
+        return DEVICE_TEXT
     }
 }
