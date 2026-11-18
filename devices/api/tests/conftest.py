@@ -166,3 +166,43 @@ def no_real_http():
         mp.setattr(httpx.HTTPTransport, "handle_request", refuse_sync)
         yield hits
     assert not hits, f"a test made real HTTP requests to {', '.join(hits)}"
+
+
+@pytest.fixture
+def bucket(tmp_path, monkeypatch):
+    """Storage in a temp directory (see fake_storage.py)."""
+    from .fake_storage import FakeStorage
+
+    return FakeStorage(tmp_path / "bucket").install(monkeypatch)
+
+
+@pytest.fixture
+def main_fake():
+    """The fake main API, answering as an admin until told otherwise."""
+    from .fake_main_api import FakeMainApi
+
+    fake = FakeMainApi()
+    fake.as_admin()
+    return fake
+
+
+@pytest.fixture
+async def api(main_fake):
+    """The app with the main API swapped for `main_fake`. Authorize answers
+    aren't cached, so a test can change roles between calls."""
+    from httpx import ASGITransport, AsyncClient
+
+    from serversherpa_devices.api.app import create_app
+    from serversherpa_devices.auth.main_api import MainApiClient, get_main_api
+    from serversherpa_devices.config import get_settings
+
+    settings = get_settings()
+    main_api = MainApiClient(base_url=settings.main_api_url,
+                             service_token=settings.service_token.get_secret_value(),
+                             cache_seconds=0, transport=main_fake.transport())
+    app = create_app()
+    app.dependency_overrides[get_main_api] = lambda: main_api
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                           headers={"Authorization": "Bearer tok-test"}) as c:
+        yield c
+    await main_api.aclose()

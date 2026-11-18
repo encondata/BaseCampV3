@@ -84,6 +84,9 @@ class _FakeClient:
     def delete_object(self, **kw):
         self.calls.append(("delete_object", kw))
 
+    def copy_object(self, **kw):
+        self.calls.append(("copy_object", kw))
+
     def download_file(self, *a):
         self.calls.append(("download_file", a))
 
@@ -128,6 +131,16 @@ async def test_delete_download_upload_use_the_bucket(monkeypatch, tmp_path):
     assert names == ["delete_object", "download_file", "upload_file"]
     assert fake.calls[0][1]["Bucket"] == storage.get_settings().spaces_bucket
     assert fake.calls[2][2]["ExtraArgs"] == {"ContentType": "text/plain"}
+
+
+async def test_copy_object_copies_within_the_bucket(monkeypatch):
+    fake = _FakeClient()
+    monkeypatch.setattr(storage, "_client", lambda: fake)
+    await storage.copy_object("uploads/u/a.apk", "apps/x/v/a.apk")
+    bucket = storage.get_settings().spaces_bucket
+    assert fake.calls == [("copy_object", {
+        "Bucket": bucket, "Key": "apps/x/v/a.apk",
+        "CopySource": {"Bucket": bucket, "Key": "uploads/u/a.apk"}})]
 
 
 async def test_open_stream_yields_chunks(monkeypatch):

@@ -134,6 +134,15 @@ async def open_stream(key: str) -> AsyncIterator[bytes]:
         await asyncio.to_thread(body.close)
 
 
+async def copy_object(source_key: str, key: str) -> None:
+    """Copy an object within the bucket, server side (one request; fine up
+    to S3's 5 GB single-copy limit, far above the 500 MB upload cap)."""
+    bucket = get_settings().spaces_bucket
+    await asyncio.to_thread(partial(
+        _client().copy_object, Bucket=bucket, Key=key,
+        CopySource={"Bucket": bucket, "Key": source_key}))
+
+
 async def delete_object(key: str) -> None:
     """Delete an object. S3 DELETE is idempotent, so a missing key is fine."""
     await asyncio.to_thread(partial(
