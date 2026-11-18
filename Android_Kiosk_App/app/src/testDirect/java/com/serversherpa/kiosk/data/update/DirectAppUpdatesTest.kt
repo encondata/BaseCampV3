@@ -330,6 +330,82 @@ class DirectAppUpdatesTest {
         assertEquals(1, installer.confirmsLaunched)
     }
 
+    @Test fun returningWithNoConfirmLeftEndsTheInstall() {
+        val u = available()
+        u.update()
+        scope.runCurrent()
+        val clearsBefore = source.clears
+        installer.confirmResult = { false }   // e.g. Home from the confirm screen, then back to the kiosk
+
+        bounce()
+        assertEquals(UpdateState.Available(offer(), now, notice = "The install didn't finish. Tap Update to try again."), u.state.value)
+        assertEquals(clearsBefore + 1, source.clears)
+
+        events.tryEmit(InstallEvent.Canceled)   // late: ignored
+        scope.runCurrent()
+        assertEquals(UpdateState.Available(offer(), now, notice = "The install didn't finish. Tap Update to try again."), u.state.value)
+        assertEquals(clearsBefore + 1, source.clears)
+    }
+
+    @Test fun aConfirmThatWontOpenClearsTheFiles() {
+        val u = available()
+        u.update()
+        scope.runCurrent()
+        val clearsBefore = source.clears
+        installer.confirmResult = { throw IllegalStateException("no activity") }
+
+        bounce()
+        assertEquals(UpdateState.Available(offer(), now, notice = "The install failed. Try again."), u.state.value)
+        assertEquals(clearsBefore + 1, source.clears)
+    }
+
+    @Test fun aBackgroundRecheckKeepsTheOfferUntilTheAnswer() {
+        val u = available()
+        val gate = CompletableDeferred<UpdateAnswer>()
+        checker.answer = { gate.await() }
+        now += RECHECK_INTERVAL_MS
+        bounce()
+        assertEquals(2, checker.calls)
+        assertEquals(UpdateState.Available(offer(), 1_000_000L), u.state.value)
+        assertTrue(u.homeBannerVisible.value)
+
+        gate.complete(UpdateAnswer.UpToDate)
+        scope.runCurrent()
+        assertEquals(UpdateState.UpToDate(now), u.state.value)
+        assertFalse(u.homeBannerVisible.value)
+    }
+
+    @Test fun anUpdateDuringABackgroundRecheckWins() {
+        val u = available()
+        val gate = CompletableDeferred<UpdateAnswer>()
+        checker.answer = { gate.await() }
+        now += RECHECK_INTERVAL_MS
+        bounce()
+        u.update()
+        scope.runCurrent()
+        assertEquals(UpdateState.Installing(offer()), u.state.value)
+
+        gate.complete(UpdateAnswer.UpToDate)
+        scope.runCurrent()
+        assertEquals(UpdateState.Installing(offer()), u.state.value)
+    }
+
+    @Test fun aClearThatThrowsKeepsEventsFlowing() {
+        source.clearError = IllegalStateException("read-only")
+        val u = available()
+        u.update()
+        scope.runCurrent()
+        events.tryEmit(InstallEvent.Canceled)
+        scope.runCurrent()
+        assertEquals(UpdateState.Available(offer(), now, notice = "Install canceled."), u.state.value)
+
+        u.update()
+        scope.runCurrent()
+        events.tryEmit(InstallEvent.Failed("m"))
+        scope.runCurrent()
+        assertEquals(UpdateState.Available(offer(), now, notice = "m"), u.state.value)
+    }
+
     @Test fun returningToTheFrontOutsideInstallingDiscardsAPendingConfirm() {
         available()
         val stale = android.content.Intent()
@@ -361,6 +437,7 @@ class DirectAppUpdatesTest {
         var progress: List<Float?> = emptyList()
         var gate: CompletableDeferred<Unit>? = null
         var error: Exception? = null
+        var clearError: RuntimeException? = null
         override suspend fun fetch(offer: UpdateOffer, onProgress: (Float?) -> Unit): File {
             fetches++
             progress.forEach(onProgress)
@@ -368,7 +445,10 @@ class DirectAppUpdatesTest {
             error?.let { throw it }
             return file
         }
-        override fun clear() { clears++ }
+        override fun clear() {
+            clears++
+            clearError?.let { throw it }
+        }
     }
 
     private class FakeInstall : ApkInstall {
@@ -378,6 +458,7 @@ class DirectAppUpdatesTest {
         val checked = mutableListOf<Triple<String, Long, String>>()
         val installed = mutableListOf<File>()
         var confirmsLaunched = 0
+        var confirmResult: () -> Boolean = { true }
         override fun canRequestInstalls() = canInstall
         override fun openInstallPermissionSettings() { settingsOpened++ }
         override fun checkArchive(file: File, packageName: String, build: Long, versionName: String): String? {
@@ -385,6 +466,9 @@ class DirectAppUpdatesTest {
             return archiveNotice
         }
         override fun install(file: File) { installed += file }
-        override fun launchPendingConfirm(): Boolean { confirmsLaunched++; return true }
+        override fun launchPendingConfirm(): Boolean {
+            confirmsLaunched++
+            return confirmResult()
+        }
     }
 }

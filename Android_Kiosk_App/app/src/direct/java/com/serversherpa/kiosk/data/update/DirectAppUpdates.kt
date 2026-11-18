@@ -35,6 +35,7 @@ private const val INSTALLS_OFF = "Installs from this app are off. Turn on Allow 
 private const val INSTALL_CANCELED = "Install canceled."
 private const val DOWNLOAD_FAILED = "The download failed. Try again."
 private const val INSTALL_FAILED = "The install failed. Try again."
+private const val INSTALL_UNFINISHED = "The install didn't finish. Tap Update to try again."
 
 /**
  * The direct build's update check: checks once signed in and in front (again on return after an
@@ -75,7 +76,7 @@ class DirectAppUpdates(
         synchronized(lock) {
             if (started) return
             started = true
-            clearing = scope.launch(io) { source.clear() }
+            clearing = scope.launch(io) { clearQuietly() }
         }
         scope.launch { events.collect(::onInstallEvent) }
         scope.launch {
@@ -84,20 +85,30 @@ class DirectAppUpdates(
                 InstallEvents.foreground = front
                 if (front && !inFront) onReturnToFront()
                 inFront = front
-                if (front && auth is AuthState.Authed && shouldRecheck(lastCheckAt, clock())) check()
+                if (front && auth is AuthState.Authed && shouldRecheck(lastCheckAt, clock())) check(background = true)
             }
         }
     }
 
-    override fun check() {
+    override fun check() = check(background = false)
+
+    /**
+     * A [background] recheck from an offer or a Blocked message keeps that state (and the Home
+     * banner) until the answer arrives; only the Check for updates button shows Checking.
+     */
+    private fun check(background: Boolean) {
         synchronized(lock) {
             if (authState.value !is AuthState.Authed) return
-            if (checking?.isActive == true || working?.isActive == true || _state.value is UpdateState.Installing) return
+            val before = _state.value
+            if (checking?.isActive == true || working?.isActive == true || before is UpdateState.Installing) return
             lastCheckAt = clock()
-            set(UpdateState.Checking)
+            val quiet = background && (before is UpdateState.Available || before is UpdateState.Blocked)
+            if (!quiet) set(UpdateState.Checking)
+            val shown = _state.value
             checking = scope.launch {
                 val next = answer()
-                synchronized(lock) { set(next) }
+                // An Update tapped during a quiet recheck owns the state now: drop the answer.
+                synchronized(lock) { if (_state.value === shown) set(next) }
             }
         }
     }
@@ -192,21 +203,29 @@ class DirectAppUpdates(
     }
 
     private suspend fun onInstallEvent(event: InstallEvent) {
-        val offer = synchronized(lock) { (_state.value as? UpdateState.Installing)?.offer } ?: return
+        if (_state.value !is UpdateState.Installing) return
         clearFiles()
-        backTo(offer, when (event) {
+        leaveInstalling(when (event) {
             InstallEvent.Canceled -> INSTALL_CANCELED
             is InstallEvent.Failed -> event.message
         })
     }
 
-    private fun onReturnToFront() {
+    private suspend fun onReturnToFront() {
         val current = _state.value
         if (current is UpdateState.Installing) {
-            try {
-                installer.launchPendingConfirm()
-            } catch (e: RuntimeException) {
-                backTo(current.offer, INSTALL_FAILED)
+            // While the hand-off still runs, the installer hasn't asked for a confirm yet.
+            if (working?.isActive != true) {
+                val notice = try {
+                    // No confirm waiting and no event coming (e.g. Home from the confirm screen): don't stay stuck.
+                    if (installer.launchPendingConfirm()) null else INSTALL_UNFINISHED
+                } catch (e: RuntimeException) {
+                    INSTALL_FAILED
+                }
+                if (notice != null) {
+                    clearFiles()
+                    leaveInstalling(notice)
+                }
             }
         } else {
             InstallEvents.takePendingConfirm()   // left from an install that's no longer under way
@@ -219,10 +238,23 @@ class DirectAppUpdates(
         }
     }
 
-    private suspend fun clearFiles() = withContext(io) { source.clear() }
+    private suspend fun clearFiles() = withContext(io) { clearQuietly() }
+
+    /** A failed delete must not crash the app or end event collection; the next start() tries again. */
+    private fun clearQuietly() {
+        runCatching { source.clear() }
+    }
 
     private fun backTo(offer: UpdateOffer, notice: String) {
         synchronized(lock) { set(UpdateState.Available(offer, offerCheckedAt, notice)) }
+    }
+
+    /** Back to the offer being installed, unless something else already moved the state on. */
+    private fun leaveInstalling(notice: String) {
+        synchronized(lock) {
+            val s = _state.value as? UpdateState.Installing ?: return
+            set(UpdateState.Available(s.offer, offerCheckedAt, notice))
+        }
     }
 
     /** Call with [lock] held. */

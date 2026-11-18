@@ -14,14 +14,7 @@ fun createAppUpdates(deps: UpdateDeps): AppUpdates {
     val downloader = ApkDownloader(deps.client, File(deps.app.filesDir, "updates"))
     val packageName = deps.app.packageName
     val digest by lazy { SigningDigest.of(deps.app) }
-    val checker = UpdateChecker {
-        try {
-            client.check(packageName, BuildConfig.VERSION_CODE.toLong(), digest)
-        } catch (e: ApiError) {
-            val host = client.devicesBase()?.toHttpUrlOrNull()?.host ?: "the Devices site"
-            throw UpdateError(checkFailureMessage(e, host))
-        }
-    }
+    val checker = devicesChecker(client, packageName, BuildConfig.VERSION_CODE.toLong()) { digest }
     val source = object : ApkSource {
         override suspend fun fetch(offer: UpdateOffer, onProgress: (Float?) -> Unit): File {
             val base = client.devicesBase() ?: throw UpdateError(NO_DEVICES_HOST)
@@ -34,4 +27,19 @@ fun createAppUpdates(deps: UpdateDeps): AppUpdates {
         checker, source, AndroidApkInstall(deps.app), packageName,
         deps.authState, deps.foreground, deps.scope,
     )
+}
+
+/** Asks [client] about this build; a failed request becomes the UpdateError Settings shows. */
+internal fun devicesChecker(
+    client: DevicesUpdateClient,
+    packageName: String,
+    versionCode: Long,
+    digest: () -> String,
+) = UpdateChecker {
+    try {
+        client.check(packageName, versionCode, digest())
+    } catch (e: ApiError) {
+        val host = client.devicesBase()?.toHttpUrlOrNull()?.host ?: "the Devices site"
+        throw UpdateError(checkFailureMessage(e, host))
+    }
 }
