@@ -6,24 +6,34 @@ The native Android port of the web kiosk (`../kiosk/`) for phones and Zebra hand
 
 ```bash
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew testDebugUnitTest assembleDebug
+./gradlew testPlayDebugUnitTest assembleDebug
 ```
+
+Two flavors share one applicationId and version: `play` (Google Play, no self-update code; the default) and `direct` (installed from devices.<env>, which checks that site for a newer APK). `testPlayDebugUnitTest` and `testDirectDebugUnitTest` run the shared tests under each; flavor-only tests live in `app/src/testPlay` and `app/src/testDirect`. `assembleDebug` builds both: `app/build/outputs/apk/play/debug/app-play-debug.apk` and `app/build/outputs/apk/direct/debug/app-direct-debug.apk`.
 
 `local.properties` (ignored) must point `sdk.dir` at the Android SDK. Or open this folder in Android Studio.
 
 ## Release build (Google Play)
 
 ```bash
-./gradlew bundleRelease   # app/build/outputs/bundle/release/app-release.aab
+./gradlew bundlePlayRelease   # app/build/outputs/bundle/playRelease/app-play-release.aab
 ```
 
 The release is signed with the Play upload key, which lives outside the repo: `~/.gradle/gradle.properties` sets `serversherpaUploadStoreFile` (the `.jks` path), `serversherpaUploadStorePassword`, `serversherpaUploadKeyAlias` and `serversherpaUploadKeyPassword`. Without them the bundle builds unsigned and Play refuses it. Google holds the app signing key (Play App Signing), so a lost upload key is reset through Play Console, not lost for good. Bump `versionCode` in `app/build.gradle.kts` before every upload. The store listing text and graphics are in `play-store/`.
+
+### Direct build (Devices)
+
+```bash
+./gradlew assembleDirectRelease   # app/build/outputs/apk/direct/release/app-direct-release.apk
+```
+
+Signed with the same upload key, then uploaded on devices.<env>. Play uploads stay `./gradlew bundlePlayRelease`. A phone that has the Play copy uninstalls it once before the direct build, because the two are signed by different keys. A debug-signed direct build (`assembleDirectDebug`) never matches the uploaded APK's signer, so its update check only shows the server's reinstall message: test updates with an `assembleDirectRelease` build (upload key) installed on the phone.
 
 ## Install
 
 ```bash
 adb devices
-adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <serial> install -r app/build/outputs/apk/play/debug/app-play-debug.apk
 ```
 
 Launch it with `adb -s <serial> shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n com.serversherpa.kiosk/.MainActivity`. It sends the launcher's own intent, so a later tap on the app icon reuses the same screen instead of stacking a second copy. Never use `adb shell monkey` to open the app: when monkey finishes it turns the device's auto-rotate on, which the app itself never does.

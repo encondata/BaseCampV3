@@ -16,6 +16,8 @@ import com.serversherpa.kiosk.data.printer.BluetoothLeClient
 import com.serversherpa.kiosk.data.printer.FakeBluetoothLe
 import com.serversherpa.kiosk.data.push.FakeFcmTokens
 import com.serversherpa.kiosk.data.push.FcmTokens
+import com.serversherpa.kiosk.data.update.AppUpdates
+import com.serversherpa.kiosk.data.update.NoAppUpdates
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidReader
 import java.io.File
@@ -35,7 +37,7 @@ import kotlinx.coroutines.runBlocking
  *  [FakeBiometricKeys] with no biometric hardware unless a test passes its own, so no test touches
  *  AndroidKeyStore and no password sign-in is offered fingerprint by accident. [fcmTokens] is a
  *  [FakeFcmTokens] unless a test passes its own (NoFcmTokens: a build without Firebase), so no test
- *  touches Firebase. */
+ *  touches Firebase. [updates] is [NoAppUpdates] unless a test passes its own. */
 fun testContainer(
     rfidReader: RfidReader = FakeRfidReader(),
     api: KioskApi? = null,
@@ -44,6 +46,7 @@ fun testContainer(
     dataStore: DataStore<Preferences>? = null,
     biometricKeys: BiometricKeys = FakeBiometricKeys(BiometricReadiness.NO_HARDWARE),
     fcmTokens: FcmTokens = FakeFcmTokens(),
+    updates: AppUpdates = NoAppUpdates,
 ): AppContainer {
     val app = ApplicationProvider.getApplicationContext<Application>()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -60,6 +63,7 @@ fun testContainer(
         bluetoothOverride = bluetooth,
         biometricKeysOverride = biometricKeys,
         fcmTokensOverride = fcmTokens,
+        updatesOverride = updates,
     )
     runBlocking { c.prefs.setApiUrl("http://127.0.0.1:1") }
     return c

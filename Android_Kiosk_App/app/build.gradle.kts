@@ -44,6 +44,17 @@ android {
         }
     }
 
+    // play: the Google Play build, with no self-update code. direct: the build installed from
+    // devices.<env>, which checks that site for a newer APK. Same applicationId and version.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("play") {
+            dimension = "distribution"
+            isDefault = true
+        }
+        create("direct") { dimension = "distribution" }
+    }
+
     buildTypes {
         debug {
             buildConfigField("String", "DEFAULT_API_URL", "\"https://api.dev.serversherpa.com\"")
@@ -72,7 +83,7 @@ android {
         // MigrationTestHelper loads exported schemas from the instrumentation context's assets,
         // and under Robolectric that is the tested variant's merged assets (src/test assets are
         // never merged). So the schemas ride in debug builds only (release stays clean), and
-        // testReleaseUnitTest does not see them: run the migration tests with testDebugUnitTest.
+        // testReleaseUnitTest does not see them: run the migration tests with testPlayDebugUnitTest (or testDirectDebugUnitTest).
         getByName("debug").assets.srcDir("$projectDir/schemas")
     }
 

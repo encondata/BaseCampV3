@@ -354,6 +354,7 @@ fun ThisKioskPanel() {
             }
         }
         SettingsRow("Version") { Text(container.config.kioskVersion, fontFamily = FragmentMono) }
+        if (container.updates.supported) AppUpdatesRow(container.updates, signedIn = auth is AuthState.Authed)
         KioskToast(saved)
     }
 }
