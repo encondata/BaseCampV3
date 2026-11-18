@@ -1033,9 +1033,10 @@ def test_seed_playbook_explains_an_old_checkout(tmp_path):
     assert calls == []
 
 
-# ---- a checkout from before the learning site (ss-stack without learn) ----
+# ---- a checkout from before the learning site or the Devices app ----
 
 PREDATES_LEARN = "This commit predates the learning site, so it runs without it."
+PREDATES_DEVICES = "This commit predates the Devices app, so it runs without it."
 # check_apps as ss-stack had it from a6ceb51e until 6cc4c8b7 added learn
 OLD_SS_STACK = """#!/bin/sh
 check_apps() {
@@ -1047,31 +1048,41 @@ check_apps() {
   done
 }
 """
+# from 6cc4c8b7 until 79674823f added devices: knows learn, refuses devices
+PRE_DEVICES_SS_STACK = OLD_SS_STACK.replace("wiki|kiosk|status|mailpit",
+                                            "wiki|kiosk|learn|status|mailpit")
+# from 79674823f until 4e8ceb1d4 moved the names into OPTIONAL_APPS
+CASE_DEVICES_SS_STACK = OLD_SS_STACK.replace("wiki|kiosk|status|mailpit",
+                                             "wiki|kiosk|learn|status|devices|mailpit")
+EVERY_APP = "wiki,kiosk,learn,status,devices,mailpit"
 
 
-def _old_ss_stack(tmp_path: Path) -> Path:
+def _old_ss_stack(tmp_path: Path, text: str = OLD_SS_STACK) -> Path:
     old = tmp_path / "old-ss-stack"
-    old.write_text(OLD_SS_STACK)
+    old.write_text(text)
     old.chmod(0o755)
     return old
 
 
-def _render(tmp_path: Path, apps: str, *, old: bool):
+def _render(tmp_path: Path, apps: str, *, stack: str | None = None):
+    """Render a .env with STACK_APPS=apps; stack is an older ss-stack's text
+    (None: the real one)."""
     env_dir, env = _target(tmp_path)
     secret = "render-SECRET-0123abcd"
     text = f"STACK_ENV=e2e\nSTACK_APPS={apps}\nPOSTGRES_PASSWORD={secret}\n"
     extra = {**_common(env_dir), "env_file_b64": base64.b64encode(text.encode()).decode()}
-    if old:
-        extra["ss_stack"] = str(_old_ss_stack(tmp_path))
+    if stack is not None:
+        extra["ss_stack"] = str(_old_ss_stack(tmp_path, stack))
     result, _ = _play(tmp_path, "render.yml", extra, env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert secret not in result.stdout + result.stderr
     return result, (env_dir / ".env").read_text()
 
 
-@pytest.mark.parametrize("apps", ["wiki,learn,kiosk", "learn,wiki", "wiki,learn", "none"])
-def test_render_keeps_learn_for_a_checkout_that_knows_it(tmp_path, apps):
-    result, written = _render(tmp_path, apps, old=False)
+@pytest.mark.parametrize("apps", ["wiki,learn,kiosk", "learn,wiki", "wiki,learn", EVERY_APP,
+                                  "none"])
+def test_render_keeps_learn_for_the_current_ss_stack(tmp_path, apps):
+    result, written = _render(tmp_path, apps)
     assert f"STACK_APPS={apps}\n" in written
     assert PREDATES_LEARN not in result.stdout
 
@@ -1083,7 +1094,7 @@ def test_render_keeps_learn_for_a_checkout_that_knows_it(tmp_path, apps):
 def test_render_drops_learn_for_a_checkout_from_before_it(tmp_path, apps, kept):
     """Roll back, Update or adopt to a commit whose ss-stack refuses learn:
     the .env runs without the learning site, and the step says so."""
-    result, written = _render(tmp_path, apps, old=True)
+    result, written = _render(tmp_path, apps, stack=OLD_SS_STACK)
     assert f"STACK_APPS={kept}\n" in written
     assert "learn" not in written
     assert "POSTGRES_PASSWORD=render-SECRET-0123abcd\n" in written
@@ -1092,31 +1103,84 @@ def test_render_drops_learn_for_a_checkout_from_before_it(tmp_path, apps, kept):
 
 @pytest.mark.parametrize("apps", ["wiki,kiosk", "none"])
 def test_render_says_nothing_when_an_old_checkout_runs_no_learn(tmp_path, apps):
-    result, written = _render(tmp_path, apps, old=True)
+    result, written = _render(tmp_path, apps, stack=OLD_SS_STACK)
     assert f"STACK_APPS={apps}\n" in written
+    assert PREDATES_LEARN not in result.stdout
+    assert PREDATES_DEVICES not in result.stdout
+
+
+@pytest.mark.parametrize("apps", [EVERY_APP, "devices", "wiki,devices"])
+@pytest.mark.parametrize("stack", [None, CASE_DEVICES_SS_STACK])
+def test_render_keeps_devices_for_the_current_ss_stack(tmp_path, apps, stack):
+    """The current ss-stack (OPTIONAL_APPS) and the case line that listed
+    devices both know it."""
+    result, written = _render(tmp_path, apps, stack=stack)
+    assert f"STACK_APPS={apps}\n" in written
+    assert PREDATES_DEVICES not in result.stdout
     assert PREDATES_LEARN not in result.stdout
 
 
-@pytest.mark.parametrize("old", [False, True])
-def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, old):
+@pytest.mark.parametrize("apps, kept", [(EVERY_APP, "wiki,kiosk,learn,status,mailpit"),
+                                        ("wiki,devices", "wiki"),
+                                        ("devices", "none")])
+def test_render_drops_devices_for_a_checkout_that_predates_it(tmp_path, apps, kept):
+    """Roll back, Update or Restore backup to a commit whose ss-stack
+    refuses devices: the .env runs without it, and the step says so."""
+    result, written = _render(tmp_path, apps, stack=PRE_DEVICES_SS_STACK)
+    assert f"STACK_APPS={kept}\n" in written
+    assert "devices" not in written
+    assert "POSTGRES_PASSWORD=render-SECRET-0123abcd\n" in written
+    assert PREDATES_DEVICES in result.stdout
+    assert PREDATES_LEARN not in result.stdout
+
+
+def test_render_drops_learn_and_devices_for_a_checkout_before_both(tmp_path):
+    result, written = _render(tmp_path, EVERY_APP, stack=OLD_SS_STACK)
+    assert "STACK_APPS=wiki,kiosk,status,mailpit\n" in written
+    assert PREDATES_LEARN in result.stdout and PREDATES_DEVICES in result.stdout
+
+
+def _slot_smoke_asked(tmp_path: Path, stack: str | None) -> list[str]:
+    """Run slot_smoke.yml for api, learn and devices; the names it tried.
+    stack is an older ss-stack's text (None: the real one)."""
     _Answer.status, _Answer.seen = 200, []
     server = HTTPServer(("127.0.0.1", 0), _Answer)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         env_dir, env = _target(tmp_path)
-        hosts = [{"service": "api", "hostname": "api.e2e.serversherpa.com", "path": "/healthz"},
-                 {"service": "learn", "hostname": "learn.e2e.serversherpa.com", "path": "/"}]
+        hosts = [{"service": service, "hostname": f"{service}.e2e.serversherpa.com",
+                  "path": "/healthz" if service == "api" else "/"}
+                 for service in ("api", "learn", "devices")]
         extra = {**_common(env_dir), "public_hosts": hosts, "slot_port": server.server_port,
                  "slot_smoke_retries": 1, "slot_smoke_delay": 0}
-        if old:
-            extra["ss_stack"] = str(_old_ss_stack(tmp_path))
+        if stack is not None:
+            extra["ss_stack"] = str(_old_ss_stack(tmp_path, stack))
         result, _ = _play(tmp_path, "slot_smoke.yml", extra, env)
     finally:
         server.shutdown()
     assert result.returncode == 0, result.stdout + result.stderr
     asked = [seen[0] for seen in _Answer.seen]
     assert "api.e2e.serversherpa.com" in asked
+    return asked
+
+
+@pytest.mark.parametrize("old", [False, True])
+def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, old):
+    asked = _slot_smoke_asked(tmp_path, OLD_SS_STACK if old else None)
     assert ("learn.e2e.serversherpa.com" in asked) is not old
+
+
+def test_slot_smoke_skips_devices_for_a_checkout_that_predates_it(tmp_path):
+    asked = _slot_smoke_asked(tmp_path, PRE_DEVICES_SS_STACK)
+    assert "learn.e2e.serversherpa.com" in asked
+    assert "devices.e2e.serversherpa.com" not in asked
+
+
+@pytest.mark.parametrize("stack", [None, CASE_DEVICES_SS_STACK])
+def test_slot_smoke_keeps_devices_for_the_current_ss_stack(tmp_path, stack):
+    asked = _slot_smoke_asked(tmp_path, stack)
+    assert "devices.e2e.serversherpa.com" in asked
+    assert "learn.e2e.serversherpa.com" in asked
 
 
 # ---- LAN Blue/Green (phase 8b): the data VM, its dump and the slot smoke test ----
