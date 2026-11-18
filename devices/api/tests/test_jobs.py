@@ -9,6 +9,7 @@ import plistlib
 import uuid
 import zipfile
 
+import httpx
 import pytest
 from sqlalchemy import select, update
 
@@ -23,6 +24,8 @@ from serversherpa_devices.db.models import (
     SignedBuild,
 )
 from serversherpa_devices.signing import resign
+from serversherpa_devices.worker.jobs import REGISTER_GAVE_UP
+from serversherpa_devices.worker.queue import MAX_ATTEMPTS
 from serversherpa_devices.worker.run import run_once
 
 from .fake_asc import TEAM_ID, error
@@ -68,7 +71,6 @@ class Signer:
         self.calls: list[dict] = []
         self.fail: Exception | None = None
         self.binary: dict = {"get-task-allow": True, "aps-environment": "development",
-                             "com.apple.security.application-groups": ["group.example"],
                              "keychain-access-groups": [f"{TEAM_ID}.com.example.hello"]}
 
     def sign_app(self, app_dir, *, p12, password, entitlements, extension_entitlements=None):
@@ -176,11 +178,48 @@ async def test_register_retried_error_has_no_udid(db, apple):
     await queue("register_device", {"device_id": str(device.id)})
 
     assert await run_once(get_sessionmaker())
+    # Apple's own failure refused nothing: the iPhone is still registering.
     saved = await fresh(IosDevice, device.id)
-    assert saved.error == "Apple refused this iPhone: Something broke for this iPhone."
+    assert (saved.status, saved.error) == ("pending", None)
     (job,) = await jobs_of()
     assert job.status == "queued"
+    assert "Something broke for this iPhone." in job.error
     assert UDID_A.lower() not in job.error.lower()
+
+
+async def test_register_unreachable_keeps_registering_until_it_gives_up(db, apple):
+    def unreachable(request, item, body):
+        raise httpx.ConnectError("no route to host")
+
+    apple._post_devices = unreachable
+    device = await seed_device(db, UDID_A)
+    await queue("register_device", {"device_id": str(device.id)})
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        assert await run_once(get_sessionmaker())
+        saved = await fresh(IosDevice, device.id)
+        (job,) = await jobs_of()
+        assert job.attempts == attempt
+        if attempt < MAX_ATTEMPTS:
+            assert (saved.status, saved.error) == ("pending", None)
+            assert "Apple refused" not in job.error
+            async with get_sessionmaker()() as session:   # skip the backoff
+                await session.execute(update(Job).values(progress_at=None))
+                await session.commit()
+    assert job.status == "failed"
+    assert (saved.status, saved.error) == ("failed", REGISTER_GAVE_UP)
+
+
+async def test_device_failure_never_overwrites_a_disable(db, apple):
+    """An Apple refusal landing after an admin disabled the iPhone leaves it
+    disabled (Task 15 review, Minor 1)."""
+    from serversherpa_devices.worker import jobs
+
+    device = await seed_device(db, UDID_A, status="disabled")
+    async with get_sessionmaker()() as session:
+        await jobs._device_failed(session, device.id, "Apple refused this iPhone: no")
+    saved = await fresh(IosDevice, device.id)
+    assert (saved.status, saved.error) == ("disabled", None)
 
 
 async def test_register_other_apple_error_is_retried(db, apple):
@@ -224,6 +263,36 @@ async def test_disable_device(db, apple):
     assert apple.devices[asc_id]["status"] == "DISABLED"
     assert (await fresh(IosDevice, device.id)).status == "disabled"
     assert [j.kind for j in await jobs_of()] == ["disable_device", "rebuild_profiles"]
+
+
+async def test_disable_gave_up_tells_the_admin_and_drops_it_from_profiles(db, apple):
+    from serversherpa_devices.worker import jobs
+
+    apple.refuse("This key can't use this API.")
+    asc_id = apple.add_device(UDID_A)
+    device = await seed_device(db, UDID_A, status="disabled", asc_device_id=asc_id)
+    await queue("disable_device", {"device_id": str(device.id)})
+
+    for attempt in range(MAX_ATTEMPTS):
+        assert await run_once(get_sessionmaker())
+        async with get_sessionmaker()() as session:   # skip the backoff
+            await session.execute(update(Job).where(Job.status == "queued")
+                                  .values(progress_at=None))
+            await session.commit()
+    disable, rebuild = await jobs_of()
+    assert (disable.kind, disable.status) == ("disable_device", "failed")
+    # The profiles are rebuilt without it anyway (only registered iPhones go in).
+    assert (rebuild.kind, rebuild.status) == ("rebuild_profiles", "queued")
+    saved = await fresh(IosDevice, device.id)
+    assert (saved.status, saved.error) == ("disabled", jobs.DISABLE_GAVE_UP)
+
+    # Re-added meanwhile: nothing to tell.
+    other = await seed_device(db, UDID_B, status="pending")
+    async with get_sessionmaker()() as session:
+        await jobs.gave_up(session, Job(kind="disable_device",
+                                        payload={"device_id": str(other.id)}))
+        await session.commit()
+    assert (await fresh(IosDevice, other.id)).error is None
 
 
 # App IDs.
@@ -433,6 +502,33 @@ async def test_sign_build_failure_records_error(db, apple, bucket, tmp_path, sig
     assert (row.status, row.error) == ("ready", None)
 
 
+async def test_sign_build_refuses_an_entitlement_the_app_id_lacks(
+        db, apple, bucket, tmp_path, signer):
+    """Ruling R19: a capability the binary uses but its App ID doesn't have
+    fails the build, naming it, instead of being dropped silently."""
+    _app, version, _ = await _ready_to_sign(db, apple, bucket, tmp_path)
+    signer.binary["com.apple.security.application-groups"] = ["group.example"]
+    await queue("sign_build", {"version_id": str(version.id)})
+
+    assert await run_once(get_sessionmaker())
+    assert signer.calls == []
+    (row,) = await signed_builds()
+    assert (row.status, row.file_key, row.permanent) == ("failed", None, True)
+    assert row.error == ("This app needs com.apple.security.application-groups, which its "
+                         "App ID doesn't have in Apple's developer site. Turn it on there, "
+                         "then upload the app again.")
+    assert row.failed_at is not None
+    (job,) = await jobs_of()
+    assert (job.status, job.attempts, job.error) == ("failed", 1, row.error)
+
+    # A later try that works clears the mark.
+    del signer.binary["com.apple.security.application-groups"]
+    await queue("sign_build", {"version_id": str(version.id)})
+    assert await run_once(get_sessionmaker())
+    (row,) = await signed_builds()
+    assert (row.status, row.permanent, row.error) == ("ready", False, None)
+
+
 async def test_sign_build_storage_failure_is_retried(db, apple, bucket, tmp_path, signer,
                                                      monkeypatch):
     from serversherpa_devices.services import storage
@@ -472,6 +568,7 @@ async def test_sign_build_skips_deleted_version_and_missing_profile(
 
 async def test_new_ios_app_end_to_end(db, apple, bucket, tmp_path, signer):
     """What an upload commit queues, through to a signed IPA."""
+    del signer.binary["aps-environment"]   # the App ID the fake makes has no push
     app, version = await seed_ios_app(db, bucket, tmp_path)
     asc_id = apple.add_device(UDID_A)
     await seed_device(db, UDID_A, status="registered", asc_device_id=asc_id)

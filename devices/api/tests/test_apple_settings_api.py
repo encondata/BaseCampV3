@@ -10,11 +10,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from serversherpa_devices.api.routes.apple import get_asc_http
 from serversherpa_devices.apple.settings import load_credentials
-from serversherpa_devices.db.models import App, AppleSettings, IosProfile
+from serversherpa_devices.db.models import App, AppleSettings, IosProfile, Job
 from serversherpa_devices.services.secrets import unseal
 
 from .catalog_support import audits
@@ -181,6 +181,42 @@ async def test_later_save_keeps_stored_files(api, asc, main_fake, db):
     r = await put_apple(api, password=None)
     assert r.status_code == 422
     assert _message(r) == "Add the missing parts: Certificate password."
+
+
+async def _rebuilds(db) -> list[Job]:
+    return list((await db.scalars(
+        select(Job).where(Job.kind == "rebuild_profiles")
+        .execution_options(populate_existing=True))).all())
+
+
+async def test_saving_changed_settings_rebuilds_profiles(api, asc, db):
+    """A replaced certificate (it lasts a year) must reach every profile and
+    every signed build: a save that changes anything queues a rebuild, whose
+    new profiles re-sign each app (final review, I2)."""
+    asc.add_certificate("7D2A0F1C3")
+    assert (await put_apple(api)).status_code == 200
+    assert len(await _rebuilds(db)) == 1   # the first save: there may be apps to sign
+
+    # Saved again unchanged: nothing to redo.
+    await db.execute(update(Job).values(status="done"))
+    await db.commit()
+    assert (await put_apple(api, p8=None, p12=None, password=None)).status_code == 200
+    assert [j.status for j in await _rebuilds(db)] == ["done"]
+
+    # A new certificate: profiles are made again against it.
+    new_cert = asc.add_certificate("BEEF01")
+    r = await put_apple(api, p8=None, p12=make_p12(serial=0xBEEF01))
+    assert r.status_code == 200, r.text
+    rebuilds = await _rebuilds(db)
+    assert [j.status for j in rebuilds] == ["done", "queued"]
+    assert (await _row(db)).asc_certificate_id == new_cert
+
+    # A new team ID, too.
+    await db.execute(update(Job).values(status="done"))
+    await db.commit()
+    r = await put_apple(api, p8=None, p12=None, password=None, team_id="TEAM999999")
+    assert r.status_code == 200, r.text
+    assert [j.status for j in await _rebuilds(db)] == ["done", "done", "queued"]
 
 
 async def test_first_save_requires_every_part(api, asc, db):

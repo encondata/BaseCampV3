@@ -165,6 +165,20 @@ async def test_rebuild_is_coalesced(db):
     assert len(await jobs_of("sync_devices")) == 2
 
 
+async def test_coalescing_onto_a_retried_rebuild_gives_it_every_try_again(db):
+    """A rebuild waiting out its backoff after two failed tries is the one a
+    newly registered iPhone joins: it must not fail for good on its next try."""
+    first = await queue.enqueue(db, "rebuild_profiles", {})
+    await db.commit()
+    await _set(first.id, attempts=queue.MAX_ATTEMPTS - 1, error="RuntimeError: boom",
+               progress_at=_ago(5))
+    again = await queue.enqueue(db, "rebuild_profiles", {})
+    await db.commit()
+    assert again.id == first.id
+    (row,) = await jobs_of("rebuild_profiles")
+    assert (row.status, row.attempts) == ("queued", 0)
+
+
 async def test_catalog_queue_job_uses_the_queue(db):
     await catalog.queue_job(db, "ensure_bundle", {"app_id": "abc"})
     await db.commit()

@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa_devices import catalog
+from serversherpa_devices import catalog, install_state
 from serversherpa_devices.api.routes import api_error
 from serversherpa_devices.api.routes.apps import NOTES_MAX, VersionOut, version_out
 from serversherpa_devices.auth.deps import client_ip, require
@@ -256,7 +256,14 @@ async def commit_upload(upload_id: uuid.UUID, body: CommitIn, request: Request,
     upload.committed_at = dt.datetime.now(dt.UTC)
     if app.platform == "ios":
         await catalog.queue_job(db, "ensure_bundle", {"app_id": str(app.id)})
-        await catalog.queue_job(db, "sign_build", {"version_id": str(version.id)})
+        with db.no_autoflush:   # a conflict must surface at the commit below
+            refused = not new_app and await install_state.capability_refused(db, app)
+        if refused:
+            # The upload that follows turning a capability on (ruling R19):
+            # only a new profile carries it, and the rebuild signs this version.
+            await catalog.queue_job(db, "rebuild_profiles", {})
+        else:
+            await catalog.queue_job(db, "sign_build", {"version_id": str(version.id)})
     try:
         await db.commit()
     except IntegrityError:

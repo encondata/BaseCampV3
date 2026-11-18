@@ -185,6 +185,9 @@ class SignedBuild(Base):
     created_at: Mapped[datetime] = _now()
     # When it last failed (migration 0003): paces re-signing on demand.
     failed_at: Mapped[datetime | None]
+    # Failed in a way only a new upload fixes, such as a capability the App
+    # ID lacks (migration 0004): never re-signed on demand.
+    permanent: Mapped[bool] = mapped_column(server_default=text("false"))
 
     __table_args__ = (
         CheckConstraint(_in("status", ("queued", "running", "ready", "failed")),

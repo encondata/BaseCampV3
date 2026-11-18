@@ -114,6 +114,15 @@ async def test_disable_enqueues_and_audits(api, main_fake, db):
     assert len(audits(main_fake)) == 1
 
 
+async def test_disable_clears_an_old_registration_error(api, db):
+    device = await seed_device(db, UDID_A, status="failed")
+    device.error = "Apple refused this iPhone: no"
+    await db.commit()
+    r = await api.post(f"/api/devices/{device.id}/disable")
+    assert (r.json()["status"], r.json()["error"]) == ("disabled", None)
+    assert (await fresh(IosDevice, device.id)).error is None
+
+
 async def test_disable_unknown_device(api):
     r = await api.post(f"/api/devices/{uuid.uuid4()}/disable")
     assert r.status_code == 404

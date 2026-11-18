@@ -11,7 +11,8 @@ of workers claim rows with FOR UPDATE SKIP LOCKED, no broker.
   try (`requeue_stale`).
 - `rebuild_profiles` is coalesced: queuing one while another is still
   queued (not yet running) returns that one, since it will see every
-  device registered by then."""
+  device registered by then. Its tries start over, so a rebuild waiting
+  out its last backoff can't fail for good with the new device left out."""
 
 import datetime as dt
 import uuid
@@ -52,8 +53,10 @@ async def enqueue(db: AsyncSession, kind: str, payload: dict | None) -> Job:
         # once it is `running` it no longer matches, so a fresh one is queued.
         waiting = await db.scalar(
             select(Job).where(Job.kind == kind, Job.status == "queued")
-            .order_by(Job.created_at).limit(1).with_for_update())
+            .order_by(Job.created_at).limit(1).with_for_update()
+            .execution_options(populate_existing=True))
         if waiting is not None:
+            waiting.attempts = 0
             return waiting
     return await db.scalar(
         insert(Job).values(kind=kind, payload=payload or {}, created_at=func.clock_timestamp())

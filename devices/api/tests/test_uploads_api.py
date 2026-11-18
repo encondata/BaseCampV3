@@ -8,7 +8,14 @@ from sqlalchemy import select, update
 
 from serversherpa_devices import catalog
 from serversherpa_devices.config import get_settings
-from serversherpa_devices.db.models import App, AppleSettings, AppVersion, Upload
+from serversherpa_devices.db.models import (
+    App,
+    AppleSettings,
+    AppVersion,
+    IosProfile,
+    SignedBuild,
+    Upload,
+)
 
 from .catalog_support import (
     APK_TYPE,
@@ -248,6 +255,38 @@ async def test_ios_commit_enqueues_bundle_then_sign(api, bucket, db, tmp_path, m
     queued.clear()
     await publish(api, bucket, HELLO_A)
     assert queued == []   # Android needs no worker
+
+
+async def test_ios_upload_after_a_missing_capability_gets_a_fresh_profile(
+        api, bucket, db, tmp_path, monkeypatch):
+    """Ruling R19: the fix for a capability the App ID lacked is turning it on
+    and uploading again, and only a new profile carries it: the upload
+    rebuilds the profiles (which re-sign the new version) instead of
+    signing with the old one."""
+    await apple_settings_filled(db)
+    first = await publish(api, bucket, hello_ipa(tmp_path / "a", version="1.4", build="2"))
+    app_id = uuid.UUID(first["app_id"])
+    db.add(IosProfile(app_id=app_id, asc_profile_id="PROF1", uuid="PROFILE-UUID-1",
+                      content=b"profile", expires_at=dt.datetime(2027, 1, 1, tzinfo=dt.UTC),
+                      device_ids=[]))
+    db.add(SignedBuild(version_id=uuid.UUID(first["version"]["id"]),
+                       profile_uuid="PROFILE-UUID-1", status="failed", permanent=True,
+                       error="This app needs aps-environment, …"))
+    await db.commit()
+
+    queued = []
+    monkeypatch.setattr(catalog, "enqueue",
+                        lambda session, kind, payload: queued.append((kind, payload)))
+    await publish(api, bucket, hello_ipa(tmp_path / "b", version="1.5", build="3"))
+    assert queued == [("ensure_bundle", {"app_id": str(app_id)}), ("rebuild_profiles", {})]
+
+    # Once a new profile is in place, uploads sign as usual again.
+    await db.execute(update(IosProfile).values(uuid="PROFILE-UUID-2"))
+    await db.commit()
+    queued.clear()
+    third = await publish(api, bucket, hello_ipa(tmp_path / "c", version="1.6", build="4"))
+    assert queued == [("ensure_bundle", {"app_id": str(app_id)}),
+                      ("sign_build", {"version_id": third["version"]["id"]})]
 
 
 async def test_read_only_blocks_commit(api, main_fake, bucket, db):

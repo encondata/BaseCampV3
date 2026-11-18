@@ -76,6 +76,9 @@ async def _ios(db: AsyncSession, bundle_id: str, build_sort: int, profile_kind: 
     if profile is None:
         return {"status": "preparing", "message": install_state.PREPARING}
     state, signed = await install_state.build_state(db, current, profile)
+    if state == "refused":
+        # Still "preparing" to the app, with the reason a new upload is needed.
+        return {"status": "preparing", "message": signed.error or install_state.BUILD_FAILED}
     if signed is None:
         # A failure inside the retry window is still "preparing" to the app.
         message = install_state.BUILD_FAILED if state == "failed" else install_state.PREPARING

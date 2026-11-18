@@ -53,6 +53,9 @@ log = logging.getLogger(__name__)
 IPA_TYPE = "application/octet-stream"
 _INFO_PLIST_LIMIT = 4 * 1024 * 1024
 REGISTER_GAVE_UP = "Registering with Apple didn't finish. Add this iPhone again to retry."
+DISABLE_GAVE_UP = ("Apple didn't confirm disabling this iPhone, so Apple still lists it as "
+                   "enabled. It's out of every profile here; disable it in Apple's developer "
+                   "site too.")
 SIGN_GAVE_UP = "Signing didn't finish."
 
 
@@ -93,7 +96,7 @@ async def _locked(db: AsyncSession, model, ident):
 
 async def _device_failed(db: AsyncSession, device_id: uuid.UUID, error: str) -> None:
     device = await _locked(db, IosDevice, device_id)
-    if device is not None:
+    if device is not None and device.status != "disabled":   # disabled meanwhile: it stays so
         device.status = "failed"
         device.error = error
     await db.commit()
@@ -125,6 +128,11 @@ async def register_device(db: AsyncSession, job: Job) -> dict:
     except AscError as exc:
         # Apple's detail can quote the UDID back; it never reaches the row or the job.
         detail = without_udid(exc.detail, udid)
+        if exc.status == 0 or exc.status >= 500:
+            # Unreachable, or Apple's own failure: nothing was refused. The
+            # iPhone stays registering through the retries (gave_up marks it
+            # failed after the last one).
+            raise AscError(exc.status, exc.code, detail) from None
         reason = f"Apple refused this iPhone: {detail}"
         await _device_failed(db, device_id, reason)
         if exc.status == 409:          # the request itself is wrong: never retried
@@ -326,7 +334,7 @@ async def sign_build(db: AsyncSession, job: Job) -> dict:
         insert(SignedBuild).values(version_id=version_id, profile_uuid=profile_uuid,
                                    status="running")
         .on_conflict_do_update(constraint="signed_builds_version_id_profile_uuid_key",
-                               set_={"status": "running", "error": None}))
+                               set_={"status": "running", "error": None, "permanent": False}))
     await db.commit()
 
     key = signed_key(app_id, version_id, profile_uuid)
@@ -343,9 +351,12 @@ async def sign_build(db: AsyncSession, job: Job) -> dict:
         permanent = isinstance(exc, (SignError, PackageError))
         message = str(exc) if permanent else f"Signing didn't finish ({type(exc).__name__})."
         await db.rollback()
+        # A capability the App ID lacks fails every try until a new upload
+        # (ruling R19), so looking at the page never queues another.
         await _set_signed_build(db, version_id, profile_uuid, status="failed",
                                 error=message[:ERROR_MAX], file_key=None,
-                                failed_at=func.now())
+                                failed_at=func.now(),
+                                permanent=isinstance(exc, entitlements.MissingEntitlement))
         await db.commit()
         if permanent:                      # the same IPA and certificate fail again
             raise JobFailed(message) from None
@@ -399,6 +410,13 @@ async def gave_up(db: AsyncSession, job: Job) -> None:
             if device is not None and device.status == "pending":
                 device.status = "failed"
                 device.error = REGISTER_GAVE_UP
+        elif job.kind == "disable_device":
+            # Disabled here already; Apple never heard. The rebuild drops it
+            # from every profile all the same (only registered iPhones go in).
+            device = await db.get(IosDevice, uuid.UUID(str(payload["device_id"])))
+            if device is not None and device.status == "disabled":
+                device.error = DISABLE_GAVE_UP
+                await enqueue(db, "rebuild_profiles", {})
         elif job.kind == "sign_build":
             await db.execute(
                 update(SignedBuild)

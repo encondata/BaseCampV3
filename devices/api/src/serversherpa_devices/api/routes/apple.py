@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa_devices import catalog
 from serversherpa_devices.api.routes import api_error
 from serversherpa_devices.apple import asc
 from serversherpa_devices.apple.settings import (
@@ -195,6 +196,10 @@ async def put_apple(
     row.updated_by = principal.person_id
     row.updated_by_name = principal.display_name
     row.updated_at = dt.datetime.now(dt.UTC)
+    # Profiles name the certificate they were made for: after any change
+    # (a renewed certificate above all) they are made again, and their new
+    # UUIDs re-sign every app's current version.
+    await catalog.queue_job(db, "rebuild_profiles", {})
     await db.commit()
     await main_api.audit(actor=principal.person_id, entity_type="appdist_apple",
                          entity_id="apple", action="update", changes=changes,

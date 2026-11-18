@@ -149,7 +149,18 @@ async def test_ios_states_walk(api, bucket, db):
                              "message": "Registering this iPhone with Apple…"}
     await set_device(status="failed", error="Apple refused this iPhone: bad UDID")
     assert await state() == {"state": "failed",
-                             "message": "Apple refused this iPhone: bad UDID"}
+                             "message": "Apple refused this iPhone: bad UDID",
+                             "retrying": False}
+    # The worker still has a try queued for it: the page keeps looking.
+    retry = Job(kind="register_device", payload={"device_id": str(device.id)})
+    db.add(retry)
+    await db.commit()
+    assert await state() == {"state": "failed",
+                             "message": "Apple refused this iPhone: bad UDID",
+                             "retrying": True}
+    await db.execute(update(Job).where(Job.id == retry.id).values(status="failed"))
+    await db.commit()
+    assert (await state())["retrying"] is False
     await set_device(status="disabled", error=None)
     assert await state() == {"state": "disabled",
                              "message": "This iPhone was removed from Devices."}
@@ -304,15 +315,17 @@ async def test_failed_build_retry_is_paced(api, main_fake, bucket, db):
     signed = await add_signed(db, bucket, version, status="failed",
                               failed_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=2))
     ref = {"device_ref": str(device.id)}
-    failed = {"state": "failed", "message": "This app couldn't be prepared for this iPhone. "
-                                            "It will try again in a few minutes."}
+    failed = {"state": "build_failed",
+              "message": "This app couldn't be prepared for this iPhone. "
+                         "It will try again in a few minutes.",
+              "retrying": True}
 
     # Failed 2 minutes ago: shown as failed, not tried again yet.
     for _ in range(3):
         assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == failed
     r = await api.post(f"/api/apps/{app.id}/install", json={"device_ref": str(device.id)})
     assert r.status_code == 409
-    assert r.json()["detail"] == {"code": "failed", "message": failed["message"]}
+    assert r.json()["detail"] == {"code": "build_failed", "message": failed["message"]}
     main_fake.as_kiosk()
     r = await api.get("/api/updates", params={"platform": "ios", "bundle_id": app.identifier,
                                               "build": "1", "profile_kind": "adhoc"})
@@ -328,3 +341,79 @@ async def test_failed_build_retry_is_paced(api, main_fake, bucket, db):
     for _ in range(3):
         assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == preparing
     assert [j.payload for j in await sign_jobs(db)] == [{"version_id": str(version.id)}]
+
+
+CAPABILITY = ("This app needs com.apple.security.application-groups, which its App ID "
+              "doesn't have in Apple's developer site. Turn it on there, then upload the "
+              "app again.")
+
+
+async def test_missing_capability_shows_its_message_and_is_never_retried(
+        api, main_fake, bucket, db):
+    app, version = await _ios_app(db, bucket)
+    device = await seed_device(db, UDID_A, status="registered", asc_device_id="ASCDEV1")
+    await add_profile(db, app, [device.id])
+    db.add(SignedBuild(version_id=version.id, profile_uuid="PROFILE-UUID-1", status="failed",
+                       error=CAPABILITY, permanent=True,
+                       failed_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=2)))
+    await db.commit()
+    ref = {"device_ref": str(device.id)}
+
+    # Long past the ten-minute window: still the reason, and no new try.
+    for _ in range(3):
+        assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == {
+            "state": "build_failed", "message": CAPABILITY, "retrying": False}
+    r = await api.post(f"/api/apps/{app.id}/install", json={"device_ref": str(device.id)})
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "build_failed", "message": CAPABILITY}
+    main_fake.as_kiosk()
+    r = await api.get("/api/updates", params={"platform": "ios", "bundle_id": app.identifier,
+                                              "build": "1", "profile_kind": "adhoc"})
+    assert r.json() == {"status": "preparing", "message": CAPABILITY}
+    assert await sign_jobs(db) == []
+
+
+async def test_sign_failure_before_its_build_row_is_paced(api, bucket, db):
+    """A sign_build that failed before it wrote its signed_builds row (say,
+    Apple's credentials couldn't be read) isn't queued again on every look
+    (Task 12 review, Minor 1)."""
+    app, version = await _ios_app(db, bucket)
+    device = await seed_device(db, UDID_A, status="registered", asc_device_id="ASCDEV1")
+    await add_profile(db, app, [device.id])
+    early = Job(kind="sign_build", payload={"version_id": str(version.id)}, status="failed",
+                attempts=1, error="Apple settings aren't set up yet.",
+                finished_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=2))
+    db.add(early)
+    await db.commit()
+    ref = {"device_ref": str(device.id)}
+    for _ in range(3):
+        assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == {
+            "state": "build_failed",
+            "message": "This app couldn't be prepared for this iPhone. "
+                       "It will try again in a few minutes.",
+            "retrying": True}
+    assert [j.id for j in await sign_jobs(db)] == [early.id]
+
+    await db.execute(update(Job).where(Job.id == early.id).values(
+        finished_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10, seconds=5)))
+    await db.commit()
+    assert _ios_state((await api.get("/api/apps", params=ref)).json(), app)["state"] \
+        == "preparing"
+    assert [j.status for j in await sign_jobs(db)] == ["failed", "queued"]
+
+
+async def test_ios_app_without_a_current_version_has_no_install_state(api, bucket, db):
+    """Nothing to install: no state, so the page doesn't wait on it (Task 12
+    review, Minor 3)."""
+    await seed_apple(db)
+    app = App(id=uuid.uuid4(), platform="ios", identifier="com.example.hello", name="Hello",
+              asc_bundle_id="BUNDLE1")
+    db.add(app)
+    await db.commit()
+    await add_ios_version(db, bucket, app, version_name="1.4", build="2", current=False)
+    device = await seed_device(db, UDID_A, status="registered", asc_device_id="ASCDEV1")
+    await add_profile(db, app, [device.id])
+    listed = (await api.get("/api/apps", params={"device_ref": str(device.id)})).json()
+    (item,) = listed
+    assert (item["current"], item["ios_state"]) == (None, None)
+    assert await sign_jobs(db) == []

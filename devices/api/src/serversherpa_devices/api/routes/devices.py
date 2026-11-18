@@ -100,6 +100,7 @@ async def disable_device(device_id: uuid.UUID, request: Request, db: Db, main_ap
     # It stops installing now; the worker disables it at Apple and rebuilds
     # the profiles without it.
     device.status = "disabled"
+    device.error = None   # an earlier registration failure no longer applies
     await catalog.enqueue(db, "disable_device", {"device_id": str(device.id)})
     out = _device_out(device)
     await db.commit()

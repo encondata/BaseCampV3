@@ -89,7 +89,7 @@ async def list_apps(db: Db, _: Annotated[Principal, Depends(require("view"))],
     out = []
     for app, current in rows:
         item = _app_out(app, current)
-        if app.platform == "ios":
+        if app.platform == "ios" and current is not None:   # nothing to install: no state
             item["ios_state"] = await install_state.ios_state(db, app, ref, version=current)
         out.append(item)
     await db.commit()   # ios_state may have queued re-signing

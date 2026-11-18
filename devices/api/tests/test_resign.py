@@ -38,14 +38,14 @@ def profile(**ents) -> ProvisionInfo:
 
 # Entitlements.
 
-def test_entitlements_drop_unallowed_and_force_get_task_allow_false():
+def test_entitlements_force_the_app_id_team_and_push():
     binary = {
         "get-task-allow": True,
         "application-identifier": "OLDTEAM.com.example.hello",
         "com.apple.developer.team-identifier": "OLDTEAM",
         "aps-environment": "development",
-        "com.apple.security.application-groups": ["group.com.example"],
-        "com.apple.developer.icloud-services": ["CloudKit"],
+        # an App Store export's marker: no Ad Hoc profile ever has it
+        "beta-reports-active": True,
     }
     got = entitlements.for_profile(binary, profile(**{"aps-environment": "production"}),
                                    bundle_id="com.example.hello")
@@ -57,12 +57,30 @@ def test_entitlements_drop_unallowed_and_force_get_task_allow_false():
     }
     assert binary["get-task-allow"] is True   # the input is left alone
 
-    # A binary without the keys still gets them; a profile without push drops it.
-    got = entitlements.for_profile({"aps-environment": "development"}, profile(),
-                                   bundle_id="com.example.hello")
+    # A binary without the keys still gets them.
+    got = entitlements.for_profile({}, profile(), bundle_id="com.example.hello")
     assert got == {"get-task-allow": False,
                    "application-identifier": f"{TEAM}.com.example.hello",
                    "com.apple.developer.team-identifier": TEAM}
+
+
+@pytest.mark.parametrize(("binary", "named"), [
+    ({"aps-environment": "development"}, "aps-environment"),
+    ({"com.apple.security.application-groups": ["group.com.example"]},
+     "com.apple.security.application-groups"),
+    ({"com.apple.developer.icloud-services": ["CloudKit"],
+      "com.apple.security.application-groups": ["group.com.example"]},
+     "com.apple.developer.icloud-services and com.apple.security.application-groups"),
+])
+def test_entitlements_refuse_a_capability_the_app_id_lacks(binary, named):
+    """Ruling R19: the profile not allowing a key the binary has fails the
+    signing, naming the key, instead of dropping it silently."""
+    with pytest.raises(entitlements.MissingEntitlement) as caught:
+        entitlements.for_profile(binary, profile(), bundle_id="com.example.hello")
+    assert isinstance(caught.value, resign.SignError)
+    assert str(caught.value) == (
+        f"This app needs {named}, which its App ID doesn't have in Apple's developer site. "
+        "Turn it on there, then upload the app again.")
 
 
 def test_entitlements_wildcard_keychain_group():
