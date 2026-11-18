@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.config import get_settings
 from serversherpa.db.models import NotificationHeld
 from serversherpa.learning.scheduler import run_learning_once
 from serversherpa.mail import email_enabled
@@ -194,10 +195,17 @@ async def run_push(maker, state: dict) -> int:
     """One push outbox drain; a no-op when push is not set up. A failure is
     logged once per outage, never raised."""
     try:
-        client = FcmClient.from_settings()
-        if client is None:
-            state["failed"] = False
-            return 0
+        # one client for the life of the config: its access-token cache lives
+        # on the instance. Rebuilt when the key path changes or a build failed.
+        path = get_settings().fcm_service_account_file
+        client = state.get("client")
+        if client is None or state.get("path") != path:
+            state.pop("client", None)
+            client = FcmClient.from_settings()
+            if client is None:
+                state["failed"] = False
+                return 0
+            state["client"], state["path"] = client, path
         async with maker() as db:
             handled = await drain_push(db, client, now=datetime.now(UTC))
         state["failed"] = False

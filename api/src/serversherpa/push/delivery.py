@@ -10,7 +10,8 @@ outcomes are sent, token_dead (the registration is deleted), retry or fatal.
 Any sent phone makes the row `sent`; otherwise a retry backs the row off
 (30 s * 2**attempts, `failed` at MAX_ATTEMPTS) and a fatal answer fails it.
 
-Nothing raises out of a row. Logs and the delivery log carry ids and codes
+Nothing raises out of a row: each row runs in its own savepoint, and one that
+fails outside the send is rolled back alone and backed off as a retry. Logs and the delivery log carry ids and codes
 only: never a registration token, the push key or exception text.
 
 Spec: docs/superpowers/specs/2026-11-17-android-push-notifications-design.md"""
@@ -49,8 +50,17 @@ def _log(db: AsyncSession, row: PushOutbox, event: str, *, kind: str | None = No
            reason=reason, detail=merged)
 
 
-def _drop(db: AsyncSession, row: PushOutbox, reason: str, now: datetime, *,
-          kind: str | None = None, category: str | None = None) -> None:
+async def _end_snooze(db: AsyncSession, row: PushOutbox) -> None:
+    """A snooze row that will never send must not leave a past "Snoozed until"."""
+    if row.reason == "snooze":
+        notification = await db.get(Notification, row.notification_id)
+        if notification is not None:
+            notification.push_snoozed_until = None
+
+
+async def _drop(db: AsyncSession, row: PushOutbox, reason: str, now: datetime, *,
+                kind: str | None = None, category: str | None = None) -> None:
+    await _end_snooze(db, row)
     row.state = "dropped"
     row.last_error = reason
     row.handled_at = now
@@ -70,6 +80,24 @@ def _payload(notification: Notification, critical: bool) -> dict[str, str]:
     }
 
 
+async def _retry(db: AsyncSession, row: PushOutbox, now: datetime, error: str, *,
+                 kind: str | None = None, category: str | None = None) -> None:
+    """Back the row off, or fail it once it is out of attempts."""
+    row.attempts += 1
+    row.last_error = error
+    if row.attempts >= MAX_ATTEMPTS:
+        await _end_snooze(db, row)
+        row.state = "failed"
+        row.handled_at = now
+        _log(db, row, "push_failed", kind=kind, category=category,
+             reason=error, detail={"attempts": row.attempts})
+        logger.error("push %s failed after %d attempts", row.id, row.attempts)
+    else:
+        row.send_at = now + timedelta(seconds=BACKOFF_SECONDS * 2 ** row.attempts)
+        _log(db, row, "push_retry", kind=kind, category=category,
+             reason=error, detail={"attempts": row.attempts})
+
+
 async def _handle(db: AsyncSession, client: FcmClient, row: PushOutbox,
                   now: datetime) -> None:
     kind: str | None = None
@@ -80,33 +108,33 @@ async def _handle(db: AsyncSession, client: FcmClient, row: PushOutbox,
         high = False
         phones = await live_registrations(db, row.person_id, now)
         if not phones:
-            _drop(db, row, "no_phone", now)
+            await _drop(db, row, "no_phone", now)
             return
     else:
         notification = await db.get(Notification, row.notification_id)
         if notification is None:
-            _drop(db, row, "deleted", now)
+            await _drop(db, row, "deleted", now)
             return
         info = kind_info(notification.kind)
         kind = notification.kind
         category = info.category if info else None
         if notification.read_at is not None:
-            _drop(db, row, "read", now, kind=kind, category=category)
+            await _drop(db, row, "read", now, kind=kind, category=category)
             return
         if notification.dismissed_at is not None:
-            _drop(db, row, "hidden", now, kind=kind, category=category)
+            await _drop(db, row, "hidden", now, kind=kind, category=category)
             return
         contact = await load_contact(db, notification.person_id)
         company = await load_company_settings(db)
         decision = await decide_push(db, notification.person_id, info, contact=contact,
                                      company=company, now=now)
         if not decision.queue:
-            _drop(db, row, decision.reason or "not_queued", now, kind=kind,
+            await _drop(db, row, decision.reason or "not_queued", now, kind=kind,
                   category=category)
             return
         phones = await live_registrations(db, notification.person_id, now)
         if not phones:
-            _drop(db, row, "no_phone", now, kind=kind, category=category)
+            await _drop(db, row, "no_phone", now, kind=kind, category=category)
             return
         data = _payload(notification, decision.critical)
         high = True
@@ -150,20 +178,10 @@ async def _handle(db: AsyncSession, client: FcmClient, row: PushOutbox,
                  detail={"phones": len(sent)})
         return
     if retry_error is not None:
-        row.attempts += 1
-        row.last_error = retry_error
-        if row.attempts >= MAX_ATTEMPTS:
-            row.state = "failed"
-            row.handled_at = now
-            _log(db, row, "push_failed", kind=kind, category=category,
-                 reason=retry_error, detail={"attempts": row.attempts})
-            logger.error("push %s failed after %d attempts", row.id, row.attempts)
-        else:
-            row.send_at = now + timedelta(seconds=BACKOFF_SECONDS * 2 ** row.attempts)
-            _log(db, row, "push_retry", kind=kind, category=category,
-                 reason=retry_error, detail={"attempts": row.attempts})
+        await _retry(db, row, now, retry_error, kind=kind, category=category)
         return
     if fatal_error is not None:
+        await _end_snooze(db, row)
         row.attempts += 1
         row.state = "failed"
         row.last_error = fatal_error
@@ -173,7 +191,7 @@ async def _handle(db: AsyncSession, client: FcmClient, row: PushOutbox,
         logger.error("push %s failed: %s", row.id, fatal_error)
         return
     # every phone's token was dead and removed
-    _drop(db, row, "no_phone", now, kind=kind, category=category)
+    await _drop(db, row, "no_phone", now, kind=kind, category=category)
 
 
 async def drain_push(db: AsyncSession, client: FcmClient, *, now: datetime,
@@ -186,6 +204,22 @@ async def drain_push(db: AsyncSession, client: FcmClient, *, now: datetime,
         .order_by(PushOutbox.send_at, PushOutbox.created_at)
         .limit(batch).with_for_update(skip_locked=True))).all()
     for row in rows:
-        await _handle(db, client, row, now)
+        row_id = row.id
+        try:
+            # a savepoint per row: one bad row rolls back only its own work
+            async with db.begin_nested():
+                await _handle(db, client, row, now)
+        except Exception as exc:  # noqa: BLE001 - one row must not stop the batch
+            # the class only: the text could echo a token or SQL parameters
+            error = f"row error {type(exc).__name__}"
+            logger.warning("push %s could not be handled (%s)", row_id,
+                           type(exc).__name__)
+            try:
+                async with db.begin_nested():
+                    fresh = await db.get(PushOutbox, row_id, populate_existing=True)
+                    if fresh is not None and fresh.state == "queued":
+                        await _retry(db, fresh, now, error)
+            except Exception:  # noqa: BLE001
+                logger.error("push %s could not be backed off", row_id)
     await db.commit()
     return len(rows)

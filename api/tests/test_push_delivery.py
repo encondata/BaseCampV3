@@ -270,3 +270,78 @@ async def test_worker_logs_failure_once(monkeypatch, caplog):
         await worker_mod.run_push(lambda: None, state)
     assert state["failed"] is True
     assert len([r for r in caplog.records if "push outbox" in r.getMessage()]) == 1
+
+
+async def test_bad_row_is_retried_and_does_not_sink_the_batch(db, fcm_on, clock,
+                                                              monkeypatch):
+    from serversherpa.push import delivery as delivery_mod
+
+    _, _, _, good = await _queued(db, clock)
+    bad_person = await _admin(db)
+    await _phone(db, bad_person)
+    await notify(db, bad_person.id, KIND, "Bad")
+    bad = await db.scalar(select(PushOutbox).where(PushOutbox.person_id == bad_person.id))
+    real = delivery_mod.load_contact
+
+    async def flaky(session, person_id):
+        if person_id == bad_person.id:
+            raise RuntimeError("tok-secret-text")
+        return await real(session, person_id)
+
+    monkeypatch.setattr(delivery_mod, "load_contact", flaky)
+    client = FakeClient()
+    assert await drain_push(db, client, now=NOW) == 2
+    assert len(client.calls) == 1
+    await db.refresh(good)
+    await db.refresh(bad)
+    assert good.state == "sent"
+    assert bad.state == "queued" and bad.attempts == 1
+    assert bad.send_at == NOW + timedelta(seconds=60)
+    assert "RuntimeError" in bad.last_error and "secret" not in bad.last_error
+    # not due again until the backoff ends
+    assert await drain_push(db, client, now=NOW + timedelta(seconds=1)) == 0
+
+
+async def test_dropped_snooze_clears_snoozed_until(db, fcm_on, clock):
+    _, _, n, row = await _queued(db, clock)
+    n.push_snoozed_until = NOW
+    n.read_at = NOW
+    row.reason = "snooze"
+    await db.flush()
+    await drain_push(db, FakeClient(), now=NOW)
+    await db.refresh(n)
+    await db.refresh(row)
+    assert row.state == "dropped" and n.push_snoozed_until is None
+
+
+async def test_worker_reuses_one_client(fcm_on, monkeypatch):
+    built = []
+    client = FakeClient()
+
+    def build(cls):
+        built.append(1)
+        return client
+
+    seen = []
+
+    async def spy(db, c, **kw):
+        seen.append(c)
+        return 0
+
+    class Maker:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(FcmClient, "from_settings", classmethod(build))
+    monkeypatch.setattr(worker_mod, "drain_push", spy)
+    state = {"failed": False}
+    await worker_mod.run_push(Maker(), state)
+    await worker_mod.run_push(Maker(), state)
+    assert built == [1]
+    assert seen == [client, client]
