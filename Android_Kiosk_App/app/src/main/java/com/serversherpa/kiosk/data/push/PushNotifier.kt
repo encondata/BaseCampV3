@@ -85,8 +85,12 @@ class PushNotifier(private val context: Context) {
     }
 
     companion object {
-        const val CHANNEL_NOTIFICATIONS = "notifications"
+        /** Ordinary alerts. Both channels are high importance, so alerts pop up as a banner with
+         *  sound and their buttons, like a text message (Jimmy, 2026-11-18). The id changed from
+         *  "notifications" because Android never raises an existing channel's importance. */
+        const val CHANNEL_NOTIFICATIONS = "alerts"
         const val CHANNEL_CRITICAL = "critical"
+        private const val OLD_CHANNEL_NOTIFICATIONS = "notifications"
         const val ACTION_OPEN_NOTIFICATION = "com.serversherpa.kiosk.push.OPEN_NOTIFICATION"
         const val EXTRA_OPEN_NOTIFICATION_ID = "open_notification_id"
         const val EXTRA_OWNER_PERSON_ID = "owner_person_id"
@@ -98,11 +102,13 @@ class PushNotifier(private val context: Context) {
 
         fun androidId(notificationId: String): Int = notificationId.hashCode()
 
-        /** The two channels, made at app start (KioskApplication); making them again changes nothing. */
+        /** The two channels, made at app start (KioskApplication); making them again changes nothing.
+         *  Removes the first release's quiet "notifications" channel. */
         fun createChannels(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java) ?: return
+            manager.deleteNotificationChannel(OLD_CHANNEL_NOTIFICATIONS)
             manager.createNotificationChannels(listOf(
-                NotificationChannel(CHANNEL_NOTIFICATIONS, "Notifications", NotificationManager.IMPORTANCE_DEFAULT),
+                NotificationChannel(CHANNEL_NOTIFICATIONS, "Notifications", NotificationManager.IMPORTANCE_HIGH),
                 NotificationChannel(CHANNEL_CRITICAL, "Critical alerts", NotificationManager.IMPORTANCE_HIGH),
             ))
         }

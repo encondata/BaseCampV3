@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "665876017067",
+    "project_id": "serversherpa-push",
+    "storage_bucket": "serversherpa-push.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:665876017067:android:cbaee0e688d90cdfe16cee",
+        "android_client_info": {
+          "package_name": "com.serversherpa.kiosk"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDvJ7CvvBkdHKMZh5wHco_ZwPStkFsITdU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -523,11 +523,31 @@ What differs from, or adds to, the design above. Written after the build.
   page needs its "‹ Home" label and a hidden title. `CompactFit.kt` was copied
   verbatim from that branch, so the merge will collide on it.
 - Deploy the API before shipping the app build.
+- Both channels are high importance (Jimmy, 2026-11-18, after the first device
+  test): every alert pops up as a banner with sound and its Snooze and Mark read
+  buttons, like a text message. The ordinary channel's id is `alerts`; the first
+  build's default-level `notifications` channel is deleted at app start, because
+  Android never raises an existing channel's importance.
+
+### Firebase (2026-11-18)
+
+- Project `serversherpa-push` ("ServerSherpa Push") under the EnconDATA account;
+  Android app `com.serversherpa.kiosk`. `app/google-services.json` is committed
+  (it identifies the project; it is not a secret).
+- The service-account key lives outside git at
+  `~/.config/serversherpa/fcm-service-account.json` on the dev Mac;
+  `SS_FCM_SERVICE_ACCOUNT_FILE` in `.env` points at it. Production needs its own
+  copy and setting.
+- The Firebase and Cloud consoles require 2-Step Verification on the Google
+  account (enforced since 2026-10-20).
 
 ### Still open
 
-- Device pass (Task 13): waiting on the Firebase project, `google-services.json`
-  and the service-account key.
+- Rest of the device pass (Task 13). Done on the Pixel 10 Pro XL (Android 17):
+  registration, delivery, the banner, and Mark read clearing the alert. Still
+  to try: app closed, phone locked, signed out after expiry, quiet hours and a
+  critical kind, Snooze re-alerting after 5 minutes, read on the portal clearing
+  the phone, and the switch turned off.
 - A rare deadlock is parked: a snooze row's fifth-attempt fallback ends the
   snooze without SKIP LOCKED. Postgres detects it; the worst case is one failed
   Mark read or a row left queued.
