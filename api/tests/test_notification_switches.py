@@ -111,7 +111,7 @@ def test_company_default_inbox_off_turns_its_email_off_too():
 
 
 def test_security_is_fixed():
-    fixed = EffectiveSwitches(True, True, "fixed", "fixed")
+    fixed = EffectiveSwitches(True, True, "fixed", "fixed", False, "fixed")
     # the company defaults hold no security entry (and a stored one is dropped on read),
     # so the answer comes before the defaults are consulted
     assert "security" not in _company().defaults
@@ -196,15 +196,18 @@ async def test_check_delivery_reports_the_switches(db, seeded_user):
     reports = await check_delivery(db, seeded_user.id, "report_ready", now=NOW)
     assert (reports["inbox"], reports["inbox_source"]) == ("suppressed", "default")
     assert reports["switches"] == {"inbox": {"on": False, "source": "default"},
-                                   "email": {"on": False, "source": "default"}}
+                                   "email": {"on": False, "source": "default"},
+                                   "push": {"on": False, "source": "default"}}
     wiki = await check_delivery(db, seeded_user.id, "wiki_comment", now=NOW)
     assert wiki["inbox"] == "written"
     assert wiki["switches"] == {"inbox": {"on": True, "source": "default"},
-                                "email": {"on": False, "source": "default"}}
+                                "email": {"on": False, "source": "default"},
+                                   "push": {"on": False, "source": "default"}}
     learning = await check_delivery(db, seeded_user.id, "learning_complete", now=NOW)
     assert learning["inbox"] == "written"
     assert learning["switches"] == {"inbox": {"on": True, "source": "default"},
-                                    "email": {"on": True, "source": "default"}}
+                                    "email": {"on": True, "source": "default"},
+                                    "push": {"on": False, "source": "default"}}
 
 
 async def _queued_report_mail(db, person) -> EmailOutbox:
@@ -251,3 +254,47 @@ async def test_unreadable_stored_prefs_behave_as_defaults(db):
     assert contact is not None
     assert effective_switches(REPORT, contact, _company()) == EffectiveSwitches(
         True, True, "default", "default")
+
+
+# ── Push ────────────────────────────────────────────────────────────
+
+async def test_missing_push_reads_off(db):
+    db.add(SystemConfig(section="notifications", data={
+        "defaults": {"wiki": {"inbox": True, "email": False}}}))
+    await db.flush()
+    assert (await load_company_settings(db)).defaults["wiki"] == Switches(True, False, False)
+
+
+async def test_malformed_pair_still_on_on_push_off(db):
+    db.add(SystemConfig(section="notifications", data={
+        "defaults": {"wiki": "x", "reports": {"inbox": True, "email": "yes", "push": True},
+                     "learning": {"inbox": True, "email": False, "push": "yes"}}}))
+    await db.flush()
+    defaults = (await load_company_settings(db)).defaults
+    assert defaults["wiki"] == Switches(True, True, False)
+    assert defaults["reports"] == Switches(True, True, False)
+    # a non-bool push reads off and the pair stays well formed
+    assert defaults["learning"] == Switches(True, False, False)
+
+
+def test_push_needs_inbox():
+    sw = effective_switches(REPORT, _contact(reports={"inbox": False, "push": True}), _company())
+    assert sw.push is False
+    off_by_default = effective_switches(REPORT, _contact(), _company(reports=Switches(False, True, True)))
+    assert off_by_default.push is False
+
+
+def test_own_push_overrides_default():
+    sw = effective_switches(REPORT, _contact(reports={"push": True}), _company())
+    assert (sw.push, sw.push_source) == (True, "own")
+    follows = effective_switches(REPORT, _contact(), _company(reports=Switches(True, True, True)))
+    assert (follows.push, follows.push_source) == (True, "default")
+    off = effective_switches(REPORT, _contact(reports={"push": False}),
+                             _company(reports=Switches(True, True, True)))
+    assert (off.push, off.push_source) == (False, "own")
+
+
+def test_security_push_fixed_off():
+    sw = effective_switches(SECURITY, _contact(), _company())
+    assert (sw.push, sw.push_source) == (False, "fixed")
+    assert effective_switches(None, None, _company()).push is False

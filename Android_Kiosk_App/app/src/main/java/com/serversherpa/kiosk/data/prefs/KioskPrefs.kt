@@ -54,6 +54,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val devMode = booleanPreferencesKey("ss.kiosk.devMode")
         val offerSledBothToEveryone = booleanPreferencesKey("ss.kiosk.offerSledBothToEveryone")
         val sledFlash = booleanPreferencesKey("ss.kiosk.sledFlash")
+        val notificationPermissionAsked = booleanPreferencesKey("ss.kiosk.notificationPermissionAsked")
         val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
         val serial = stringPreferencesKey("ss.kiosk.serial")
@@ -178,6 +179,12 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
      *  part of a sled push. */
     val sledFlash: Flow<Boolean> = store.data.map { it[Keys.sledFlash] ?: true }
     suspend fun setSledFlash(on: Boolean) { store.edit { it[Keys.sledFlash] = on } }
+
+    /** Whether Settings › This Kiosk has asked for POST_NOTIFICATIONS on this phone: a phone made
+     *  personal in the portal is asked once, the first time Settings finds it registered for push
+     *  without the permission (the switch's turn-on always asks). */
+    val notificationPermissionAsked: Flow<Boolean> = store.data.map { it[Keys.notificationPermissionAsked] ?: false }
+    suspend fun setNotificationPermissionAsked() { store.edit { it[Keys.notificationPermissionAsked] = true } }
 
     /** How the person signed in here last ("password" | "link" | "biometric"), as the last sign-in heartbeat
      *  told the portal; a restored session is that same sign-in. */

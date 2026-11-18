@@ -11,14 +11,13 @@ and above change them) and, for super admins and above, the delivery log (/log),
 Check delivery (/check) and the kinds it picks from (/kinds)."""
 
 import asyncio
-import base64
 import contextlib
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from pydantic import AwareDatetime
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 
@@ -46,13 +45,15 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications import check as delivery_check
+from serversherpa.notifications import inbox_ops
 from serversherpa.notifications.company import (
     CONFIGURABLE_CATEGORIES, SECTION as COMPANY_SECTION, SECURITY_CATEGORY,
     CompanySettings, Switches, critical_eligible, is_critical, load_company_settings,
 )
 from serversherpa.notifications.delivery_log import EVENTS
-from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
+from serversherpa.notifications.kinds import KINDS, kind_info
 from serversherpa.notifications.live import get_hub, signal_inbox
+from serversherpa.notifications.push import on_read_or_hidden
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.watches import (
     EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of,
@@ -486,37 +487,11 @@ async def list_recipients(
 
 # ── in-app inbox (any signed-in person; no resource permission) ──────
 
-INBOX_LIMIT = 50        # default page size, and the bell's
-INBOX_MAX_LIMIT = 100
-
-
-def _own_live(user: CurrentUser, notification_id: uuid.UUID):
-    return select(Notification).where(
-        Notification.id == notification_id,
-        Notification.person_id == user.person.id,
-        Notification.dismissed_at.is_(None))
-
-
-def _encode_inbox_cursor(created_at: datetime, id: uuid.UUID) -> str:
-    """The cursor for the row a page ended on: base64url, unpadded, of
-    "<created_at ISO>|<id>". Clients pass it back verbatim as `cursor`."""
-    stamp = created_at.astimezone(UTC).isoformat()
-    return base64.urlsafe_b64encode(f"{stamp}|{id}".encode()).decode().rstrip("=")
-
-
-def _decode_inbox_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
-    """(created_at, id) of the row the previous page ended on. Anything
-    `_encode_inbox_cursor` could not have made is a 422 `invalid_cursor`,
-    including a timestamp with no UTC offset (it would be read as local time)."""
-    try:
-        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
-        stamp, separator, row_id = raw.partition("|")
-        created_at = datetime.fromisoformat(stamp)
-        if not separator or created_at.tzinfo is None:
-            raise ValueError(cursor)
-        return created_at.astimezone(UTC), uuid.UUID(row_id)
-    except (ValueError, OverflowError):
-        raise _err(422, "invalid_cursor") from None
+INBOX_LIMIT = inbox_ops.INBOX_LIMIT        # default page size, and the bell's
+INBOX_MAX_LIMIT = inbox_ops.INBOX_MAX_LIMIT
+# the cursor helpers moved to inbox_ops; kept under their old names for callers
+_encode_inbox_cursor = inbox_ops.encode_cursor
+_decode_inbox_cursor = inbox_ops.decode_cursor
 
 
 def _inbox_item(row: Notification) -> NotificationInboxItemOut:
@@ -531,81 +506,37 @@ async def inbox(user: CurrentUser, db: DbSession, unread_only: bool = False,
                 category: str | None = None, cursor: str | None = None,
                 limit: int = INBOX_LIMIT) -> NotificationInboxOut:
     """The person's live (not hidden) notifications, newest first, a page at a
-    time. `limit` is clamped to 1..100; `category` is a kinds-registry category
-    (a kind the registry does not list belongs to none, so it only shows
-    unfiltered); `cursor` is the previous page's `next_cursor`. The bell calls
-    this with no parameters and gets its 50 newest."""
-    if category is not None and category not in CATEGORY_KEYS:
-        raise _err(422, "invalid_category")
-    after = _decode_inbox_cursor(cursor) if cursor is not None else None
-    limit = max(1, min(limit, INBOX_MAX_LIMIT))
-
-    live = (Notification.person_id == user.person.id, Notification.dismissed_at.is_(None))
-    filters = []
-    if unread_only:
-        filters.append(Notification.read_at.is_(None))
-    if category is not None:
-        filters.append(Notification.kind.in_(
-            [kind for kind, info in KINDS.items() if info.category == category]))
-    # Both counts in one statement over the live rows, so the bell's poll reads
-    # the inbox twice (counts, page): the overall unread count, whatever the
-    # filters, and the total the filters leave.
-    unread, total = (await db.execute(
-        select(func.count().filter(Notification.read_at.is_(None)),
-               func.count().filter(*filters) if filters else func.count())
-        .select_from(Notification).where(*live))).one()
-
-    q = select(Notification).where(*live, *filters)
-    if after is not None:
-        # a row comparison on the full sort key: rows sharing a created_at are
-        # neither skipped nor repeated across the page boundary
-        q = q.where(tuple_(Notification.created_at, Notification.id) < tuple_(*after))
-    rows = (await db.scalars(
-        q.order_by(Notification.created_at.desc(), Notification.id.desc())
-        .limit(limit + 1))).all()          # one past the page: is there another?
-    page = rows[:limit]
-    next_cursor = (_encode_inbox_cursor(page[-1].created_at, page[-1].id)
-                   if len(rows) > limit else None)
+    time (inbox_ops.list_page, shared with GET /kiosk/notifications). `limit`
+    is clamped to 1..100; `category` is a kinds-registry category; `cursor` is
+    the previous page's `next_cursor`. The bell calls this with no parameters
+    and gets its 50 newest."""
+    unread, total, page, next_cursor = await inbox_ops.list_page(
+        db, user.person.id, unread_only=unread_only, category=category,
+        cursor=cursor, limit=limit)
     return NotificationInboxOut(
-        unread_count=int(unread or 0), items=[_inbox_item(row) for row in page],
-        next_cursor=next_cursor, total=int(total or 0))
+        unread_count=unread, items=[_inbox_item(row) for row in page],
+        next_cursor=next_cursor, total=total)
 
 
 @router.post("/inbox/{notification_id}/read", status_code=204)
 async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Response:
-    row = await db.scalar(_own_live(user, notification_id))
-    if row is None:
-        raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
-    if row.read_at is None:
-        row.read_at = datetime.now(UTC)
-        await signal_inbox(db, user.person.id)
-        await db.commit()
+    await inbox_ops.mark_read(db, user.person.id, notification_id)
+    await db.commit()
     return Response(status_code=204)
 
 
 @router.post("/inbox/{notification_id}/unread", status_code=204)
 async def inbox_mark_unread(notification_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Response:
-    row = await db.scalar(_own_live(user, notification_id))
-    if row is None:
-        raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
-    if row.read_at is not None:
-        row.read_at = None
-        await signal_inbox(db, user.person.id)
-        await db.commit()
+    await inbox_ops.mark_unread(db, user.person.id, notification_id)
+    await db.commit()
     return Response(status_code=204)
 
 
 @router.delete("/inbox/{notification_id}", status_code=204)
 async def inbox_hide(notification_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Response:
     """Soft dismiss: the row is kept (retention policy TBD), just hidden."""
-    row = await db.scalar(select(Notification).where(
-        Notification.id == notification_id, Notification.person_id == user.person.id))
-    if row is None:
-        raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
-    if row.dismissed_at is None:
-        row.dismissed_at = datetime.now(UTC)
-        await signal_inbox(db, user.person.id)
-        await db.commit()
+    await inbox_ops.hide(db, user.person.id, notification_id)
+    await db.commit()
     return Response(status_code=204)
 
 
@@ -619,6 +550,7 @@ async def inbox_mark_all_read(user: CurrentUser, db: DbSession) -> Response:
         row.read_at = now
     if rows:
         await signal_inbox(db, user.person.id)
+        await on_read_or_hidden(db, [row.id for row in rows], user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -633,6 +565,7 @@ async def inbox_clear_read(user: CurrentUser, db: DbSession) -> Response:
         row.dismissed_at = now
     if rows:
         await signal_inbox(db, user.person.id)
+        await on_read_or_hidden(db, [row.id for row in rows], user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -855,7 +788,8 @@ def _stored_settings(company: CompanySettings) -> dict:
     """The settings in the shape the `notifications` section stores and the
     audit records: every configurable category, the marked kinds in registry
     order."""
-    return {"defaults": {category: {"inbox": switches.inbox, "email": switches.email}
+    return {"defaults": {category: {"inbox": switches.inbox, "email": switches.email,
+                                      "push": switches.push}
                          for category, switches in company.defaults.items()},
             "critical_kinds": [kind for kind in KINDS if kind in company.critical_kinds]}
 
@@ -910,7 +844,7 @@ async def put_notification_settings(
     before = await load_company_settings(db)
     defaults = dict(before.defaults)
     if body.defaults is not None:
-        defaults.update({category: Switches(pair.inbox, pair.email)
+        defaults.update({category: Switches(pair.inbox, pair.email, pair.push)
                          for category, pair in body.defaults.items()})
     after = CompanySettings(
         defaults=defaults,

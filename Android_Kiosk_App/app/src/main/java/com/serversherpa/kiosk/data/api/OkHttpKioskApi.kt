@@ -48,7 +48,15 @@ import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
+import com.serversherpa.kiosk.core.model.KioskNotificationsPage
+import com.serversherpa.kiosk.core.model.PersonalIn
+import com.serversherpa.kiosk.core.model.PersonalState
+import com.serversherpa.kiosk.core.model.PushRegistration
+import com.serversherpa.kiosk.core.model.PushSnooze
+import com.serversherpa.kiosk.core.model.PushTokenIn
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.push.PushKey
+import okhttp3.CookieJar
 import java.io.IOException
 import okhttp3.Dispatcher
 import java.net.URLEncoder
@@ -256,6 +264,63 @@ class OkHttpKioskApi(
 
     override suspend fun biometricForget(serial: String) {
         authed { url(apiUrl("/kiosk/biometric?serial=${q(serial)}")).delete() }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    // ── "This is my phone" and push ─────────────────────────────────
+
+    override suspend fun getPersonal(): PersonalState =
+        parse(authed { url(apiUrl("/kiosk/personal")).get() }, PersonalState.serializer())
+
+    override suspend fun setPersonal(on: Boolean): PersonalState =
+        parse(authed { url(apiUrl("/kiosk/personal")).put(jsonBody(PersonalIn.serializer(), PersonalIn(on))) }, PersonalState.serializer())
+
+    override suspend fun registerPush(token: String): PushRegistration =
+        parse(authed { url(apiUrl("/kiosk/push/registration")).post(jsonBody(PushTokenIn.serializer(), PushTokenIn(token))) }, PushRegistration.serializer())
+
+    override suspend fun deletePush() {
+        authed { url(apiUrl("/kiosk/push/registration")).delete() }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun updatePushToken(token: String, key: PushKey) {
+        pushKeyCall(key, "/kiosk/push/registration/token") { put(jsonBody(PushTokenIn.serializer(), PushTokenIn(token))) }
+            .use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun pushRead(notificationId: String, key: PushKey) {
+        pushKeyCall(key, "/kiosk/push/notifications/${q(notificationId)}/read") { post(emptyBody) }
+            .use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze =
+        parse(pushKeyCall(key, "/kiosk/push/notifications/${q(notificationId)}/snooze") { post(emptyBody) }, PushSnooze.serializer())
+
+    // ── the app's notifications ─────────────────────────────────────
+
+    override suspend fun listNotifications(cursor: String?): KioskNotificationsPage =
+        parse(authed { url(apiUrl("/kiosk/notifications" + (cursor?.let { "?cursor=${q(it)}" } ?: ""))).get() }, KioskNotificationsPage.serializer())
+
+    override suspend fun markRead(notificationId: String) {
+        authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}/read")).post(emptyBody) }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun markUnread(notificationId: String) {
+        authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}/unread")).post(emptyBody) }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun snooze(notificationId: String): PushSnooze =
+        parse(authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}/snooze")).post(emptyBody) }, PushSnooze.serializer())
+
+    override suspend fun hide(notificationId: String) {
+        authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}")).delete() }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    /** Never through [authed]: the push key is the only credential, sent to [key]'s own base URL
+     *  on a client with no cookie jar (no bearer, no refresh cookie, no refresh). */
+    private suspend fun pushKeyCall(key: PushKey, path: String, method: Request.Builder.() -> Request.Builder): Response {
+        val request = Request.Builder().url(key.baseUrl + path).method().header("Authorization", key.header).build()
+        return executeCall(client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+            .let(route) // INTERNET-TEST
+            , request)
     }
 
     // ── setup & sync ────────────────────────────────────────────────

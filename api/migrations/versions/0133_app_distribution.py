@@ -3,8 +3,8 @@
 developer, founder, super_admin and admin get view/add/change/delete; staff
 get view. Mirrors access/defaults.py.
 
-Revision ID: 0131
-Revises: 0130
+Revision ID: 0133
+Revises: 0132
 Create Date: 2026-11-17
 """
 from collections.abc import Sequence
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0131"
-down_revision: str | None = "0130"
+revision: str = "0133"
+down_revision: str | None = "0132"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -21,6 +21,8 @@ const auth = vi.hoisted(() => ({
   updatePreferences: vi.fn(async (_prefs: UiPreferences) => true),
   // The person's saved notification preferences; beforeEach resets them, tests change them.
   notif: undefined as unknown as UiPreferences['notif'],
+  // The signed-in person's highest role rank; beforeEach resets it, tests change it.
+  maxRank: 0,
 }));
 
 vi.mock('../../auth/AuthContext', () => ({
@@ -42,6 +44,7 @@ vi.mock('../../auth/AuthContext', () => ({
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
     can: () => false,
+    maxRank: auth.maxRank,
   }),
 }));
 
@@ -50,7 +53,7 @@ vi.mock('../../lib/notificationSounds', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/notificationSounds')>()), ...sounds,
 }));
 
-const status = vi.hoisted(() => ({ email_enabled: true }));
+const status = vi.hoisted(() => ({ email_enabled: true, push_enabled: true as boolean | undefined }));
 // false: the first /system/status answer has not landed yet
 const statusLoaded = vi.hoisted(() => ({ value: true }));
 vi.mock('../../lib/systemStatusContext', () => ({
@@ -127,6 +130,8 @@ beforeEach(() => {
     schedule: { timezone: null, days: [...EVERY_DAY], quiet_start: null, quiet_end: null },
   };
   status.email_enabled = true;
+  status.push_enabled = true;
+  auth.maxRank = 0;
   statusLoaded.value = true;
 });
 
@@ -161,6 +166,51 @@ const firstSave = async () => {
   await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
   return auth.updatePreferences.mock.calls[0][0];
 };
+
+// ── the Push column ──────────────────────────────────────────────────────
+
+it('push column hidden below rank 60', async () => {
+  auth.maxRank = 59;
+  render(<MeNotifications />);
+  await loaded();
+  const grid = screen.getByRole('table', { name: 'Notification switches' });
+  expect(within(grid).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Category', 'Inbox', 'Email']);
+  expect(screen.queryAllByRole('checkbox', { name: /^Push for / })).toHaveLength(0);
+});
+
+it('push column shows at rank 60 and up, off until the company or the person turns it on', async () => {
+  auth.maxRank = 60;
+  render(<MeNotifications />);
+  await loaded();
+  const grid = screen.getByRole('table', { name: 'Notification switches' });
+  expect(within(grid).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Category', 'Inbox', 'Email', 'Push']);
+  expect(screen.getByRole('checkbox', { name: 'Push for Wiki' })).toHaveProperty('checked', false);
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Push for Wiki' }));
+  const saved = await firstSave();
+  expect(saved.notif.switches).toEqual({ wiki: { push: true } });
+});
+
+it('push says it is not set up on the server when the status says so', async () => {
+  auth.maxRank = 60;
+  status.push_enabled = false;
+  render(<MeNotifications />);
+  await loaded();
+  const push = screen.getByRole('checkbox', { name: 'Push for Wiki' }) as HTMLInputElement;
+  expect(push.disabled).toBe(true);
+  expect(reason(push)).toBe("Push isn't set up on the server");
+});
+
+it('push stays enabled when an older API sends no push_enabled', async () => {
+  auth.maxRank = 60;
+  status.push_enabled = undefined;
+  render(<MeNotifications />);
+  await loaded();
+  const push = screen.getByRole('checkbox', { name: 'Push for Wiki' }) as HTMLInputElement;
+  expect(push.disabled).toBe(false);
+  expect(reason(push)).toBeNull();
+});
 
 // ── the "What you get" card ──────────────────────────────────────────────
 

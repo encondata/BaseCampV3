@@ -2,7 +2,7 @@ package com.serversherpa.kiosk.core.features
 
 import com.serversherpa.kiosk.core.setup.SetupState
 
-enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LOOKUP, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX }
+enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LOOKUP, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX, NOTIFICATIONS }
 
 /** One launcher tile / route. `placeholder` features open the generic
  *  "not available yet" page; `alwaysAvailable` ones ignore setup state. */
@@ -39,12 +39,17 @@ val TIMECLOCK_STATION_FEATURE = KioskFeature(FeatureId.TIMECLOCK_STATION, "timec
  *  [FEATURES], whose order is the web kiosk's). It needs no move or setup step. */
 val ROLODEX_FEATURE = KioskFeature(FeatureId.ROLODEX, "rolodex", "Rolodex", "Look up workers, edit their details, and take photos.", alwaysAvailable = true)
 
+/** Notifications (push spec decision 11): the signed-in admin's inbox, with Mark read, Snooze and
+ *  Hide. Native apps only, so not in [FEATURES]; no move or setup step, and no unread count. */
+val NOTIFICATIONS_FEATURE = KioskFeature(FeatureId.NOTIFICATIONS, "notifications", "Notifications", "Read, snooze, and hide your notifications.", alwaysAvailable = true)
+
 /** What Home shows (kiosk/src/lib/features.ts STATION_TILES; Jimmy owns these lists): a Time
  *  Clock station only Time Clock, Kiosk Setup and Settings; any other kiosk every feature, plus
- *  the Rolodex before Settings when [isAdmin] (rank 60+). Station Homes never get the Rolodex. */
+ *  the Rolodex and Notifications before Settings when [isAdmin] (rank 60+). Station Homes never
+ *  get either. */
 fun homeFeatures(stationType: String?, isAdmin: Boolean = false): List<KioskFeature> = when {
     stationType == "timeclock" -> listOf(TIMECLOCK_STATION_FEATURE, feature(FeatureId.SETUP), feature(FeatureId.SETTINGS))
-    isAdmin -> FEATURES.flatMap { if (it.id == FeatureId.SETTINGS) listOf(ROLODEX_FEATURE, it) else listOf(it) }
+    isAdmin -> FEATURES.flatMap { if (it.id == FeatureId.SETTINGS) listOf(ROLODEX_FEATURE, NOTIFICATIONS_FEATURE, it) else listOf(it) }
     else -> FEATURES
 }
 

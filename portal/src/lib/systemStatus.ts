@@ -10,6 +10,8 @@ export interface SystemStatus {
   banner: string | null;
   totp_trust_days: number;
   email_enabled: boolean;
+  /** Whether the server can send push (an FCM account is set up). Absent from an older API. */
+  push_enabled?: boolean;
   password_reset_ttl_minutes: number;
   password_min_length: number;
   /** Which optional apps this environment runs (SS_APPS). Absent from an older API. */

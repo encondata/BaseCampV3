@@ -35,9 +35,10 @@ SECURITY_CATEGORY = "security"
 
 @dataclass(frozen=True)
 class Switches:
-    """One category's Inbox and Email switches."""
+    """One category's Inbox, Email and Push switches. Push starts off."""
     inbox: bool
     email: bool
+    push: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,12 +52,15 @@ class CompanySettings:
 def _switches(stored: object) -> Switches:
     """A stored pair as Switches. Anything but a pair of real booleans (a
     wrong type, half a pair) is malformed and reads as on/on, the out-of-the-box
-    default, never as a half-guess."""
+    default, never as a half-guess. Push is read apart: a missing or non-boolean
+    `push` reads off and does not make the pair malformed (a malformed pair
+    reads push off too)."""
     if isinstance(stored, dict):
         inbox, email = stored.get("inbox"), stored.get("email")
         if isinstance(inbox, bool) and isinstance(email, bool):
-            return Switches(inbox, email)
-    return Switches(True, True)
+            push = stored.get("push")
+            return Switches(inbox, email, push if isinstance(push, bool) else False)
+    return Switches(True, True, False)
 
 
 async def load_company_settings(db: AsyncSession) -> CompanySettings:

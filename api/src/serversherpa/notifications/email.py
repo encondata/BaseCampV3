@@ -74,6 +74,8 @@ class EffectiveSwitches:
     email: bool
     inbox_source: str
     email_source: str
+    push: bool = False
+    push_source: str = "default"
 
 
 @dataclass(frozen=True)
@@ -149,23 +151,28 @@ def effective_switches(info: KindInfo | None, contact: Contact | None,
                        company: CompanySettings) -> EffectiveSwitches:
     """The recipient's switches for this kind: their own value where they set
     one, else the company default. Email needs Inbox: it is on only when the
-    person's Email value (own, else default) is on and Inbox is on too. Account
+    person's Email value (own, else default) is on and Inbox is on too; Push
+    needs Inbox the same way. Account
     security and a kind the registry does not list (inbox-only, never emailed)
     are fixed on and on, answered before the defaults are consulted: they hold
     no entry for either. A recipient with no contact has no values of their own."""
     if info is None or info.category == "security":
-        return EffectiveSwitches(True, True, "fixed", "fixed")
+        return EffectiveSwitches(True, True, "fixed", "fixed", False, "fixed")
     default = company.defaults[info.category]
     own = (contact.choice_prefs.notif.switches.get(info.category)
            if contact is not None else None)
     own_inbox = own.inbox if own is not None else None
     own_email = own.email if own is not None else None
+    own_push = own.push if own is not None else None
     inbox = default.inbox if own_inbox is None else own_inbox
     email = default.email if own_email is None else own_email
+    push = default.push if own_push is None else own_push
     return EffectiveSwitches(
         inbox=inbox, email=email and inbox,
         inbox_source="default" if own_inbox is None else "own",
-        email_source="default" if own_email is None else "own")
+        email_source="default" if own_email is None else "own",
+        push=push and inbox,
+        push_source="default" if own_push is None else "own")
 
 
 def contact_schedule(contact: Contact | None) -> Schedule:

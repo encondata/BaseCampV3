@@ -5593,6 +5593,9 @@ export interface DeviceDetail extends DeviceItem {
    *  older fixtures stay valid. */
   personal_person?: PersonalPerson | null;
   personal_biometric?: PersonalBiometric | null;
+  /** Whether that person's phone has a push registration on this device.
+   *  Optional so older fixtures stay valid. */
+  push_registered?: boolean;
   /** A Label, RFID, Dock or Time Clock station, or a kiosk holding a station key:
    *  never anyone's personal phone. Optional so older fixtures stay valid. */
   shared_station?: boolean;
@@ -6852,7 +6855,9 @@ export async function clearReadInbox(): Promise<void> {
 export type DeliveryLogEvent =
   | 'inbox_written' | 'inbox_suppressed'
   | 'email_queued' | 'email_not_queued' | 'email_held' | 'email_summarized'
-  | 'email_sent' | 'email_skipped' | 'email_retry' | 'email_failed';
+  | 'email_sent' | 'email_skipped' | 'email_retry' | 'email_failed'
+  | 'push_queued' | 'push_not_queued' | 'push_sent' | 'push_dropped' | 'push_failed'
+  | 'push_retry' | 'push_token_removed' | 'push_snoozed' | 'push_cleared';
 
 /** One recorded decision with the names it points at. `event`, `channel`,
  *  `reason` and `category` are codes; one a newer API adds shows as itself.
@@ -6904,7 +6909,7 @@ export interface DeliveryLogEntry {
  *  `notificationId` (or `outboxId`). */
 export interface DeliveryLogQuery {
   events: DeliveryLogEvent[];
-  channel: 'inbox' | 'email' | null;
+  channel: 'inbox' | 'email' | 'push' | null;
   category: NotificationCategory | null;
   since: string | null;
   notificationId?: string;
@@ -6943,6 +6948,13 @@ export type SwitchSource = 'default' | 'own' | 'fixed';
  *  where that comes from. */
 export interface DeliveryCheckSwitch { on: boolean; source: SwitchSource }
 
+/** The push answer of Check delivery. */
+export interface DeliveryCheckPush {
+  outcome: 'now' | 'not_sent';
+  reason: string | null;
+  phones: number;
+}
+
 /** The person's schedule as the decision reads it, and where it stands right
  *  now: `timezone` is the reference zone when they set none (or theirs no
  *  longer loads), `days` the days they work in week order, the quiet hours
@@ -6980,10 +6992,15 @@ export interface DeliveryCheck {
   inbox_reason: string | null;
   inbox_source: SwitchSource;
   email_enabled: boolean;
+  /** Whether the server can push at all. Optional so older fixtures stay valid. */
+  push_enabled?: boolean;
   critical: boolean;
-  switches: { inbox: DeliveryCheckSwitch; email: DeliveryCheckSwitch };
+  switches: { inbox: DeliveryCheckSwitch; email: DeliveryCheckSwitch; push?: DeliveryCheckSwitch };
   schedule: DeliveryCheckSchedule;
   outcome: 'now' | 'held' | 'not_sent' | 'direct';
+  /** The push answer: sent now to `phones` live phones, or not sent with a
+   *  reason code. Optional so older fixtures stay valid. */
+  push?: DeliveryCheckPush;
   after_summary: boolean;
   send_at: string | null;
   summary_at: string | null;
@@ -7043,13 +7060,14 @@ export async function checkDelivery(
  * PUT /auth/me/preferences; the company defaults and the critical kinds are
  * the /notifications/settings calls below. */
 
-/** One category's two switches: written to the inbox, and emailed. */
-export interface SwitchPair { inbox: boolean; email: boolean }
+/** One category's switches: written to the inbox, emailed, and pushed. A pair
+ *  with no `push` reads as push off. */
+export interface SwitchPair { inbox: boolean; email: boolean; push?: boolean }
 
 /** A person's own switch values (ui_prefs.notif.switches): only what they
  *  changed. A category or a value that is missing follows the company
  *  default. Account security is always on, so it is never here. */
-export type NotifSwitches = Partial<Record<NotificationCategory, { inbox?: boolean; email?: boolean }>>;
+export type NotifSwitches = Partial<Record<NotificationCategory, { inbox?: boolean; email?: boolean; push?: boolean }>>;
 
 /** When email may reach a person (ui_prefs.notif.schedule). `timezone` null
  *  is the company reference zone; `days` are the days they work, at least

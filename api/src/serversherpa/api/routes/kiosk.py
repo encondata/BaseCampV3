@@ -603,6 +603,26 @@ async def _bind_kiosk_session(db: AsyncSession, actor: AuthContext, device: Devi
     return session.kiosk_serial == device.serial
 
 
+async def own_device(db: AsyncSession, actor: AuthContext, *, lock: bool = False) -> Device:
+    """The caller's own phone: the kiosk Device whose serial the caller's
+    kiosk session is bound to (by its first heartbeat, _bind_kiosk_session,
+    or by a biometric sign-in). The device is never taken from the request,
+    so a session reaches only the phone it is bound to. A portal session, an
+    unbound kiosk session, or a serial with no kiosk row is 403
+    `not_this_kiosk`. `lock` reads the row FOR UPDATE."""
+    session = actor.session
+    if session.client != "kiosk" or session.kiosk_serial is None:
+        raise _err(403, "not_this_kiosk")
+    stmt = select(Device).where(Device.serial == session.kiosk_serial,
+                                Device.device_type == "kiosk")
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    device = await db.scalar(stmt)
+    if device is None:
+        raise _err(403, "not_this_kiosk")
+    return device
+
+
 async def _scan_fields(db: AsyncSession, device: Device) -> dict:
     label = None
     if device.scan_status:

@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.data
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.*
 import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.push.PushKey
 
 /** A KioskApi whose answers are set per test. Unset answers throw. */
 open class FakeKioskApi : KioskApi {
@@ -77,6 +78,51 @@ open class FakeKioskApi : KioskApi {
     override suspend fun clockOut(body: ClockOutIn) = clockOutResult(body).also { calls += "clockOut" }
     var issueStationKeyResult: (String) -> String = { "station-key-1" }
     override suspend fun issueStationKey(serial: String) = issueStationKeyResult(serial).also { calls += "issueStationKey" }
+    // ── "This is my phone" and push ──
+    // Suspending, so a test can hold a call open. Each call is recorded in `calls` first; tokens and
+    // keys go only to their own lists, never into `calls`.
+    var getPersonalResult: suspend () -> PersonalState = { PersonalState(on = false, ownerName = null) }
+    var setPersonalResult: suspend (Boolean) -> PersonalState = { on -> PersonalState(on = on, ownerName = if (on) "Tina T" else null) }
+    var registerPushResult: suspend (String) -> PushRegistration = { PushRegistration(registrationId = "reg-1", pushKey = "push-key-1") }
+    val pushRegistrations = ArrayList<String>()
+    var deletePushResult: suspend () -> Unit = { }
+    var updatePushTokenResult: suspend (String, PushKey) -> Unit = { _, _ -> }
+    val pushTokenUpdates = ArrayList<Pair<String, PushKey>>()
+    override suspend fun getPersonal(): PersonalState { calls += "getPersonal"; return getPersonalResult() }
+    override suspend fun setPersonal(on: Boolean): PersonalState { calls += "setPersonal:$on"; return setPersonalResult(on) }
+    override suspend fun registerPush(token: String): PushRegistration { calls += "registerPush"; pushRegistrations += token; return registerPushResult(token) }
+    override suspend fun deletePush() { calls += "deletePush"; deletePushResult() }
+    override suspend fun updatePushToken(token: String, key: PushKey) {
+        calls += "updatePushToken"; pushTokenUpdates += token to key; updatePushTokenResult(token, key)
+    }
+    var pushReadResult: suspend (String, PushKey) -> Unit = { _, _ -> }
+    var pushSnoozeResult: suspend (String, PushKey) -> PushSnooze = { _, _ -> PushSnooze("2026-11-17T14:37:00+00:00") }
+    /** (notification id, key) of each alert button's call. */
+    val pushActions = ArrayList<Pair<String, PushKey>>()
+    override suspend fun pushRead(notificationId: String, key: PushKey) {
+        calls += "pushRead"; pushActions += notificationId to key; pushReadResult(notificationId, key)
+    }
+    override suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze {
+        calls += "pushSnooze"; pushActions += notificationId to key; return pushSnoozeResult(notificationId, key)
+    }
+
+    // ── the app's notifications (GET/POST/DELETE /kiosk/notifications…) ──
+    // Suspending, so a test can hold a call open. Each call is recorded in `calls` first.
+    var listNotificationsResult: suspend (String?) -> KioskNotificationsPage = { KioskNotificationsPage() }
+    /** The cursor of each list call (null: the first page). */
+    val notificationCursors = ArrayList<String?>()
+    var markReadResult: suspend (String) -> Unit = { }
+    var markUnreadResult: suspend (String) -> Unit = { }
+    var snoozeResult: suspend (String) -> PushSnooze = { PushSnooze(java.time.Instant.now().plusSeconds(300).toString()) }
+    var hideResult: suspend (String) -> Unit = { }
+    override suspend fun listNotifications(cursor: String?): KioskNotificationsPage {
+        calls += "listNotifications"; notificationCursors += cursor; return listNotificationsResult(cursor)
+    }
+    override suspend fun markRead(notificationId: String) { calls += "markRead:$notificationId"; markReadResult(notificationId) }
+    override suspend fun markUnread(notificationId: String) { calls += "markUnread:$notificationId"; markUnreadResult(notificationId) }
+    override suspend fun snooze(notificationId: String): PushSnooze { calls += "snooze:$notificationId"; return snoozeResult(notificationId) }
+    override suspend fun hide(notificationId: String) { calls += "hide:$notificationId"; hideResult(notificationId) }
+
 
     // ── rolodex ─────────────────────────────────────────────────────
     // Suspending, so a test can hold a call open (a double tap while saving). Each call is

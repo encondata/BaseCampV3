@@ -177,14 +177,17 @@ class PrintLabelsViewModelTest {
         h.db.close()
     }
 
-    @Test fun aSerialMatchesButAnRfidTagDoesNot() = runTest {
+    @Test fun aSerialAndAnRfidValueBothPrintTheAssetsLabel() = runTest {
         val h = harness("p2")
-        h.vm.onScan("100348"); settle()
-        assertEquals("No asset matches that scan.", h.vm.entries.value[0].message)
-        assertTrue(h.sent.isEmpty())
+        h.vm.onScan("100348"); settle() // the RFID value, read from its barcode
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
         h.vm.onScan("SN1"); settle()
         assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
-        assertEquals(listOf("a1"), h.outbox.snapshot.value.rows.map { it.asset?.id })
+        assertEquals(2, h.sent.size)
+        assertEquals(listOf("a1", "a1"), h.outbox.snapshot.value.rows.map { it.asset?.id })
+        h.vm.onScan("999999"); settle()
+        assertEquals("No asset matches that scan.", h.vm.entries.value[0].message)
+        assertEquals(2, h.sent.size)
         h.db.close()
     }
 

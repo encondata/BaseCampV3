@@ -17,6 +17,13 @@ import {
 } from '../../lib/api';
 
 const auth = vi.hoisted(() => ({ canChange: true }));
+const sysStatus = vi.hoisted(() => ({ push_enabled: true as boolean | undefined, loaded: true }));
+vi.mock('../../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({
+    status: { push_enabled: sysStatus.push_enabled }, loaded: sysStatus.loaded, refresh: () => {},
+  }),
+}));
+
 vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     can: (resource: string, action: string) =>
@@ -86,7 +93,7 @@ const criticalCard = () => screen.getByRole('region', { name: CRITICAL_NAME });
 
 const saveIn = (card: HTMLElement) => within(card).getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 
-const gridSwitch = (channel: 'Inbox' | 'Email', category: string) =>
+const gridSwitch = (channel: 'Inbox' | 'Email' | 'Push', category: string) =>
   within(defaultsCard()).getByRole('checkbox', { name: `${channel} for ${category}` }) as HTMLInputElement;
 
 const critSwitch = (label: string) =>
@@ -234,6 +241,39 @@ it('saving the defaults sends only `defaults`, with only the categories that cha
   const body = api.updateNotificationSettings.mock.calls[0][0];
   expect(Object.keys(body)).toEqual(['defaults']);
   expect(body.defaults).toEqual({ wiki: { inbox: true, email: false } });
+});
+
+it('the defaults grid has a Push column: off to start, and saving sends the whole pair with push', async () => {
+  const user = userEvent.setup();
+  api.updateNotificationSettings.mockResolvedValue(structuredClone(SETTINGS));
+  await mount();
+  expect(gridSwitch('Push', 'Wiki').checked).toBe(false);   // a stored pair with no push reads off
+  expect(gridSwitch('Push', 'Wiki').disabled).toBe(false);
+  expect(saveIn(defaultsCard()).disabled).toBe(true);
+  await user.click(gridSwitch('Push', 'Wiki'));
+  expect(saveIn(defaultsCard()).disabled).toBe(false);
+  await user.click(saveIn(defaultsCard()));
+  await waitFor(() => expect(api.updateNotificationSettings).toHaveBeenCalledTimes(1));
+  expect(api.updateNotificationSettings.mock.calls[0][0].defaults)
+    .toEqual({ wiki: { inbox: true, email: true, push: true } });
+});
+
+it('Push is disabled with its reason when the server has no push, editable when it has', async () => {
+  sysStatus.push_enabled = false;
+  await mount();
+  const off = gridSwitch('Push', 'Wiki');
+  expect(off.disabled).toBe(true);
+  expect(off.closest('[title]')?.getAttribute('title')).toBe("Push isn't set up on the server");
+  expect(gridSwitch('Email', 'Wiki').disabled).toBe(false);
+  cleanup();
+  sysStatus.push_enabled = true;
+  await mount();
+  expect(gridSwitch('Push', 'Wiki').disabled).toBe(false);
+  cleanup();
+  sysStatus.push_enabled = undefined;   // an older API says nothing: blocks nothing
+  await mount();
+  expect(gridSwitch('Push', 'Wiki').disabled).toBe(false);
+  sysStatus.push_enabled = true;
 });
 
 it('a category left alone is not sent, so a tab loaded before another admin\'s save keeps their change', async () => {

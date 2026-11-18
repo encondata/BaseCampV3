@@ -42,6 +42,10 @@ val FEATURE_ICONS: Map<FeatureId, ImageVector> = mapOf(
         "M7 11h26a2 2 0 0 1 2 2v18a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V13a2 2 0 0 1 2-2z", "M14 6v5M26 6v5",
         circle(14f, 19.5f, 3.5f), "M8.5 29a5.5 5.5 0 0 1 11 0", "M23 19h7M23 25h5",
     )),
+    // A bell: the dome on its rim, the clapper below and the hanger on top.
+    FeatureId.NOTIFICATIONS to icon("notifications", strokes = listOf(
+        "M11 27V18a9 9 0 0 1 18 0v9l3 4H8l3-4z", "M16.5 34a3.5 3.5 0 0 0 7 0", "M20 5v4",
+    )),
 )
 
 @Composable

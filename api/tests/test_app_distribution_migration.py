@@ -1,6 +1,6 @@
-"""Migration 0131: the `app_distribution` permission resource and its grants.
+"""Migration 0133: the `app_distribution` permission resource and its grants.
 
-The round trip runs on a throwaway database (`<SS_TEST_DB>_m0131`) so the
+The round trip runs on a throwaway database (`<SS_TEST_DB>_m0133`) so the
 shared test DB stays at head."""
 
 import os
@@ -12,7 +12,7 @@ from sqlalchemy.engine import make_url
 from serversherpa.config import get_settings
 from tests.test_migration_0099_kiosk_config import _alembic
 
-THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_m0131"
+THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_m0133"
 
 FULL = {"view", "add", "change", "delete"}
 GRANTED_ROLES = ("developer", "founder", "super_admin", "admin")
@@ -53,7 +53,7 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         for role in NO_GRANT_ROLES:
             assert up[role] == set(), role
 
-    _alembic(throwaway_url, "downgrade", "0130")
+    _alembic(throwaway_url, "downgrade", "0132")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert all(g == set() for g in _grants(conn).values())
         assert conn.execute(

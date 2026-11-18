@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     spaces_presign_ttl_seconds: int = 600
     spaces_use_path_style: bool = False
 
+    # ── Push ───────────────────────────────────────────────
+    # Path to the FCM service-account key. Empty: push is not set up.
+    fcm_service_account_file: str = ""
+
     # ── Email ──────────────────────────────────────────────
     smtp_host: str = ""
     smtp_port: int = 587

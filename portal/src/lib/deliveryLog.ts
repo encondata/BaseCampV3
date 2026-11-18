@@ -27,6 +27,8 @@ export const DELIVERY_LOG_EVENTS: readonly DeliveryLogEvent[] = [
   'inbox_written', 'inbox_suppressed', 'email_queued', 'email_not_queued',
   'email_held', 'email_summarized',
   'email_sent', 'email_skipped', 'email_retry', 'email_failed',
+  'push_queued', 'push_not_queued', 'push_sent', 'push_dropped', 'push_failed',
+  'push_retry', 'push_token_removed', 'push_snoozed', 'push_cleared',
 ];
 
 export const EVENT_LABELS: Record<DeliveryLogEvent, string> = {
@@ -40,6 +42,15 @@ export const EVENT_LABELS: Record<DeliveryLogEvent, string> = {
   email_skipped: 'Dropped',
   email_retry: 'Retrying',
   email_failed: 'Failed',
+  push_queued: 'Push queued',
+  push_not_queued: 'Not pushed',
+  push_sent: 'Push sent',
+  push_dropped: 'Push dropped',
+  push_failed: 'Push failed',
+  push_retry: 'Push retrying',
+  push_token_removed: 'Phone removed',
+  push_snoozed: 'Push snoozed',
+  push_cleared: 'Push cleared',
 };
 
 /** The map's own entry for `code` (never an Object.prototype member). */
@@ -84,13 +95,38 @@ export const REASON_LABELS: Record<string, string> = {
   // retired in Phase 1: groups no longer decide; only rows logged before it carry these
   no_email_group: 'No group emails this category',
   blocked_by_schedule: "Every group's schedule blocks it",
+  // push was not queued (push_not_queued; Check delivery's Push line)
+  push_not_set_up: "Push isn't set up on the server",
+  security_category: "Account security notices don't push",
+  category_no_push: 'Push is off for this category',
+  not_admin: 'Push is for admins only',
+  no_phone: 'No phone set up for push',
+  // a queued push dropped before it was sent (push_dropped)
+  deleted: 'Inbox item no longer exists',
+  // a queued clear dropped: the item was pushed again before the clear went
+  alerted_again: 'Pushed again before the phone cleared it',
+  // why a push row was queued (push_queued)
+  snooze: 'Snoozed',
+  clear: 'Clearing the phone',
+};
+
+/** The same codes where they mean "no push": a few differ from the inbox and
+ *  email words ("Inbox is off for this category" says why push needs Inbox). */
+const PUSH_REASON_OVERRIDES: Record<string, string> = {
+  category_off: 'Inbox is off for this category',
+  recipient_inactive: 'Account is disabled or archived',
+  quiet_hours: 'Quiet hours: no push unless critical',
 };
 
 /** A reason code in words, or the code itself when it is new. */
 export const reasonLabel = (code: string): string => own(REASON_LABELS, code) ?? code;
 
-/** The log's channels in words (the inbox, and the one live sending channel). */
-export const LOG_CHANNEL_LABELS: Record<string, string> = { inbox: 'Inbox', email: 'Email' };
+/** A reason code for a push (Check delivery's Push line, the push events). */
+export const pushReasonLabel = (code: string): string =>
+  own(PUSH_REASON_OVERRIDES, code) ?? reasonLabel(code);
+
+/** The log's channels in words (the inbox and the two sending channels). */
+export const LOG_CHANNEL_LABELS: Record<string, string> = { inbox: 'Inbox', email: 'Email', push: 'Push' };
 export const channelLabel = (code: string): string => own(LOG_CHANNEL_LABELS, code) ?? code;
 
 /** Where an email's address came from (detail.via, the check's address_source). */
@@ -135,7 +171,12 @@ export function outcomeOf(e: DeliveryLogEntry): { label: string; chip: string } 
     case 'email_summarized': return { label, chip: 'c-blue' };
     case 'email_sent': return { label, chip: 'c-green' };
     case 'email_retry': return { label, chip: 'c-amber' };
-    case 'email_failed': return { label, chip: 'c-red' };
+    case 'email_failed':
+    case 'push_failed': return { label, chip: 'c-red' };
+    case 'push_sent': return { label, chip: 'c-green' };
+    case 'push_queued': return { label, chip: 'c-blue' };
+    case 'push_retry':
+    case 'push_snoozed': return { label, chip: 'c-amber' };
     default: return { label, chip: 'c-slate' };
   }
 }
@@ -150,6 +191,12 @@ export function shortWhen(iso: string): string {
   const h = d.getHours();
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${DAY_NAMES[d.getDay()]} ${h12}:${String(d.getMinutes()).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+/** A moment as local 24-hour "HH:MM". */
+function clock(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 const text = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
@@ -272,6 +319,30 @@ export function describeEntry(e: DeliveryLogEntry): string {
       const tries = attempts !== null ? ` after ${attempts} attempt${attempts === 1 ? '' : 's'}` : '';
       return `Gave up${tries}${err ? ` (${err})` : ''}`;
     }
+    case 'push_sent':
+    case 'push_cleared': {
+      const phones = count(d.phones);
+      return phones === null ? '' : `Sent to ${phones} phone${phones === 1 ? '' : 's'}`;
+    }
+    case 'push_retry': {
+      const attempts = count(d.attempts);
+      return `${attempts !== null ? `Attempt ${attempts}` : 'An attempt'} failed`
+        + `${e.reason ? ` (${e.reason})` : ''} — retrying`;
+    }
+    case 'push_failed': {
+      const attempts = count(d.attempts);
+      const tries = attempts !== null ? ` after ${attempts} attempt${attempts === 1 ? '' : 's'}` : '';
+      return `Gave up${tries}${e.reason ? ` (${e.reason})` : ''}`;
+    }
+    case 'push_snoozed': {
+      const until = text(d.until);
+      return until ? `Until ${clock(until)}` : '';
+    }
+    case 'push_queued':
+    case 'push_not_queued':
+    case 'push_dropped':
+    case 'push_token_removed':
+      return e.reason ? pushReasonLabel(e.reason) : '';
     case 'inbox_suppressed':
     case 'email_not_queued': {
       // A switch that turned it down (category_off, category_inbox_only) logs

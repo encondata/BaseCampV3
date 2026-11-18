@@ -24,6 +24,9 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
     <!-- Zebra's RFID library asks for this for its USB scanner path, which the app never uses. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <!-- Push notifications on a personal phone (Android 13+ asks for it when "This is my phone" is
+         turned on in Settings › This Kiosk). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".KioskApplication"
@@ -47,6 +50,23 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- No FCM token until "This is my phone" is turned on (data/push/FirebaseFcmTokens.kt
+             turns auto-init on then, and off again with it), so a shared kiosk never registers. -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+        <!-- Push messages and token refreshes (data/push/KioskMessagingService.kt). -->
+        <service
+            android:name=".data.push.KioskMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <!-- A push alert's Snooze and Mark read buttons; only the app's own PendingIntents reach it. -->
+        <receiver
+            android:name=".data.push.PushActionReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

@@ -34,6 +34,10 @@ import kotlinx.coroutines.launch
  * Welcome, never the sign-in page, with or without its key (Welcome then says it is waiting for
  * one). Welcome lives on Home ([stationHome]); an anonymous station on any other route goes there.
  * Every other route still needs someone signed in.
+ *
+ * The guard keeps no intended route. A tapped push alert's route is the one exception, and it is
+ * held outside every route: the container's one-shot PendingOpen, which the shell's
+ * PendingNotificationRedirect takes after sign-in.
  */
 @Composable
 fun KioskGuard(nav: NavHostController, stationHome: Boolean = false, content: @Composable () -> Unit) {

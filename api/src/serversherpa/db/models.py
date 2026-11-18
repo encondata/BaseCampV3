@@ -2154,6 +2154,7 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     read_at: Mapped[datetime | None]
     dismissed_at: Mapped[datetime | None]
+    push_snoozed_until: Mapped[datetime | None]    # migration 0131: no push until then
 
 
 class NotificationLog(Base):
@@ -2210,6 +2211,68 @@ class NotificationHeld(Base):
         CheckConstraint("reason IN ('quiet_hours', 'inactive_day')",
                         name="ck_notification_held_reason"),
         Index("notification_held_person_idx", "person_id", "held_at"),
+    )
+
+
+class PushRegistration(Base):
+    """One device's push registration (migration 0131): its provider token and
+    the hash of the per-device secret it uses to refresh or remove the row.
+    A device's or person's deletion takes the row along."""
+
+    __tablename__ = "push_registrations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), unique=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
+    platform: Mapped[str]
+    provider: Mapped[str]
+    token: Mapped[str] = mapped_column(unique=True)
+    secret_hash: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    last_sent_at: Mapped[datetime | None]
+    last_error: Mapped[str | None]
+
+    __table_args__ = (
+        CheckConstraint("platform IN ('android', 'ios')",
+                        name="ck_push_registrations_platform"),
+        CheckConstraint("provider IN ('fcm', 'apns')",
+                        name="ck_push_registrations_provider"),
+        Index("push_registrations_person_idx", "person_id"),
+    )
+
+
+class PushOutbox(Base):
+    """One push message waiting to go out, or handled (migration 0131). A
+    notification has at most one queued row per message type."""
+
+    __tablename__ = "push_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    notification_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notifications.id", ondelete="CASCADE"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
+    send_at: Mapped[datetime]
+    reason: Mapped[str]                    # new | snooze | clear
+    state: Mapped[str]                     # queued | sent | dropped | failed
+    attempts: Mapped[int] = mapped_column(server_default=text("0"))
+    last_error: Mapped[str | None]
+    message_type: Mapped[str]              # notification | clear
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    handled_at: Mapped[datetime | None]
+
+    __table_args__ = (
+        CheckConstraint("reason IN ('new', 'snooze', 'clear')", name="ck_push_outbox_reason"),
+        CheckConstraint("state IN ('queued', 'sent', 'dropped', 'failed')",
+                        name="ck_push_outbox_state"),
+        CheckConstraint("message_type IN ('notification', 'clear')",
+                        name="ck_push_outbox_message_type"),
+        Index("push_outbox_one_queued_idx", "notification_id", "message_type", unique=True,
+              postgresql_where=text("state = 'queued'")),
+        Index("push_outbox_state_send_idx", "state", "send_at"),
     )
 
 

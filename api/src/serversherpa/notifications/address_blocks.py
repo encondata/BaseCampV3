@@ -18,6 +18,7 @@ from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.db.models import AddressBlock, Person, PersonRole, Role, UserAccount
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.live import signal_inboxes
+from serversherpa.notifications.push import on_rows_read
 
 KIND = "address_blocked"
 LINK = "/system/blocked-addresses"
@@ -92,17 +93,22 @@ async def resolve_block(db: AsyncSession, address: str, blocked_at: datetime,
     block of the address that ended on its own stay as they are. A card
     already read keeps its first read time. Each admin whose card changed
     gets a live inbox signal, so their toast goes away without a poll."""
+    where = ("WHERE kind = :kind AND payload ->> 'address' = CAST(:address AS text) "
+             "AND payload ->> 'blocked_at' = CAST(:blocked_at AS text) "
+             "AND payload ->> 'state' = 'open'")
+    params = {"state": state, "by": decided_by, "kind": KIND, "address": address,
+              "blocked_at": block_key(blocked_at)}
+    newly_read = [(r.id, r.person_id) for r in await db.execute(text(
+        "SELECT id, person_id FROM notifications " + where + " AND read_at IS NULL"),
+        params)]
     changed = await db.scalars(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
         "'decided_by', CAST(:by AS text)), "
         "read_at = COALESCE(read_at, now()) "
-        "WHERE kind = :kind AND payload ->> 'address' = CAST(:address AS text) "
-        "AND payload ->> 'blocked_at' = CAST(:blocked_at AS text) "
-        "AND payload ->> 'state' = 'open' RETURNING person_id"),
-        {"state": state, "by": decided_by, "kind": KIND, "address": address,
-         "blocked_at": block_key(blocked_at)})
+        + where + " RETURNING person_id"), params)
     await signal_inboxes(db, changed.all())
+    await on_rows_read(db, newly_read)
 
 
 async def decided_by_name(db: AsyncSession, actor_id: uuid.UUID | None) -> str:

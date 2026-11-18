@@ -124,6 +124,8 @@ def test_the_writer_knows_exactly_these_events():
         "inbox_written", "inbox_suppressed",
         "email_queued", "email_not_queued", "email_held", "email_summarized",
         "email_sent", "email_skipped", "email_retry", "email_failed",
+        "push_queued", "push_not_queued", "push_sent", "push_dropped", "push_failed",
+        "push_retry", "push_token_removed", "push_snoozed", "push_cleared",
     )
 
 
