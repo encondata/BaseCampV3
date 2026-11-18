@@ -152,7 +152,7 @@ async def test_build_sort_round_trips_as_int(db):
     app = App(platform="ios", identifier="com.example.hello", name="Hello")
     db.add(app)
     await db.flush()
-    keys = [ios_build_sort(b) for b in ("1.9", "1.10", "999999999.999999999.999999999.1")]
+    keys = [ios_build_sort(b) for b in ("1.9", "1.10", "99999999999.999999999.999999999.999999999")]
     for i, key in enumerate(keys):
         db.add(AppVersion(app_id=app.id, version_name="1", build=str(i), build_sort=key,
                           file_key=f"ipa/{i}.ipa", size=1, sha256="0" * 64,

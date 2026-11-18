@@ -50,8 +50,8 @@ def inspect_ipa(path: Path) -> PackageInfo:
             build_sort = ios_build_sort(build)
         except ValueError:
             raise PackageError(
-                f"The build number {build} isn't up to four numbers of at most 9 digits, "
-                "separated by dots"
+                f"The build number {build} isn't up to four numbers separated by dots "
+                "(the first at most 11 digits, the rest at most 9)"
             ) from None
 
         profile_bytes = read_member(zf, app_dir + "embedded.mobileprovision",

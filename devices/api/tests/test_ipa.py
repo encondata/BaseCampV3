@@ -129,8 +129,8 @@ def test_ipa_missing_identity_raises(tmp_path):
     with pytest.raises(PackageError) as caught:
         inspect_ipa(bad_build)
     assert caught.value.message == (
-        "The build number 1.0b3 isn't up to four numbers of at most 9 digits, "
-        "separated by dots")
+        "The build number 1.0b3 isn't up to four numbers separated by dots "
+        "(the first at most 11 digits, the rest at most 9)")
 
 
 def test_cgbi_round_trip_matches_original_pixels():
