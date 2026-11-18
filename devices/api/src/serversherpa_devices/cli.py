@@ -1,5 +1,8 @@
 """`devices` command line: the API server and the background worker."""
 
+import asyncio
+from pathlib import Path
+
 import typer
 
 app = typer.Typer(help="ServerSherpa Devices — app distribution for crew devices.",
@@ -20,7 +23,41 @@ def serve(
 
 
 @app.command()
-def worker() -> None:
+def worker(
+    poll_seconds: float = typer.Option(2.0, help="Idle sleep between queue polls (seconds)."),
+    once: bool = typer.Option(False, help="Process at most one job, then exit."),
+    reload: bool = typer.Option(False, help="Restart whenever the code changes (development)."),
+) -> None:
     """Run the background worker (Apple registration, profiles, re-signing)."""
-    typer.echo("The devices worker isn't built yet.")
-    raise typer.Exit(1)
+    from serversherpa_devices.worker import run
+
+    if reload and once:
+        typer.secho("--once can't be combined with --reload", fg="red")
+        raise typer.Exit(1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]
+        typer.secho(f"[devices worker] dev reload, watching {src_dir}", fg="cyan")
+        watchfiles.run_process(src_dir, target=run.reload_child, args=(poll_seconds,))
+        return
+
+    run.configure_logging()
+
+    async def _run() -> None:
+        from serversherpa_devices.db.engine import dispose_engine
+
+        try:
+            if once:
+                worked = await run.run_once()
+                typer.secho("processed 1 job" if worked else "queue empty",
+                            fg="green" if worked else "yellow")
+            else:
+                await run.run_forever(poll_seconds)
+        finally:
+            await dispose_engine()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass

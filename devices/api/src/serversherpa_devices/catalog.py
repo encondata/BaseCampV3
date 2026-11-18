@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.db.models import App, AppleSettings, AppVersion, Upload
 from serversherpa_devices.services import storage
+from serversherpa_devices.worker import queue as worker_queue
 
 log = logging.getLogger(__name__)
 
@@ -24,13 +25,14 @@ TOO_LARGE = "Files over 500 MB aren't accepted"
 STALE_UPLOAD_AGE = dt.timedelta(hours=24)
 _STALE_BATCH = 100
 
-# Replaced in Task 11 by worker.queue.enqueue: `async def enqueue(db, kind, payload) -> Job`.
-enqueue = lambda *a, **k: None
+# The worker's queue. Looked up through this module on every call, so a test
+# can swap it (for a plain function, too).
+enqueue = worker_queue.enqueue
 
 
 async def queue_job(db: AsyncSession, kind: str, payload: dict) -> None:
     """Queue a worker job in the caller's transaction (through `enqueue`,
-    sync stub or async queue alike)."""
+    awaited when it returns an awaitable)."""
     result = enqueue(db, kind, payload)
     if inspect.isawaitable(result):
         await result
