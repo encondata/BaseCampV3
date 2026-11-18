@@ -5,12 +5,12 @@
  * is the model), each with its own Save, disabled until that card differs from
  * what the server last answered:
  *
- *  - "What people get by default": the Inbox / Email grid (SwitchGrid in
+ *  - "What people get by default": the Inbox / Email / Push grid (SwitchGrid in
  *    defaults mode) on a draft. Save sends `{defaults}` and nothing else, and
  *    only the categories changed here: the server merges per category, so a
  *    tab loaded before another admin's save leaves their change alone.
  *    Admins set the defaults whether or not the server can send email right
- *    now, so Email is never switched off here for that.
+ *    now, so Email and Push are never switched off here for that.
  *  - "Critical notifications": every kind that can be emailed, with a Critical
  *    switch. The two account security kinds say "Always" instead of a switch:
  *    they are critical in code and never stored. Save sends `{critical_kinds}`
@@ -79,7 +79,7 @@ function message(err: unknown): string {
 }
 
 const samePair = (a: SwitchPair | undefined, b: SwitchPair | undefined): boolean =>
-  a?.inbox === b?.inbox && a?.email === b?.email;
+  a?.inbox === b?.inbox && a?.email === b?.email && (a?.push ?? false) === (b?.push ?? false);
 
 function sameDefaults(a: Record<string, SwitchPair>, b: Record<string, SwitchPair>): boolean {
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].every((key) => samePair(a[key], b[key]));

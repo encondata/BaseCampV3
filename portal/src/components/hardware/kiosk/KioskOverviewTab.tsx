@@ -107,6 +107,11 @@ function PersonalDevice({ detail: d, canEdit, onSaved }: {
                     onClick={() => void forget()}>Forget fingerprint</button>
           )}
         </span>
+        {person && !shared && (
+          <div className="set-note" style={{ padding: 0, margin: '4px 0 0' }}>
+            {d.push_registered ? 'Push: on' : 'Push: off'}
+          </div>
+        )}
         {error && <p className="pf-error" role="alert" style={{ margin: '6px 0 0' }}>{error}</p>}
       </dd>
       {picking && (

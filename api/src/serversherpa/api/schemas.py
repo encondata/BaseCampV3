@@ -2749,6 +2749,7 @@ class SystemStatusOut(BaseModel):
     banner: str | None
     totp_trust_days: int
     email_enabled: bool = False
+    push_enabled: bool = False
     password_reset_ttl_minutes: int = 15
     password_min_length: int = 8
     background: BackgroundStatusOut | None = None
@@ -3727,6 +3728,8 @@ class DeviceDetail(DeviceItem):
     # person's fingerprint key on it is live (null when nobody's)
     personal_person: PersonalPersonOut | None = None
     personal_biometric: PersonalBiometricOut | None = None
+    # whether that person's push registration exists on this device
+    push_registered: bool = False
     # a Label, RFID or Time Clock station, or any kiosk holding a station
     # key: never anyone's personal phone (biometric.shared_station)
     shared_station: bool = False

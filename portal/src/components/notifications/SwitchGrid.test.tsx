@@ -27,7 +27,8 @@ const LABELS = [
 ];
 
 type Extra = { defaults?: Record<string, SwitchPair> | null; own?: NotifSwitches;
-  emailEnabled?: boolean | null; disabled?: boolean };
+  emailEnabled?: boolean | null; pushEnabled?: boolean | null; showPush?: boolean;
+  disabled?: boolean };
 
 /** A person's grid; returns the onChange spy. */
 function person(extra: Extra = {}) {
@@ -43,7 +44,7 @@ function defaultsGrid(extra: Extra = {}) {
   return onChange;
 }
 
-const sw = (channel: 'Inbox' | 'Email', category: string) =>
+const sw = (channel: 'Inbox' | 'Email' | 'Push', category: string) =>
   screen.getByRole('checkbox', { name: `${channel} for ${category}` }) as HTMLInputElement;
 
 /** The reason a switch gives for being off limits: the title of what wraps it. */
@@ -74,15 +75,72 @@ it('lists one row per category in registry order, with the design\'s description
   ].forEach((text) => expect(screen.getByText(text)).toBeTruthy());
 });
 
-it('has Category, Inbox and Email columns', () => {
+it('has Category, Inbox, Email and Push columns', () => {
   person();
-  expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Category', 'Inbox', 'Email']);
+  expect(screen.getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Category', 'Inbox', 'Email', 'Push']);
+});
+
+it('renders Push column', async () => {
+  const onChange = defaultsGrid({ defaults: { ...DEFAULTS, wiki: { inbox: true, email: true, push: true } } });
+  expect(sw('Push', 'Wiki').checked).toBe(true);
+  expect(sw('Push', 'Reports & labels').checked).toBe(false);   // a pair with no push reads off
+  expect(screen.getAllByRole('checkbox', { name: /^Push for / })).toHaveLength(11);
+  await userEvent.click(sw('Push', 'Reports & labels'));
+  expect(onChange).toHaveBeenCalledWith('reports', { inbox: true, email: true, push: true });
+  // account security never pushes
+  expect(within(row('Account security')).getByText('Never').classList.contains('chip')).toBe(true);
+  expect(within(row('Account security')).queryAllByRole('checkbox')).toHaveLength(0);
+});
+
+it('person mode: flipping Push on reports the person\'s own value, and back clears it', async () => {
+  const onChange = person();
+  await userEvent.click(sw('Push', 'Wiki'));
+  expect(onChange).toHaveBeenCalledWith('wiki', { push: true });
+  cleanup();
+  const again = person({ own: { wiki: { push: true } } });
+  expect(within(row('Wiki')).getByText('Your choice')).toBeTruthy();
+  await userEvent.click(sw('Push', 'Wiki'));
+  expect(again).toHaveBeenCalledWith('wiki', undefined);
+});
+
+it('person mode: the Push column can be left out', () => {
+  person({ showPush: false });
+  expect(screen.getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Category', 'Inbox', 'Email']);
+  expect(screen.queryAllByRole('checkbox', { name: /^Push for / })).toHaveLength(0);
+});
+
+it('push disabled when inbox off', () => {
+  person({ defaults: { ...DEFAULTS, reports: { inbox: true, email: true, push: true } },
+    own: { reports: { inbox: false } } });
+  const push = sw('Push', 'Reports & labels');
+  expect(push.checked).toBe(false);           // the default's Push is on; with no Inbox it reads off
+  expect(push.disabled).toBe(true);
+  expect(reason(push)).toBe('Turn on Inbox to get push');
+  expect(reason(sw('Push', 'Wiki'))).toBeNull();
+});
+
+it('push disabled when not set up', () => {
+  person({ pushEnabled: false, own: { reports: { push: true } } });
+  LABELS.forEach((label) => {
+    const push = sw('Push', label);
+    expect(push.disabled).toBe(true);
+    expect(reason(push)).toBe("Push isn't set up on the server");
+  });
+  expect(sw('Push', 'Reports & labels').checked).toBe(true);   // own choice still shown, only inert
+  expect(sw('Inbox', 'Wiki').disabled).toBe(false);
+});
+
+it('pushEnabled=null (not known yet) blocks nothing', () => {
+  person({ pushEnabled: null });
+  expect(sw('Push', 'Wiki').disabled).toBe(false);
 });
 
 it('names every switch "{Channel} for {Category}"', () => {
   person();
   const names = screen.getAllByRole('checkbox').map((c) => c.getAttribute('aria-label'));
-  expect(names).toEqual(LABELS.flatMap((l) => [`Inbox for ${l}`, `Email for ${l}`]));
+  expect(names).toEqual(LABELS.flatMap((l) => [`Inbox for ${l}`, `Email for ${l}`, `Push for ${l}`]));
 });
 
 // ── person mode ────────────────────────────────────────────────────────
@@ -214,7 +272,7 @@ it('defaults mode: no state line and no way back, the row is the default itself'
   expect(screen.queryByText('Company default')).toBeNull();
   expect(screen.queryByText('Your choice')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Use company default' })).toBeNull();
-  expect(screen.getAllByRole('checkbox')).toHaveLength(22);
+  expect(screen.getAllByRole('checkbox')).toHaveLength(33);
   expect(sw('Email', 'Reports & labels').checked).toBe(true);
 });
 
@@ -279,7 +337,7 @@ it('emailEnabled=null (not known yet) blocks nothing', () => {
 it('while the defaults are still loading every switch is disabled and says nothing', () => {
   person({ defaults: null, own: { reports: { email: false } } });
   const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
-  expect(boxes).toHaveLength(22);
+  expect(boxes).toHaveLength(33);
   expect(boxes.every((b) => b.disabled)).toBe(true);
   expect(boxes.every((b) => !b.checked)).toBe(true);
   expect(boxes.every((b) => reason(b) === null)).toBe(true);
@@ -321,7 +379,7 @@ it('uses house controls only: every checkbox is inside a .switch, and there is n
     <SwitchGrid mode="person" defaults={DEFAULTS} emailEnabled onChange={() => {}}
                 own={{ reports: { email: false }, wiki: { inbox: false } }} />);
   const boxes = [...container.querySelectorAll('input[type="checkbox"]')];
-  expect(boxes).toHaveLength(22);
+  expect(boxes).toHaveLength(33);
   expect(boxes.every((b) => b.closest('label.switch'))).toBe(true);
   expect(container.querySelector('select')).toBeNull();
   expect(container.querySelector('input[type="time"]')).toBeNull();

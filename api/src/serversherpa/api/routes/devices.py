@@ -28,7 +28,7 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     AuditLog, Device, DeviceDhcpLease, Initiative, KioskSound, Person, ProcessedScan,
-    RawScan, Site, StatusValue, UserAccount,
+    PushRegistration, RawScan, Site, StatusValue, UserAccount,
 )
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.services import biometric, kiosk_config, push_registrations, station_keys
@@ -642,7 +642,12 @@ async def _detail_for(db: DbSession, device_id: uuid.UUID) -> dict:
         key = await biometric.live_key(db, owner.id, d.id)
         personal_biometric = {"on": key is not None,
                               "renews_at": biometric.renews_at(key) if key else None}
+    # push: a registration this person made on this device (ids only, never the token)
+    push_registered = owner is not None and await db.scalar(
+        select(PushRegistration.id).where(PushRegistration.device_id == d.id,
+                                          PushRegistration.person_id == owner.id)) is not None
     return item | {
+        "push_registered": push_registered,
         "personal_person": personal_person,
         "personal_biometric": personal_biometric,
         "shared_station": biometric.shared_station(d),

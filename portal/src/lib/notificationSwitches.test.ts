@@ -51,9 +51,9 @@ describe('CATEGORY_DESCRIPTIONS', () => {
 
 describe('effective', () => {
   it('follows the default when the person has set nothing', () => {
-    expect(effective(undefined, ON)).toEqual({ inbox: true, email: true });
-    expect(effective({}, { inbox: true, email: false })).toEqual({ inbox: true, email: false });
-    expect(effective(undefined, { inbox: false, email: false })).toEqual({ inbox: false, email: false });
+    expect(effective(undefined, ON)).toMatchObject({ inbox: true, email: true });
+    expect(effective({}, { inbox: true, email: false })).toMatchObject({ inbox: true, email: false });
+    expect(effective(undefined, { inbox: false, email: false })).toMatchObject({ inbox: false, email: false });
   });
 
   it.each([
@@ -63,24 +63,42 @@ describe('effective', () => {
     [{ inbox: false, email: true }, { inbox: true, email: true }, false, false],
     [{ inbox: false, email: false }, { inbox: true, email: true }, false, false],
   ])('own %j over default %j gives inbox %s, email %s', (own, def, inbox, email) => {
-    expect(effective(own, def)).toEqual({ inbox, email });
+    expect(effective(own, def)).toMatchObject({ inbox, email });
   });
 
   it('takes each value on its own: one set, the other follows the default', () => {
-    expect(effective({ email: false }, ON)).toEqual({ inbox: true, email: false });
-    expect(effective({ inbox: false }, { inbox: true, email: false })).toEqual({ inbox: false, email: false });
-    expect(effective({ email: true }, { inbox: true, email: false })).toEqual({ inbox: true, email: true });
+    expect(effective({ email: false }, ON)).toMatchObject({ inbox: true, email: false });
+    expect(effective({ inbox: false }, { inbox: true, email: false })).toMatchObject({ inbox: false, email: false });
+    expect(effective({ email: true }, { inbox: true, email: false })).toMatchObject({ inbox: true, email: true });
   });
 
   it('turns Email off while Inbox is off, whoever set which', () => {
     // own inbox off, default email on: Email needs Inbox
-    expect(effective({ inbox: false }, ON)).toEqual({ inbox: false, email: false });
+    expect(effective({ inbox: false }, ON)).toMatchObject({ inbox: false, email: false });
     // the default's inbox off, the person's own email on
-    expect(effective({ email: true }, { inbox: false, email: false })).toEqual({ inbox: false, email: false });
+    expect(effective({ email: true }, { inbox: false, email: false })).toMatchObject({ inbox: false, email: false });
+  });
+
+  it('reads Push off for a default with no push value, and needs Inbox for it', () => {
+    expect(effective(undefined, ON)).toEqual({ inbox: true, email: true, push: false });
+    expect(effective({ push: true }, ON).push).toBe(true);
+    expect(effective(undefined, { ...ON, push: true }).push).toBe(true);
+    expect(effective({ inbox: false }, { ...ON, push: true }).push).toBe(false);
+    expect(effective({ inbox: false, push: true }, ON).push).toBe(false);
   });
 
   it('gets Email back as soon as Inbox is back on', () => {
-    expect(effective({ inbox: true }, { inbox: false, email: true })).toEqual({ inbox: true, email: true });
+    expect(effective({ inbox: true }, { inbox: false, email: true })).toMatchObject({ inbox: true, email: true });
+  });
+});
+
+describe('flip and isChanged with Push', () => {
+  it('keeps a push value of its own, and drops one equal to the default', () => {
+    expect(isChanged({ push: true })).toBe(true);
+    expect(flip(undefined, ON, 'push', true)).toEqual({ push: true });
+    expect(flip({ push: true }, ON, 'push', false)).toBeUndefined();   // the default has no push: off
+    expect(flip({ email: false }, { ...ON, push: true }, 'push', true)).toEqual({ email: false });
+    expect(flip({ push: true, inbox: false }, ON, 'email', false)).toEqual({ push: true, inbox: false, email: false });
   });
 });
 

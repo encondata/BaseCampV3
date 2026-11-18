@@ -212,6 +212,52 @@ it('the result lists Inbox, Email, Their switches, Their schedule and Critical t
     .toEqual(['Inbox', 'Email', 'Their switches', 'Their schedule', 'Critical type']);
 });
 
+it('shows push reason copy', async () => {
+  const user = userEvent.setup();
+  const cases: [string, string][] = [
+    ['push_not_set_up', "Push isn't set up on the server"],
+    ['security_category', "Account security notices don't push"],
+    ['category_off', 'Inbox is off for this category'],
+    ['category_no_push', 'Push is off for this category'],
+    ['recipient_inactive', 'Account is disabled or archived'],
+    ['not_admin', 'Push is for admins only'],
+    ['no_phone', 'No phone set up for push'],
+    ['quiet_hours', 'Quiet hours: no push unless critical'],
+    ['plans_not_pushed', "Project plan notices don't push"],
+  ];
+  for (const [reason, words] of cases) {
+    api.checkDelivery.mockResolvedValue(check({ push: { outcome: 'not_sent', reason, phones: 0 } }));
+    const dialog = open();
+    await ask(dialog, user);
+    expect(line(dialog, 'Push'), reason).toBe(`Not sent · ${words}`);
+    cleanup();
+  }
+});
+
+it('a push that goes now says how many phones', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(check({ push: { outcome: 'now', reason: null, phones: 2 } }));
+  let dialog = open();
+  await ask(dialog, user);
+  expect(line(dialog, 'Push')).toBe('Sends now to 2 phones');
+  const push = within(dialog).getByText('Push', { selector: 'dt' }).nextElementSibling as HTMLElement;
+  expect(within(push).getByText('Sends now', { selector: '.chip' }).className).toContain('c-green');
+  cleanup();
+  api.checkDelivery.mockResolvedValue(check({ push: { outcome: 'now', reason: null, phones: 1 } }));
+  dialog = open();
+  await ask(dialog, user);
+  expect(line(dialog, 'Push')).toBe('Sends now to 1 phone');
+});
+
+it('lists the Push line between Email and Their switches', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(check({ push: { outcome: 'now', reason: null, phones: 1 } }));
+  const dialog = open();
+  await ask(dialog, user);
+  expect([...dialog.querySelectorAll('dl.kv dt')].map((dt) => dt.textContent))
+    .toEqual(['Inbox', 'Email', 'Push', 'Their switches', 'Their schedule', 'Critical type']);
+});
+
 it('an email that goes now names the address and where it came from', async () => {
   const user = userEvent.setup();
   const dialog = open();

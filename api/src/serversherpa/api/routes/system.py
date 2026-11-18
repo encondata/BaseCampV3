@@ -38,6 +38,7 @@ from serversherpa.config import get_settings
 from serversherpa.learning.access import require_manager
 from serversherpa.learning.settings import SECTION as LEARNING_SECTION
 from serversherpa.mail import email_enabled
+from serversherpa.notifications.push import push_enabled
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
@@ -112,6 +113,7 @@ def _status_from(cfg: dict, background: BackgroundStatusOut | None = None) -> Sy
         banner=banner or None,
         totp_trust_days=settings.totp_trust_days,
         email_enabled=email_enabled(),
+        push_enabled=push_enabled(),
         password_reset_ttl_minutes=settings.password_reset_ttl_minutes,
         password_min_length=settings.password_min_length,
         background=background,
