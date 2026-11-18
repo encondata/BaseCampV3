@@ -177,19 +177,13 @@ def test_isolated_inspection_passes_on_linux(linux_run: dict[str, object]) -> No
         assert f"test_isolated.py::{name} PASSED" in stdout, report
 
 
-# rcodesign 0.29.0 decrypts only legacy (SHA-1/3DES) PKCS#12, and sign_app
-# hands it the stored .p12 as is: the fixture's (cryptography's default,
-# PBES2/AES-256, like OpenSSL 3's) fails. Found by this test on 2026-11-17;
-# see .superpowers/sdd/2026-11-17-devices-service/task-16-report.md.
-KNOWN_P12_FAILURE = "incorrect password given when decrypting PFX data"
-
-
 def test_real_rcodesign_signs_on_linux(linux_run: dict[str, object]) -> None:
+    """The real rcodesign 0.29.0 signs the fixture app with a PBES2/AES .p12
+    (sign_app re-encodes it as legacy PKCS#12) and its entitlements read
+    back (print-signature-info's list-of-lines plist)."""
     stdout, report = str(linux_run["stdout"]), str(linux_run["report"])
     signer = "test_resign_integration.py::test_rcodesign_signs_fixture_app"
     if not linux_run["macho"]:
         assert f"{signer} SKIPPED" in stdout, report
         pytest.skip("no host clang to build the arm64 Mach-O: the rcodesign test was skipped")
-    if f"{signer} FAILED" in stdout and KNOWN_P12_FAILURE in stdout:
-        pytest.xfail("rcodesign 0.29.0 can't read a PBES2/AES .p12 (sign_app doesn't convert it)")
     assert f"{signer} PASSED" in stdout, report

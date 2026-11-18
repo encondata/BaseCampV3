@@ -8,10 +8,18 @@ entitlements, since entitlements aren't inherited) and zips Payload/ again
 
 The certificate, its password and the entitlements go to rcodesign as
 files: mode 0600 in a private (0700) temp directory, removed whatever
-happens. The directory's path never reaches an error message."""
+happens. The directory's path never reaches an error message.
+
+rcodesign (0.29.0) decrypts only legacy PKCS#12 (SHA-1 and 3DES); a .p12
+from OpenSSL 3 or cryptography's default (PBES2, AES-256) fails there as
+"incorrect password". So the stored .p12 is opened here with its stored
+password and handed over re-encoded in the legacy format, under a fresh
+random password (`_legacy_p12`): whatever the stored password is, empty
+included, rcodesign never sees it."""
 
 import os
 import plistlib
+import secrets
 import shutil
 import stat
 import subprocess
@@ -21,6 +29,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import yaml
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.signing import SignError
@@ -34,6 +44,8 @@ INFO_TIMEOUT = 120
 UNPACK_LIMIT = 4 * 1024 ** 3
 _LINK_LIMIT = 4096
 _TAIL_LINES = 20
+P12_UNREADABLE = "The Apple certificate (.p12) can't be opened with its saved password."
+_LEGACY_KDF_ROUNDS = 50000
 
 
 def _rcodesign() -> str:
@@ -69,15 +81,39 @@ def _write_private(path: Path, data: bytes) -> Path:
     return path
 
 
+def _legacy_p12(p12: bytes, password: str) -> tuple[bytes, str]:
+    """The .p12's key and certificates as a legacy PKCS#12 (SHA-1 MAC,
+    3DES) rcodesign can read, and the fresh password it's encrypted with.
+    Raises SignError when the stored password doesn't open it."""
+    try:
+        stored = pkcs12.load_pkcs12(p12, password.encode() or None)
+    except (ValueError, TypeError):
+        raise SignError(P12_UNREADABLE) from None
+    if stored.key is None or stored.cert is None:
+        raise SignError(P12_UNREADABLE)
+    temp_password = secrets.token_urlsafe(24)
+    encryption = (serialization.PrivateFormat.PKCS12.encryption_builder()
+                  .kdf_rounds(_LEGACY_KDF_ROUNDS)
+                  .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
+                  .hmac_hash(hashes.SHA1())
+                  .build(temp_password.encode()))
+    legacy = pkcs12.serialize_key_and_certificates(
+        stored.cert.friendly_name, stored.key, stored.cert.certificate,
+        [c.certificate for c in stored.additional_certs] or None, encryption)
+    return legacy, temp_password
+
+
 def sign_app(app_dir: Path, *, p12: bytes, password: str, entitlements: dict,
              extension_entitlements: dict[str, dict] | None = None) -> None:
-    """Sign `app_dir` (Payload/X.app) in place with the .p12. `entitlements`
-    are the app's; `extension_entitlements` maps a path inside the app
-    ("PlugIns/Widget.appex") to that bundle's. Raises SignError."""
+    """Sign `app_dir` (Payload/X.app) in place with the .p12 (opened with
+    `password`). `entitlements` are the app's; `extension_entitlements`
+    maps a path inside the app ("PlugIns/Widget.appex") to that bundle's.
+    Raises SignError."""
+    legacy, temp_password = _legacy_p12(p12, password)
     secrets_dir = Path(tempfile.mkdtemp(prefix="devices-sign-"))   # 0700
     try:
-        p12_file = _write_private(secrets_dir / "cert.p12", p12)
-        password_file = _write_private(secrets_dir / "password", password.encode())
+        p12_file = _write_private(secrets_dir / "cert.p12", legacy)
+        password_file = _write_private(secrets_dir / "password", temp_password.encode())
         main_file = _write_private(secrets_dir / "entitlements.plist",
                                    plistlib.dumps(entitlements))
         argv = [_rcodesign(), "sign", "--p12-file", str(p12_file),
@@ -98,6 +134,11 @@ def binary_entitlements(macho: Path) -> dict:
     done = _run([_rcodesign(), "print-signature-info", str(macho)], timeout=INFO_TIMEOUT)
     try:
         found = next(_values(yaml.safe_load(done.stdout), "entitlements_plist"), None)
+        # rcodesign 0.29.0 prints the plist as a list of lines; older ones as one string
+        if isinstance(found, list):
+            if not all(isinstance(line, str) for line in found):
+                raise ValueError("entitlements_plist isn't text")
+            found = "\n".join(found)
         if not isinstance(found, str) or not found.strip():
             return {}
         parsed = plistlib.loads(found.encode())

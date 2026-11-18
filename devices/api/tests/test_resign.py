@@ -2,14 +2,21 @@
 the rcodesign command line and its secret files (subprocess swapped out),
 and unpacking/packing IPAs."""
 
+import datetime as dt
 import os
 import plistlib
 import stat
 import subprocess
 import zipfile
+from functools import cache
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.x509.oid import NameOID
 
 from serversherpa_devices.packages.provision import ProvisionInfo
 from serversherpa_devices.signing import entitlements, resign
@@ -119,6 +126,35 @@ class FakeRun:
         return self.argv[self.argv.index(flag) + 1]
 
 
+@cache
+def _identity():
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,
+                                         f"Apple Distribution: Fixture ({TEAM})")])
+    now = dt.datetime.now(dt.UTC)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(7)
+            .not_valid_before(now - dt.timedelta(days=1))
+            .not_valid_after(now + dt.timedelta(days=30))
+            .sign(key, hashes.SHA256()))
+    return key, cert
+
+
+def _p12(password: str = "pw") -> bytes:
+    """A .p12 the way OpenSSL 3 and cryptography make one today (PBES2,
+    AES-256): the format rcodesign 0.29.0 can't read. No password: none."""
+    key, cert = _identity()
+    encryption = (serialization.BestAvailableEncryption(password.encode()) if password
+                  else serialization.NoEncryption())
+    return pkcs12.serialize_key_and_certificates(b"Fixture", key, cert, None, encryption)
+
+
+# DER object identifiers, as they appear inside a PKCS#12 file
+PBE_SHA1_3DES = bytes.fromhex("060a2a864886f70d010c0103")   # pbeWithSHAAnd3-KeyTripleDES-CBC
+PBES2 = bytes.fromhex("06092a864886f70d01050d")             # 1.2.840.113549.1.5.13
+SHA1 = bytes.fromhex("06052b0e03021a")                      # 1.3.14.3.2.26 (the MAC)
+
+
 def _app(tmp_path: Path) -> Path:
     app = tmp_path / "Payload" / "Hello.app"
     (app / "PlugIns" / "Widget.appex").mkdir(parents=True, exist_ok=True)
@@ -129,15 +165,15 @@ def test_sign_app_command_line(tmp_path, monkeypatch):
     run = FakeRun()
     monkeypatch.setattr(resign.subprocess, "run", run)
     app = _app(tmp_path)
-    resign.sign_app(app, p12=b"P12", password="pw", entitlements={"get-task-allow": False},
+    resign.sign_app(app, p12=_p12(), password="pw", entitlements={"get-task-allow": False},
                     extension_entitlements={"PlugIns/Widget.appex": {"a": True}})
 
     argv = run.argv
     assert argv[:2] == ["rcodesign", "sign"]
     assert argv[-1] == str(app)
     p12, password = argv[argv.index("--p12-file") + 1], argv[argv.index("--p12-password-file") + 1]
-    assert run.seen[p12] == (0o600, b"P12")
-    assert run.seen[password] == (0o600, b"pw")
+    assert run.seen[p12][0] == 0o600
+    assert run.seen[password][0] == 0o600
     flags = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
     main, widget = flags
     assert plistlib.loads(run.seen[main][1]) == {"get-task-allow": False}
@@ -148,13 +184,62 @@ def test_sign_app_command_line(tmp_path, monkeypatch):
     assert not any(Path(p).exists() for p in run.seen)   # all removed afterwards
 
 
+@pytest.mark.parametrize("stored_password", ["pw", "", "pässwörd with spaces"])
+def test_sign_app_passes_rcodesign_a_legacy_p12(tmp_path, monkeypatch, stored_password):
+    """rcodesign 0.29.0 reads only legacy PKCS#12 (SHA-1, 3DES): the stored
+    .p12 is re-encoded under a fresh temporary password, whatever the
+    stored one is (empty included)."""
+    stored = _p12(stored_password)
+    if stored_password:
+        assert PBES2 in stored and PBE_SHA1_3DES not in stored
+    run = FakeRun()
+    monkeypatch.setattr(resign.subprocess, "run", run)
+    resign.sign_app(_app(tmp_path), p12=stored, password=stored_password, entitlements={})
+
+    argv = run.argv
+    handed = run.seen[argv[argv.index("--p12-file") + 1]][1]
+    temp_password = run.seen[argv[argv.index("--p12-password-file") + 1]][1]
+    assert len(temp_password) >= 32 and temp_password != stored_password.encode()
+    assert handed != stored
+    assert PBE_SHA1_3DES in handed and PBES2 not in handed and SHA1 in handed
+    loaded = pkcs12.load_pkcs12(handed, temp_password)
+    key, cert = _identity()
+    assert loaded.cert.certificate == cert
+    assert loaded.key.private_numbers() == key.private_numbers()
+
+
+def test_sign_app_each_run_gets_its_own_temporary_password(tmp_path, monkeypatch):
+    seen = []
+    for _ in range(2):
+        run = FakeRun()
+        monkeypatch.setattr(resign.subprocess, "run", run)
+        resign.sign_app(_app(tmp_path), p12=_p12(), password="pw", entitlements={})
+        seen.append(run.seen[run.argv[run.argv.index("--p12-password-file") + 1]][1])
+    assert seen[0] != seen[1]
+
+
+@pytest.mark.parametrize("p12, password", [(None, "wrong"), (b"not a p12", "pw")])
+def test_sign_app_refuses_a_p12_its_password_doesnt_open(tmp_path, monkeypatch, p12, password):
+    run = FakeRun()
+    monkeypatch.setattr(resign.subprocess, "run", run)
+
+    def no_temp_dir(*args, **kwargs):
+        raise AssertionError("a secrets directory was made for an unreadable .p12")
+
+    monkeypatch.setattr(resign.tempfile, "mkdtemp", no_temp_dir)
+    with pytest.raises(resign.SignError) as failed:
+        resign.sign_app(_app(tmp_path), p12=p12 or _p12(), password=password, entitlements={})
+    assert str(failed.value) == resign.P12_UNREADABLE
+    assert run.argv == []   # rcodesign never ran
+
+
 def test_temp_secret_files_removed_on_failure(tmp_path, monkeypatch):
     lines = [f"line {i}" for i in range(30)] + ["error: can't read {p12}: bad password"]
     run = FakeRun(returncode=1, stderr="\n".join(lines))
     monkeypatch.setattr(resign.subprocess, "run", run)
 
     with pytest.raises(resign.SignError) as failed:
-        resign.sign_app(_app(tmp_path), p12=b"P12", password="pw", entitlements={})
+        resign.sign_app(_app(tmp_path), p12=_p12(), password="pw", entitlements={})
     message = str(failed.value)
     assert message.splitlines() == [*lines[-20:-1], "error: can't read cert.p12: bad password"]
     assert run.seen and not any(Path(p).exists() for p in run.seen)
@@ -167,14 +252,14 @@ def test_sign_app_timeout_and_missing_tool(tmp_path, monkeypatch):
 
     monkeypatch.setattr(resign.subprocess, "run", slow)
     with pytest.raises(resign.SignError, match="took longer"):
-        resign.sign_app(_app(tmp_path), p12=b"P12", password="pw", entitlements={})
+        resign.sign_app(_app(tmp_path), p12=_p12(), password="pw", entitlements={})
 
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
     monkeypatch.setattr(resign.subprocess, "run", missing)
     with pytest.raises(resign.SignError, match="rcodesign isn't installed"):
-        resign.sign_app(_app(tmp_path), p12=b"P12", password="pw", entitlements={})
+        resign.sign_app(_app(tmp_path), p12=_p12(), password="pw", entitlements={})
 
 
 SIGNATURE_INFO = """\
@@ -196,6 +281,57 @@ SIGNATURE_INFO = """\
           </dict>
           </plist>
 """
+
+
+# What rcodesign 0.29.0 really prints (captured from the image, trimmed):
+# entitlements_plist is a list of lines, not one string.
+SIGNATURE_INFO_0_29 = """\
+- path: Hello
+  file_size: 33432
+  entity:
+    mach_o:
+      signature:
+        code_directory:
+          version: '0x20400'
+          identifier: com.example.hello
+          digest_type: sha256
+        entitlements_plist:
+        - <?xml version="1.0" encoding="UTF-8"?>
+        - <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        - <plist version="1.0">
+        - <dict>
+        - '  <key>application-identifier</key>'
+        - '  <string>TEAM123456.com.example.hello</string>'
+        - '  <key>get-task-allow</key>'
+        - '  <false/>'
+        - </dict>
+        - </plist>
+        entitlements_der_plist:
+        - <?xml version="1.0" encoding="UTF-8"?>
+        - <plist version="1.0">
+        - '  <dict>'
+        - '    <key>application-identifier</key>'
+        - '    <string>TEAM123456.com.example.hello</string>'
+        - '  </dict>'
+        - </plist>
+"""
+
+
+def test_binary_entitlements_reads_0_29_list_of_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(resign.subprocess, "run", FakeRun(stdout=SIGNATURE_INFO_0_29))
+    assert resign.binary_entitlements(tmp_path / "Hello") == {
+        "application-identifier": f"{TEAM}.com.example.hello", "get-task-allow": False}
+
+
+@pytest.mark.parametrize("shape", ["[]", "[1, 2]", "''"])
+def test_binary_entitlements_odd_shapes(tmp_path, monkeypatch, shape):
+    out = f"- path: Hello\n  entitlements_plist: {shape}\n"
+    monkeypatch.setattr(resign.subprocess, "run", FakeRun(stdout=out))
+    if shape == "[1, 2]":
+        with pytest.raises(resign.SignError, match="can't be read"):
+            resign.binary_entitlements(tmp_path / "Hello")
+    else:
+        assert resign.binary_entitlements(tmp_path / "Hello") == {}
 
 
 def test_binary_entitlements_reads_signature_info(tmp_path, monkeypatch):

@@ -101,6 +101,9 @@ def test_rcodesign_signs_fixture_app(tmp_path):
     info = yaml.safe_load(subprocess.run(
         ["rcodesign", "print-signature-info", str(app / "Hello")],
         capture_output=True, text=True, check=True).stdout)
-    teams = {str(v) for key in ("team_name", "team_id") for v in _values(info, key)}
+    # rcodesign 0.29.0 shows the signing certificate's team as
+    # cms.certificates[].apple_team_id (older ones: team_name / team_id)
+    teams = {str(v) for key in ("apple_team_id", "team_name", "team_id")
+             for v in _values(info, key)}
     assert TEAM in teams
     assert (app / "_CodeSignature" / "CodeResources").is_file()
