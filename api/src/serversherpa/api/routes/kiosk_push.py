@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
@@ -46,7 +46,7 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import RESET_WINDOW_SECONDS
 from serversherpa.api.routes.kiosk import _inet_or_none, own_device
-from serversherpa.api.schemas import NotificationInboxItemOut, NotificationInboxOut
+from serversherpa.api.schemas import NotificationInboxOut
 from serversherpa.config import get_settings
 from serversherpa.db.models import Device, Notification, Person, PushRegistration
 from serversherpa.notifications import inbox_ops, push
@@ -278,9 +278,21 @@ async def put_push_token(
 # /notifications/inbox routes under /kiosk, over the same code
 # (notifications/inbox_ops.py). Every route acts on the caller's own rows.
 
-class KioskNotificationItemOut(NotificationInboxItemOut):
-    """An inbox item for the app: adds the end of its snooze, if any."""
+class KioskNotificationItemOut(BaseModel):
+    """An inbox item for the app: the portal's item (NotificationInboxItemOut)
+    without `payload`, which the app never reads, plus the end of its snooze,
+    if any."""
 
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: str
+    category: str | None = None
+    title: str
+    body: str
+    link: str | None = None
+    created_at: datetime
+    read_at: datetime | None = None
     push_snoozed_until: datetime | None = None
 
 

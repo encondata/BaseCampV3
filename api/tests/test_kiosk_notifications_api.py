@@ -100,6 +100,11 @@ def _strip(item: dict) -> dict:
     return {k: v for k, v in item.items() if k != "push_snoozed_until"}
 
 
+def _without_payload(item: dict) -> dict:
+    """A portal inbox item as the app gets it: the app's items carry no payload."""
+    return {k: v for k, v in item.items() if k != "payload"}
+
+
 # ── session routes ──────────────────────────────────────────────────
 
 async def test_list_matches_portal_inbox(client, db, seeded_user):
@@ -118,8 +123,9 @@ async def test_list_matches_portal_inbox(client, db, seeded_user):
         a, b = a.json(), b.json()
         assert {k: v for k, v in b.items() if k != "items"} == \
             {k: v for k, v in a.items() if k != "items"}
-        assert [_strip(i) for i in b["items"]] == a["items"]
+        assert [_strip(i) for i in b["items"]] == [_without_payload(i) for i in a["items"]]
         assert all(i["push_snoozed_until"] is None for i in b["items"])
+        assert all("payload" not in i for i in b["items"])
     bad = await client.get("/kiosk/notifications", params={"category": "nope"}, headers=hdrs)
     assert bad.status_code == 422 and _code(bad) == "invalid_category"
     bad = await client.get("/kiosk/notifications", params={"cursor": "zzz"}, headers=hdrs)

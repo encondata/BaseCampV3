@@ -3289,6 +3289,10 @@ class DeliveryCheckOut(BaseModel):
     a held email, the schedule state that holds it). A project plan notice
     follows the plans' own rule (plans/notices.py): its email is `direct`,
     sent when the plan sends it and never held by the schedule.
+    `push` is decide_push()'s answer for every kind, plan notices included
+    (they are written with notify(), which pushes): `now` or `not_sent` with
+    the reason, and the person's live phone count. `push_enabled` is whether
+    the server has a push key configured at all.
     `after_summary` marks an email sent now only because it falls in the last
     hour before the person is back online, when that morning's summary has
     already gone. `owner_copy` is the copy that was modeled; `critical`

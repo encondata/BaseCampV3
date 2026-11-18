@@ -101,9 +101,10 @@ export const REASON_LABELS: Record<string, string> = {
   category_no_push: 'Push is off for this category',
   not_admin: 'Push is for admins only',
   no_phone: 'No phone set up for push',
-  plans_not_pushed: "Project plan notices don't push",
   // a queued push dropped before it was sent (push_dropped)
   deleted: 'Inbox item no longer exists',
+  // a queued clear dropped: the item was pushed again before the clear went
+  alerted_again: 'Pushed again before the phone cleared it',
   // why a push row was queued (push_queued)
   snooze: 'Snoozed',
   clear: 'Clearing the phone',

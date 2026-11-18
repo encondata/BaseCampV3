@@ -11,8 +11,8 @@
  *    tab loaded before another admin's save leaves their change alone.
  *    Admins set the defaults whether or not the server can send email right
  *    now, so Email is never switched off here for that. Push is: while the
-    server can't push, its switches are disabled ("Push isn't set up on the
-    server"), as on /me.
+ *    server can't push, its switches are disabled ("Push isn't set up on the
+ *    server"), as on /me.
  *  - "Critical notifications": every kind that can be emailed, with a Critical
  *    switch. The two account security kinds say "Always" instead of a switch:
  *    they are critical in code and never stored. Save sends `{critical_kinds}`

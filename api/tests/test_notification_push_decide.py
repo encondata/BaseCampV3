@@ -23,6 +23,7 @@ from serversherpa.notifications.email import load_contact
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.kinds import kind_info
 from serversherpa.notifications.push import decide_push, push_enabled
+from serversherpa.plans import notices as plan_notices
 from tests.push_helpers import (
     KIND,
     NOW,
@@ -109,9 +110,18 @@ async def test_not_set_up_queues_nothing(db, monkeypatch):
     row = await notify(db, p.id, KIND, "Hello")
     assert row is not None
     assert await _outbox(db) == []
+    # no push key at all: nothing to say about this notification, so no log row
+    assert await _log(db, "push_not_queued") == []
+    assert await db.scalar(select(func.count()).select_from(NotificationLog)
+                           .where(NotificationLog.channel == "push")) == 0
+    # with the key set, a refusal is still logged with its reason
+    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_FILE", "/nonexistent/fcm.json")
+    get_settings.cache_clear()
+    await db.execute(SystemConfig.__table__.delete())
+    await _company(db, defaults={"assets": {"inbox": True, "email": True, "push": False}})
+    other = await notify(db, p.id, KIND, "Again")
     [entry] = await _log(db, "push_not_queued")
-    assert entry.channel == "push" and entry.reason == "push_not_set_up"
-    assert entry.notification_id == row.id
+    assert (entry.reason, entry.notification_id) == ("category_no_push", other.id)
     get_settings.cache_clear()
 
 
@@ -220,6 +230,32 @@ async def test_check_delivery_push_line(db, fcm_on):
     await _company(db)
     out = await check_delivery(db, p.id, KIND, now=NOW)
     assert out["push"] == {"outcome": "now", "reason": None, "phones": 1}
+
+
+@pytest.mark.parametrize("kind", ["plan_task_assigned", "plan_task_due",
+                                  "plan_task_overdue"])
+async def test_plan_notice_pushes_and_check_says_so(db, fcm_on, clock, kind):
+    # a plan notice is written with notify() (plans/notices.send), which pushes;
+    # Check delivery's Push line answers it with decide_push() like any kind
+    clock(NOW)
+    await _company(db, defaults={"plans": {"inbox": True, "email": False, "push": True}})
+    p = await _admin(db)
+    await _phone(db, p)
+    out = await check_delivery(db, p.id, kind, now=NOW)
+    assert out["push"] == {"outcome": "now", "reason": None, "phones": 1}
+    assert await plan_notices.send(db, p.id, kind, email=False, title="Plan task",
+                                   body="Order crates", link="/initiatives", payload={},
+                                   template="plan_assigned") is True
+    [row] = await _outbox(db)
+    assert (row.person_id, row.reason, row.state, row.message_type) == (
+        p.id, "new", "queued", "notification")
+    [entry] = await _log(db, "push_queued")
+    assert entry.kind == kind and entry.category == "plans"
+    # Push off for Project plans: neither the tool nor notify() pushes
+    await db.execute(SystemConfig.__table__.delete())
+    await _company(db, defaults={"plans": {"inbox": True, "email": False, "push": False}})
+    out = await check_delivery(db, p.id, kind, now=NOW)
+    assert out["push"] == {"outcome": "not_sent", "reason": "category_no_push", "phones": 1}
 
 
 async def test_delivery_log_push_channel(db):

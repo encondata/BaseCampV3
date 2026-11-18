@@ -61,12 +61,16 @@ describe('labels', () => {
     expect(channelLabel('push')).toBe('Push');
     expect(LOG_CHANNEL_LABELS).toEqual({ inbox: 'Inbox', email: 'Email', push: 'Push' });
     for (const code of ['push_not_set_up', 'security_category', 'category_no_push', 'not_admin',
-      'no_phone', 'plans_not_pushed']) {
+      'no_phone']) {
       expect(REASON_LABELS[code], code).toBeTruthy();
       expect(REASON_LABELS[code], code).not.toBe(code);
     }
     expect(describeEntry(entry({ event: 'push_not_queued', channel: 'push', reason: 'no_phone' })))
       .toBe('No phone set up for push');
+    // a queued clear dropped because the item was pushed again first
+    expect(describeEntry(entry({ event: 'push_dropped', channel: 'push',
+      reason: 'alerted_again', detail: { message_type: 'clear' } })))
+      .toBe('Pushed again before the phone cleared it');
     expect(describeEntry(entry({ event: 'push_retry', channel: 'push', detail: { attempts: 2 } })))
       .toBe('Attempt 2 failed — retrying');
     expect(describeEntry(entry({ event: 'push_failed', channel: 'push', detail: { attempts: 3 } })))

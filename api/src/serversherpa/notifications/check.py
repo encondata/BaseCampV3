@@ -9,7 +9,8 @@ watches of the person that would hear it.
 
 A project plan notice (category `plans`) is answered with the plans' own rule
 instead (plans/notices.py `delivery`): plans email the person directly, so
-notify() and decide_email() play no part in it.
+decide_email() plays no part in it. Its push answer is decide_push() like any
+other kind: the plan writes its inbox row with notify(), which pushes.
 
 Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9) and
 docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (section 7)"""
@@ -128,10 +129,9 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
 async def _push_answer(db: AsyncSession, person_id: uuid.UUID, info: KindInfo, *,
                        contact: Contact | None, company: CompanySettings,
                        now: datetime) -> dict:
-    """The push answer: decide_push(), the decision notify() acts on. A project
-    plan notice is not sent with notify(), so it never pushes."""
-    if info.category == PLANS_CATEGORY:
-        return {"outcome": "not_sent", "reason": "plans_not_pushed", "phones": 0}
+    """The push answer: decide_push(), the decision maybe_push() acts on. A
+    project plan notice is pushed by the same rule: plans/notices.py writes its
+    inbox row with notify(), which calls maybe_push()."""
     decision = await decide_push(db, person_id, info, contact=contact, company=company,
                                  now=now)
     # The decision stops counting phones once a rule before that one fails; the

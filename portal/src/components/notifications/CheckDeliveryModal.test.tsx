@@ -223,7 +223,6 @@ it('shows push reason copy', async () => {
     ['not_admin', 'Push is for admins only'],
     ['no_phone', 'No phone set up for push'],
     ['quiet_hours', 'Quiet hours: no push unless critical'],
-    ['plans_not_pushed', "Project plan notices don't push"],
   ];
   for (const [reason, words] of cases) {
     api.checkDelivery.mockResolvedValue(check({ push: { outcome: 'not_sent', reason, phones: 0 } }));
