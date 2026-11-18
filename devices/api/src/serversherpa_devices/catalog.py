@@ -59,22 +59,29 @@ def upload_key(upload_id: uuid.UUID, filename: str) -> str:
     return f"uploads/{upload_id}/{filename}"
 
 
-def inspected_key(upload_id: uuid.UUID, filename: str) -> str:
-    """Where inspection keeps the bytes it read. The client never gets a URL
-    for this key (its presigned key has no '/' after the id), so a PUT after
-    inspection can't change what commit stores."""
-    return f"uploads/{upload_id}/inspected/{filename}"
+def inspected_key(upload_id: uuid.UUID, inspection_id: uuid.UUID, filename: str) -> str:
+    """Where one inspection keeps the bytes it read. Each inspection gets its
+    own key and nothing ever rewrites it, so a review always describes the
+    object it names. The client never gets a URL for it (its presigned key
+    has no '/' after the upload id)."""
+    return f"uploads/{upload_id}/inspected/{inspection_id}/{filename}"
+
+
+def inspected_icon_key(upload_id: uuid.UUID, inspection_id: uuid.UUID) -> str:
+    # A leading dot: safe_filename never produces one, so it can't clash.
+    return f"uploads/{upload_id}/inspected/{inspection_id}/.icon.png"
+
+
+def review_object_keys(review: dict | None) -> list[str]:
+    """The objects one stored review owns."""
+    if not review:
+        return []
+    return [key for key in (review.get("inspected_key"), review.get("icon_key")) if key]
 
 
 def upload_object_keys(upload: Upload) -> list[str]:
-    """Every object an upload can own."""
-    return [upload.file_key, inspected_key(upload.id, upload.filename),
-            upload_icon_key(upload.id)]
-
-
-def upload_icon_key(upload_id: uuid.UUID) -> str:
-    # A leading dot: safe_filename never produces one, so it can't clash.
-    return f"uploads/{upload_id}/.icon.png"
+    """Every object an upload owns: the client's PUT and its current review's."""
+    return [upload.file_key, *review_object_keys(upload.inspected)]
 
 
 def version_key(app_id: uuid.UUID, version_id: uuid.UUID, filename: str) -> str:

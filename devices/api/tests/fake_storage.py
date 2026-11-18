@@ -11,6 +11,8 @@ patch reaches them.
 import shutil
 from pathlib import Path
 
+from botocore.exceptions import ClientError
+
 from serversherpa_devices.services import storage
 
 
@@ -74,4 +76,7 @@ class FakeStorage:
         self._path(key).unlink(missing_ok=True)
 
     async def copy_object(self, source_key: str, key: str) -> None:
+        if not self.exists(source_key):   # what S3 answers
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+                              "CopyObject")
         self.put(key, self.read(source_key), self.content_types.get(source_key, ""))

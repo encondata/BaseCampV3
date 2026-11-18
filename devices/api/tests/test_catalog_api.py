@@ -73,6 +73,9 @@ async def test_edit_notes_audits(api, main_fake, bucket, db, tmp_path):
                                                "to": "Faster scans, fewer taps"}}
     assert (await api.patch(f"/api/versions/{uuid.uuid4()}", json={"notes": "x"})).status_code \
         == 404
+    main_fake.as_staff()
+    assert (await api.patch(f"/api/versions/{v2['id']}", json={"notes": "x"})).status_code \
+        == 403
 
 
 async def test_cannot_delete_current(api, main_fake, bucket, db, tmp_path):

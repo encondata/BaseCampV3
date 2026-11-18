@@ -292,7 +292,9 @@ async def test_commit_stores_the_inspected_bytes_even_if_reuploaded(api, bucket,
     upload_id = await start_upload(api, bucket, HELLO_A)
     presigned_key = bucket.presigned[-1][0]
     assert (await inspect(api, upload_id))["problems"] == []
-    inspected_key = f"uploads/{upload_id}/inspected/hello-a.apk"
+    inspected_key = (await db.get(Upload, uuid.UUID(upload_id))).inspected["inspected_key"]
+    assert inspected_key.startswith(f"uploads/{upload_id}/inspected/")
+    assert inspected_key.endswith("/hello-a.apk")
     assert bucket.read(inspected_key) == HELLO_A.read_bytes()
     assert not bucket.exists(presigned_key)   # the client-writable copy is gone
 
@@ -304,3 +306,105 @@ async def test_commit_stores_the_inspected_bytes_even_if_reuploaded(api, bucket,
     assert row.size == HELLO_A.stat().st_size
     assert bucket.read(row.file_key) == HELLO_A.read_bytes()
     assert not any(k.startswith("uploads/") for k in bucket.object_keys())
+
+
+async def _review(db, upload_id: str) -> dict:
+    db.expire_all()
+    return (await db.get(Upload, uuid.UUID(upload_id))).inspected
+
+
+async def test_reinspect_deletes_superseded_inspected_object(api, bucket, db):
+    upload_id = await start_upload(api, bucket, HELLO_A)
+    presigned_key = bucket.presigned[-1][0]
+    await inspect(api, upload_id)
+    first = await _review(db, upload_id)
+    assert bucket.read(first["inspected_key"]) == HELLO_A.read_bytes()
+    assert bucket.exists(first["icon_key"])
+
+    # A new PUT is what gets checked again.
+    bucket.put(presigned_key, HELLO_A2.read_bytes())
+    review = await inspect(api, upload_id)
+    assert review["version_name"] == "1.1"
+    second = await _review(db, upload_id)
+    assert second["inspected_key"] != first["inspected_key"]
+    assert second["icon_key"] != first["icon_key"]
+    assert bucket.read(second["inspected_key"]) == HELLO_A2.read_bytes()
+    assert not bucket.exists(first["inspected_key"])
+    assert not bucket.exists(first["icon_key"])
+    assert {k for k in bucket.object_keys() if k.startswith("uploads/")} == {
+        second["inspected_key"], second["icon_key"]}
+
+    # With no new PUT, checking again reads the kept copy.
+    review = await inspect(api, upload_id)
+    assert review["version_name"] == "1.1"
+    third = await _review(db, upload_id)
+    assert bucket.read(third["inspected_key"]) == HELLO_A2.read_bytes()
+    assert not bucket.exists(second["inspected_key"])
+
+
+async def test_inspect_and_commit_interleaved_store_the_reviewed_bytes(api, bucket, db,
+                                                                       monkeypatch):
+    """A second inspection that runs while commit is copying must not change
+    what commit stores, nor the committed upload's review."""
+    import asyncio
+    import hashlib
+
+    from serversherpa_devices.services import storage
+
+    upload_id = await start_upload(api, bucket, HELLO_A)
+    presigned_key = bucket.presigned[-1][0]
+    await inspect(api, upload_id)
+    reviewed = await _review(db, upload_id)
+    bucket.put(presigned_key, HELLO_A2.read_bytes())   # the PUT URL is still valid
+
+    second_copy_written = asyncio.Event()
+    second: dict = {}
+    real_copy, real_upload = bucket.copy_object, bucket.upload_from
+
+    async def upload_spy(path, key, content_type):
+        await real_upload(path, key, content_type)
+        if "/inspected/" in key and key != reviewed["inspected_key"]:
+            second_copy_written.set()
+
+    async def copy_spy(source_key, key):
+        if "task" not in second:   # commit's first copy: let inspect #2 run first
+            second["task"] = asyncio.create_task(
+                api.post(f"/api/uploads/{upload_id}/inspect"))
+            await asyncio.wait_for(second_copy_written.wait(), 30)
+        await real_copy(source_key, key)
+
+    monkeypatch.setattr(storage, "upload_from", upload_spy)
+    monkeypatch.setattr(storage, "copy_object", copy_spy)
+    r = await commit(api, upload_id)
+    assert r.status_code == 201, r.text
+    late = await second["task"]
+    assert late.status_code == 409
+    assert late.json()["detail"]["message"] == "This file was already saved."
+
+    row = await db.get(AppVersion, uuid.UUID(r.json()["version"]["id"]))
+    stored = bucket.read(row.file_key)
+    assert hashlib.sha256(stored).hexdigest() == row.sha256 == reviewed["sha256"]
+    assert stored == HELLO_A.read_bytes()
+    assert (row.version_name, row.build) == ("1.0", "1")
+    assert (await _review(db, upload_id))["sha256"] == reviewed["sha256"]
+    # The late inspection's objects don't linger.
+    assert not any(k.startswith("uploads/") for k in bucket.object_keys()), \
+        bucket.object_keys()
+
+
+async def test_commit_refuses_a_missing_or_changed_inspected_copy(api, bucket, db):
+    upload_id = await start_upload(api, bucket, HELLO_A)
+    await inspect(api, upload_id)
+    key = (await _review(db, upload_id))["inspected_key"]
+
+    bucket.put(key, b"shorter")
+    r = await commit(api, upload_id)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message"] == "Check the file again before saving it."
+    assert not any(k.startswith("apps/") for k in bucket.object_keys())
+
+    await bucket.delete_object(key)
+    r = await commit(api, upload_id)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message"] == "Check the file again before saving it."
+    assert (await db.scalars(select(App))).all() == []

@@ -4,13 +4,15 @@ inspection (the review summary and its problems), then commit."""
 import asyncio
 import datetime as dt
 import hashlib
+import logging
 import re
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +30,7 @@ from serversherpa_devices.packages.isolated import inspect_package_isolated
 from serversherpa_devices.services import storage
 
 router = APIRouter(tags=["uploads"])
+log = logging.getLogger(__name__)
 
 Db = Annotated[AsyncSession, Depends(get_db)]
 MainApi = Annotated[MainApiClient, Depends(get_main_api)]
@@ -37,6 +40,7 @@ _MIME = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}/[A-Za-z0-9][A-Za-z0-9
 _DEFAULT_TYPE = "application/octet-stream"
 NOT_UPLOADED = "The file didn't finish uploading"
 ALREADY_SAVED = "This file was already saved."
+CHECK_AGAIN = "Check the file again before saving it."
 
 
 class UploadIn(BaseModel):
@@ -98,7 +102,9 @@ async def _own_upload(db: AsyncSession, upload_id: uuid.UUID, principal: Princip
                       lock: bool = False) -> Upload:
     """The caller's own upload (anyone else's is a 404), not yet committed."""
     query = select(Upload).where(Upload.id == upload_id)
-    upload = await db.scalar(query.with_for_update() if lock else query)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    upload = await db.scalar(query)
     if upload is None or upload.created_by != principal.person_id:
         raise api_error(404, "not_found", "That upload doesn't exist.")
     if upload.committed_at is not None:
@@ -131,18 +137,27 @@ def _inspect_out(review: dict, app: App | None, problems: list[str]) -> dict:
 async def inspect_upload(upload_id: uuid.UUID, background: BackgroundTasks, db: Db,
                          principal: Adder):
     upload = await _own_upload(db, upload_id, principal)
-    # A fresh PUT, or else (checking again) the copy an earlier inspection kept.
-    source = upload.file_key
+    client_key, filename, expected_size = upload.file_key, upload.filename, upload.size
+    previous = upload.inspected or {}
+    # A fresh PUT, or else (checking again) the copy the last inspection kept.
+    source = client_key
     head = await storage.head_object(source)
-    if head is None and upload.inspected is not None:
-        source = catalog.inspected_key(upload.id, upload.filename)
+    if head is None and previous.get("inspected_key"):
+        source = previous["inspected_key"]
         head = await storage.head_object(source)
-    if head is None or head["size"] != upload.size:
+    if head is None or head["size"] != expected_size:
         raise api_error(409, "not_uploaded", NOT_UPLOADED)
+    await db.rollback()   # no transaction held open through the slow part
 
+    # This inspection's own keys: nothing else writes them, so the review
+    # saved below always describes exactly these bytes.
+    inspection_id = uuid.uuid4()
     with tempfile.TemporaryDirectory(prefix="devices-upload-") as tmp:
-        path = Path(tmp) / upload.filename
-        await storage.download_to(source, path)
+        path = Path(tmp) / filename
+        try:
+            await storage.download_to(source, path)
+        except (ClientError, FileNotFoundError):   # superseded meanwhile
+            raise api_error(409, "not_uploaded", NOT_UPLOADED) from None
         try:
             # A child process with a 60 s limit: never on the event loop.
             info = await asyncio.to_thread(inspect_package_isolated, path)
@@ -151,25 +166,36 @@ async def inspect_upload(upload_id: uuid.UUID, background: BackgroundTasks, db: 
         sha256 = await asyncio.to_thread(_sha256, path)
         size = path.stat().st_size
         # Commit stores these bytes, never the client-writable object.
-        await storage.upload_from(path, catalog.inspected_key(upload.id, upload.filename),
-                                  _DEFAULT_TYPE)
+        stored_key = catalog.inspected_key(upload_id, inspection_id, filename)
+        await storage.upload_from(path, stored_key, _DEFAULT_TYPE)
+        icon_key = None
         if info.icon_png:
-            icon = Path(tmp) / "icon.png"
+            icon = Path(tmp) / ".icon.png"   # can't clash with a sanitized filename
             icon.write_bytes(info.icon_png)
-            await storage.upload_from(icon, catalog.upload_icon_key(upload.id), "image/png")
+            icon_key = catalog.inspected_icon_key(upload_id, inspection_id)
+            await storage.upload_from(icon, icon_key, "image/png")
 
     review = {"platform": info.platform, "identifier": info.identifier, "name": info.name,
               "version_name": info.version_name, "build": info.build,
               # A string: an iOS sort key is wider than JSON numbers are safe for.
               "build_sort": str(info.build_sort), "min_os": info.min_os,
               "signing_digest": info.signing_digest, "sha256": sha256, "size": size,
-              "inspected_key": catalog.inspected_key(upload.id, upload.filename),
-              "has_icon": bool(info.icon_png)}
+              "inspected_key": stored_key, "icon_key": icon_key}
+    written = catalog.review_object_keys(review)
+
+    # Save the review under the row lock (commit holds the same lock while it
+    # reads the review and copies its object).
+    try:
+        upload = await _own_upload(db, upload_id, principal, lock=True)
+    except HTTPException:   # committed (or gone) while this inspection ran
+        await catalog.delete_objects(written)
+        raise
+    superseded = catalog.review_object_keys(upload.inspected)
     app = await catalog.find_app(db, info.platform, info.identifier)
     problems = await catalog.problems(db, review, app)
     upload.inspected = {**review, "problems": problems}
     await db.commit()
-    background.add_task(catalog.delete_objects, [upload.file_key])
+    background.add_task(catalog.delete_objects, [client_key, *superseded])
     return _inspect_out(review, app, problems)
 
 
@@ -207,13 +233,25 @@ async def commit_upload(upload_id: uuid.UUID, body: CommitIn, request: Request,
         uploaded_by=principal.person_id, uploaded_by_name=principal.display_name,
         is_current=True)
     version.file_key = catalog.version_key(app.id, version.id, upload.filename)
+    # The review was read under the row lock, and its key is never rewritten.
     copied = [version.file_key]
-    await storage.copy_object(review["inspected_key"], version.file_key)
-    if review["has_icon"]:
-        await storage.copy_object(catalog.upload_icon_key(upload.id), catalog.app_icon_key(app.id))
-        app.icon_key = catalog.app_icon_key(app.id)
-        if new_app:
-            copied.append(app.icon_key)
+    try:
+        await storage.copy_object(review["inspected_key"], version.file_key)
+        stored = await storage.head_object(version.file_key)
+    except (ClientError, BotoCoreError):
+        stored = None
+    if stored is None or stored["size"] != review["size"]:
+        await catalog.delete_objects(copied)
+        raise api_error(409, "check_again", CHECK_AGAIN)
+    if review.get("icon_key"):
+        try:
+            await storage.copy_object(review["icon_key"], catalog.app_icon_key(app.id))
+        except (ClientError, BotoCoreError) as exc:   # the version still saves
+            log.warning("storage: couldn't copy an app icon: %s", type(exc).__name__)
+        else:
+            app.icon_key = catalog.app_icon_key(app.id)
+            if new_app:
+                copied.append(app.icon_key)
     db.add(version)
     upload.committed_at = dt.datetime.now(dt.UTC)
     if app.platform == "ios":
@@ -223,7 +261,8 @@ async def commit_upload(upload_id: uuid.UUID, body: CommitIn, request: Request,
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        background.add_task(catalog.delete_objects, copied)
+        # Inline: background tasks don't run when the route raises.
+        await catalog.delete_objects(copied)
         raise api_error(409, "conflict", "Another upload of this app was saved at the same "
                         "time. Check the file again.") from None
     await db.refresh(version)
