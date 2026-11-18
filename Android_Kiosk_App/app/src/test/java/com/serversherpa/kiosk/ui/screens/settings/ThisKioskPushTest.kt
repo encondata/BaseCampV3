@@ -1,13 +1,20 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
+import android.Manifest
 import android.app.Application
 import android.app.NotificationManager
 import android.content.Context
 import android.provider.Settings
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.result.ActivityResultRegistry
+import androidx.activity.result.ActivityResultRegistryOwner
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.core.app.ActivityOptionsCompat
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOn
@@ -30,6 +37,7 @@ import com.serversherpa.kiosk.data.push.FcmTokens
 import com.serversherpa.kiosk.data.push.NoFcmTokens
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -66,13 +74,38 @@ class ThisKioskPushTest {
         return c to api
     }
 
-    private fun show(c: AppContainer) {
-        compose.setContent {
-            CompositionLocalProvider(LocalAppContainer provides c) {
-                KioskTheme { Column(Modifier.verticalScroll(rememberScrollState())) { ThisKioskPanel() } }
+    /** Every permission the screen asked for, in order (a registry that records instead of asking). */
+    private val asked = mutableListOf<String>()
+    private val recordingOwner = object : ActivityResultRegistryOwner {
+        override val activityResultRegistry = object : ActivityResultRegistry() {
+            override fun <I, O> onLaunch(requestCode: Int, contract: ActivityResultContract<I, O>, input: I, options: ActivityOptionsCompat?) {
+                synchronized(asked) { asked += input.toString() }
             }
         }
     }
+
+    /** Settings › This Kiosk on screen; false closes it (a later true opens it afresh). */
+    private val panelOpen = mutableStateOf(true)
+
+    private fun show(c: AppContainer) {
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c, LocalActivityResultRegistryOwner provides recordingOwner) {
+                KioskTheme { Column(Modifier.verticalScroll(rememberScrollState())) { if (panelOpen.value) ThisKioskPanel() } }
+            }
+        }
+    }
+
+    private fun askedNow(): List<String> = synchronized(asked) { asked.toList() }
+
+    /** Waits for [condition], letting the main looper run between checks: the screen's work resumes
+     *  there (Dispatchers.Main), and a plain waitUntil on a non-UI condition never runs it. */
+    private fun waitForMain(condition: () -> Boolean) =
+        compose.waitUntil(5_000) { compose.waitForIdle(); condition() }
+
+    private fun askedFlag(c: AppContainer) = runBlocking { c.prefs.notificationPermissionAsked.first() }
+
+    /** A short stretch of main-looper turns, so work that would ask has had its chance. */
+    private fun settle() = repeat(10) { compose.waitForIdle(); Thread.sleep(20) }
 
     private fun waitForText(text: String) =
         compose.waitUntil(5_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
@@ -226,6 +259,67 @@ class ThisKioskPushTest {
 
     @Test fun failed_load_shows_try_again_and_reloads() = failedLoadShowsTryAgainAndReloads()
     @Test @Config(qualifiers = "w320dp-h470dp") fun failed_load_shows_try_again_and_reloads_compact() = failedLoadShowsTryAgainAndReloads()
+
+    // ── a phone made personal in the portal: ask for notifications once ──
+
+    @Test fun portal_made_personal_asks_for_notifications_once() {
+        val (c, api) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = true))
+        assertFalse(askedFlag(c))
+        show(c)
+        waitForMain { askedNow().isNotEmpty() }
+        assertEquals(listOf(Manifest.permission.POST_NOTIFICATIONS), askedNow())
+        waitForMain { askedFlag(c) }
+        compose.onNodeWithTag("personal-switch").assertIsOn()
+        // Settings closed and opened again: the state is read again, but nobody is asked twice
+        compose.runOnIdle { panelOpen.value = false }
+        compose.waitForIdle()
+        val reads = api.calls.count { it == "getPersonal" }
+        compose.runOnIdle { panelOpen.value = true }
+        waitForMain { api.calls.count { it == "getPersonal" } > reads }
+        waitForTag("personal-switch")
+        settle()
+        assertEquals(listOf(Manifest.permission.POST_NOTIFICATIONS), askedNow())
+    }
+
+    @Test fun already_asked_on_this_phone_does_not_ask_again() {
+        val (c, _) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = true))
+        runBlocking { c.prefs.setNotificationPermissionAsked() }
+        show(c)
+        waitForTag("personal-switch")
+        settle()
+        assertEquals(emptyList<String>(), askedNow())
+    }
+
+    @Test fun notifications_already_allowed_does_not_ask() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val (c, _) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = true))
+        show(c)
+        waitForTag("personal-switch")
+        settle()
+        assertEquals(emptyList<String>(), askedNow())
+        assertFalse(askedFlag(c))
+    }
+
+    @Test fun not_registered_does_not_ask_on_open() {
+        val (c, _) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = false), fcm = NoFcmTokens)
+        show(c)
+        waitForText(PUSH_UNAVAILABLE_TEXT)
+        settle()
+        assertEquals(emptyList<String>(), askedNow())
+    }
+
+    @Test fun turning_on_asks_and_remembers_it() {
+        val (c, api) = phone()
+        api.setPersonalResult = { on -> PersonalState(on = on, ownerName = "Tina T") }
+        show(c)
+        waitForTag("personal-switch")
+        settle()
+        assertEquals("an off phone is never asked on open", emptyList<String>(), askedNow())
+        compose.onNodeWithTag("personal-switch").performScrollTo().performClick()
+        waitForMain { askedNow().isNotEmpty() }
+        assertEquals(listOf(Manifest.permission.POST_NOTIFICATIONS), askedNow())
+        waitForMain { askedFlag(c) }
+    }
 
     @Test fun released_in_the_portal_clears_the_phones_key() {
         val fcm = FakeFcmTokens()

@@ -119,6 +119,9 @@ class NotificationTapRoutingTest {
         compose.onNodeWithTag("mismatch-sign-out").performClick()
         waitForTag("login-email")
         assertEquals(AuthState.Anon, c.auth.state.value)
+        // Sign-in shows as soon as the session ends; the alert is held again once logout() has
+        // finished (its last step resumes on the main thread), so wait with the looper running.
+        compose.waitUntil(5_000) { compose.waitForIdle(); c.pendingOpen.pending.value != null }
         assertEquals(OpenNotification("n1", "p1"), c.pendingOpen.pending.value)
     }
 

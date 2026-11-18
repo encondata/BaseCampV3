@@ -54,7 +54,9 @@ import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 const val FINGERPRINT_ON_TEXT = "Fingerprint sign-in: On ·"
 const val FINGERPRINT_FORGET = "Forget this device"
@@ -171,7 +173,9 @@ private fun needsNotificationPermission(context: Context): Boolean =
  * reassignment shows. Someone else's phone shows its owner and no switch. Turning it on claims the
  * phone and registers it for push, then (Android 13+) asks for POST_NOTIFICATIONS; refused, the
  * switch stays on (biometric sign-in still works) and a line says notifications are blocked, with
- * a button to the app's notification settings.
+ * a button to the app's notification settings. A phone made personal in the portal never saw
+ * the switch: the first open that finds it registered without the permission asks, once per
+ * phone (KioskPrefs.notificationPermissionAsked).
  *
  * Reading the state also brings the phone in line (PushRegistrar.check): push registered again
  * silently when it is missing, a released phone's key dropped. Every call runs on the app's own
@@ -186,8 +190,8 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
     val c = LocalKioskColors.current
     val registrar = container.pushRegistrar
     // Non-null once a heartbeat has bound the session to this phone: a read made before then
-    // (403 not_this_kiosk) is made again.
-    val bound = container.heartbeat.registration.collectAsStateWithLifecycle().value != null
+    // (403 not_this_kiosk) is made again. Collected on the main thread, like FingerprintRow's.
+    val bound = container.heartbeat.registration.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate).value != null
     var state by remember { mutableStateOf<PersonalState?>(null) }
     var loadFailed by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -197,15 +201,49 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = notificationsAllowed(context) }
     // Back from the notification settings: Android sends nothing when they change.
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { allowed = notificationsAllowed(context) }
+
+    /** Asks for POST_NOTIFICATIONS (Android 13+) and remembers on this phone that it did. With
+     *  [onlyOnce], not when it asked before (a flag that can't be read: not now either). The ask
+     *  goes first and the flag is written on the app's scope after it, so a load restarted or a
+     *  screen left mid-write never leaves the flag set without the ask. Call on the main thread. */
+    suspend fun askForNotifications(onlyOnce: Boolean) {
+        if (onlyOnce) {
+            val askedBefore = try {
+                container.prefs.notificationPermissionAsked.first()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                true
+            }
+            if (askedBefore) return
+        }
+        permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        container.scope.launch {
+            try { container.prefs.setNotificationPermissionAsked() } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
+    }
+
+    // Every await below resumes on the main thread (withContext): the app-scope work finishes on a
+    // Default/IO worker, and Compose state written there (under the test harness's unconfined
+    // effect dispatcher) sometimes never redrew the row.
     LaunchedEffect(signedIn.person.id, bound, loads) {
-        loadFailed = false          // "Checking…" while it runs
-        try {
-            state = container.scope.async { registrar.check() }.await()
+        withContext(Dispatchers.Main.immediate) {
+            loadFailed = false          // "Checking…" while it runs
+            val loaded = try {
+                container.scope.async { registrar.check() }.await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                loadFailed = state == null
+                return@withContext
+            }
+            state = loaded
             loadFailed = false
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            loadFailed = state == null
+            // A phone made personal in the portal never went through the switch's ask: ask once
+            // here, the first time Settings shows it registered with notifications not allowed.
+            if (loaded.on && loaded.pushRegistered && needsNotificationPermission(context)) {
+                askForNotifications(onlyOnce = true)
+            }
         }
     }
 
@@ -215,12 +253,13 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
         if (busy) return
         busy = true
         error = null
-        scope.launch {
+        // On the main thread, so the await resumes there before any state is written (see the load).
+        scope.launch(Dispatchers.Main.immediate) {
             try {
                 container.scope.async { if (on) registrar.turnOn() else registrar.turnOff() }.await().onSuccess { s ->
                     state = s
                     if (on && s.pushRegistered && needsNotificationPermission(context)) {
-                        permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        askForNotifications(onlyOnce = false)
                     }
                 }.onFailure { e ->
                     if (e is PushSetupFailed) state = e.state

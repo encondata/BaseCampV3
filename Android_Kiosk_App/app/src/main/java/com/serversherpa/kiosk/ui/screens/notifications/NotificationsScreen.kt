@@ -57,6 +57,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The words when a tapped alert belongs to someone other than the person signed in (spec:
  *  "Someone else signed in on the owner's phone"), naming the phone's owner when known. */
@@ -96,7 +97,9 @@ fun OwnerMismatch(onSignOut: () -> Unit) {
     val container = LocalAppContainer.current
     val c = LocalKioskColors.current
     val owner by produceState<Pair<Boolean, String?>>(false to null, container) {
-        value = true to try { container.api.getPersonal().ownerName } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+        val name = try { container.api.getPersonal().ownerName } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+        // the call can resume on an OkHttp/IO thread: Compose state is written on the main thread
+        withContext(Dispatchers.Main.immediate) { value = true to name }
     }
     Column(Modifier.fillMaxWidth()) {
         PageHeader("Kiosk · Notifications", "Notifications")
@@ -123,7 +126,8 @@ fun NotificationsScreen(highlightId: String? = null) {
 @Composable
 internal fun NotificationsContent(vm: NotificationsViewModel) {
     val c = LocalKioskColors.current
-    val ui by vm.state.collectAsStateWithLifecycle()
+    // Collected on the main thread (like Settings' rows), so Compose state is never written off it.
+    val ui by vm.state.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
     val listState = rememberLazyListState()
     // "Now" for the time labels and the snooze lines: taken again when the list changes, and when
     // the next snooze on screen ends, so its line goes then.
