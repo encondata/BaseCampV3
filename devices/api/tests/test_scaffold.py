@@ -59,7 +59,7 @@ async def test_unknown_api_path_404_not_spa(settings_env, tmp_path):
 
     async with await _client() as c:
         for path in ("/api/nope", "/api", "/enroll/abc/missing", "/enroll",
-                     "/ota/x/manifest.plist", "/dl/x.apk"):
+                     "/ota/x/nothing.txt", "/dl/x.apk"):
             r = await c.get(path)
             assert r.status_code == 404, path
             assert "Devices" not in r.text, path

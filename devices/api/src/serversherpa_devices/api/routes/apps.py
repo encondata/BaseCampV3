@@ -3,7 +3,7 @@ and the version actions (edit notes, make current, delete)."""
 
 import datetime as dt
 import uuid
-from typing import Annotated, Any
+from typing import Annotated
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa_devices import catalog
+from serversherpa_devices import catalog, install_state
 from serversherpa_devices.api.routes import api_error
 from serversherpa_devices.auth.deps import client_ip, require
 from serversherpa_devices.auth.main_api import MainApiClient, Principal, get_main_api
@@ -44,8 +44,8 @@ class AppOut(BaseModel):
     name: str
     icon_url: str | None
     current: VersionOut | None
-    # Task 12's install_state() fills this; None until then.
-    ios_state: Any | None = None
+    # iOS apps on GET /apps: what the viewing iPhone (device_ref) can do.
+    ios_state: install_state.IosState | None = None
 
 
 class AppDetailOut(AppOut):
@@ -71,12 +71,29 @@ _CURRENT = and_(AppVersion.app_id == App.id, AppVersion.is_current,
                 AppVersion.deleted_at.is_(None))
 
 
+def _device_ref(value: str | None) -> uuid.UUID | None:
+    """The page's stored iPhone id; anything unreadable is no iPhone."""
+    try:
+        return uuid.UUID(value) if value else None
+    except ValueError:
+        return None
+
+
 @router.get("/apps", response_model=list[AppOut])
-async def list_apps(db: Db, _: Annotated[Principal, Depends(require("view"))]):
+async def list_apps(db: Db, _: Annotated[Principal, Depends(require("view"))],
+                    device_ref: str | None = None):
     rows = (await db.execute(
         select(App, AppVersion).outerjoin(AppVersion, _CURRENT)
         .order_by(App.name, App.platform, App.identifier))).all()
-    return [_app_out(app, current) for app, current in rows]
+    ref = _device_ref(device_ref)
+    out = []
+    for app, current in rows:
+        item = _app_out(app, current)
+        if app.platform == "ios":
+            item["ios_state"] = await install_state.ios_state(db, app, ref, version=current)
+        out.append(item)
+    await db.commit()   # ios_state may have queued re-signing
+    return out
 
 
 @router.get("/apps/{app_id}", response_model=AppDetailOut)
