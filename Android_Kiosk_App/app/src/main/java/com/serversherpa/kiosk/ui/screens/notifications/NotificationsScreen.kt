@@ -45,7 +45,9 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.push.OpenNotification
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.KioskToast
+import com.serversherpa.kiosk.ui.components.ButtonTint
 import com.serversherpa.kiosk.ui.components.MiniButton
+import com.serversherpa.kiosk.ui.components.TintedButton
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.guards.AdminGate
@@ -220,13 +222,14 @@ private fun NotificationRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // Green for read/unread and red for Hide, so the row's actions stand out (Jimmy, 2026-11-18).
             if (unread) {
-                MiniButton("Mark read", onMarkRead, enabled = !busy)
+                TintedButton("Mark read", onMarkRead, ButtonTint.GREEN, enabled = !busy)
                 MiniButton("Snooze", onSnooze, enabled = !busy)
             } else {
-                MiniButton("Mark unread", onMarkUnread, enabled = !busy)
+                TintedButton("Mark unread", onMarkUnread, ButtonTint.GREEN, enabled = !busy)
             }
-            MiniButton("Hide", onHide, enabled = !busy)
+            TintedButton("Hide", onHide, ButtonTint.RED, enabled = !busy)
         }
     }
 }

@@ -68,16 +68,27 @@ class PushNotifierTest {
     }
 
     @Test fun channels_created_at_start() {
-        val normal = manager.getNotificationChannel("notifications")
+        // Both pop up as a banner with sound, like a text message (Jimmy, 2026-11-18).
+        val normal = manager.getNotificationChannel("alerts")
         assertEquals("Notifications", normal.name)
-        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, normal.importance)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, normal.importance)
         val critical = manager.getNotificationChannel("critical")
         assertEquals("Critical alerts", critical.name)
         assertEquals(NotificationManager.IMPORTANCE_HIGH, critical.importance)
     }
 
+    @Test fun the_old_quiet_channel_is_removed() {
+        // Android never raises an existing channel's importance, so the first release's
+        // default-level "notifications" channel is replaced, not changed.
+        manager.createNotificationChannel(
+            android.app.NotificationChannel("notifications", "Notifications", NotificationManager.IMPORTANCE_DEFAULT))
+        PushNotifier.createChannels(app)
+        assertNull(manager.getNotificationChannel("notifications"))
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, manager.getNotificationChannel("alerts").importance)
+    }
+
     @Test fun critical_goes_to_critical_channel() {
-        assertEquals("notifications", show().channelId)
+        assertEquals("alerts", show().channelId)
         assertEquals("critical", show(mapOf("notification_id" to "n-2", "critical" to "true")).channelId)
     }
 
