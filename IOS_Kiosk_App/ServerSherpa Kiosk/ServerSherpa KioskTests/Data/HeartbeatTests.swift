@@ -60,8 +60,9 @@ struct HeartbeatTests {
         hb.stop()
     }
 
-    /// Kiosk Setup's station-key retry: one sign-in beat now. A failed one leaves nothing
-    /// pending, so the next beat does not record a second sign-in.
+    /// The station key's retry: one sign-in beat now, with the method this kiosk recorded for the
+    /// session (`KioskPrefs.signInMethod`). A failed one leaves nothing pending, so the next beat
+    /// does not record a second sign-in.
     @Test func signInNowRecordsOnceEvenWhenItFails() async {
         let api = FakeKioskApi(); let gate = TickGate()
         let failing = LockedFlag(true)
@@ -69,17 +70,55 @@ struct HeartbeatTests {
             if failing.value { throw ApiError.network() }
             return HeartbeatResult(deviceId: "d", name: body.name, registration: "ok")
         }
-        let hb = harness(api, gate: gate)
-        await hb.signInNow(.password)
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        let hb = harness(api, gate: gate, prefs: prefs)
+        prefs.signInMethod = .password
+        await hb.signInNow()
         #expect(api.heartbeats.count == 1)
         #expect(api.heartbeats[0].signIn == true); #expect(api.heartbeats[0].loginMethod == "password")
         failing.value = false
         await hb.now()
         #expect(api.heartbeats[1].signIn == false)
-        await hb.signInNow(.link)
+        prefs.signInMethod = .link
+        await hb.signInNow()
         await hb.now()
         #expect(api.heartbeats[2].signIn == true); #expect(api.heartbeats[2].loginMethod == "link")
         #expect(api.heartbeats[3].signIn == false)
+    }
+
+    /// Android `signInNowWithNoKnownMethodSendsNoneRatherThanAGuess`: with no method recorded
+    /// and none pending, the sign-in beat still goes, without a `login_method`.
+    @Test func anUnknownMethodSendsNoLoginMethod() async {
+        let api = FakeKioskApi(); let gate = TickGate()
+        let hb = harness(api, gate: gate)
+        await hb.signInNow()
+        #expect(api.heartbeats.count == 1)
+        #expect(api.heartbeats[0].signIn == true)
+        #expect(api.heartbeats[0].loginMethod == nil)
+        await hb.now()
+        #expect(api.heartbeats[1].signIn == false)       // nothing left pending
+    }
+
+    /// Android `signInNowKeepsAPendingSignInsMethod`: a sign-in whose beat hasn't landed yet is
+    /// the session's own, so it goes ahead of the recorded method, and lands with it.
+    @Test func aPendingSignInsMethodGoesFirst() async {
+        let api = FakeKioskApi(); let gate = TickGate()
+        let failing = LockedFlag(true)
+        api.heartbeatResult = { body in
+            if failing.value { throw ApiError.network() }
+            return HeartbeatResult(deviceId: "d", name: body.name, registration: "ok")
+        }
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        prefs.signInMethod = .password
+        let hb = harness(api, gate: gate, prefs: prefs)
+        hb.start(signIn: .link)
+        await waitUntil { api.heartbeatsAnswered == 1 }
+        hb.stop()
+        failing.value = false
+        await hb.signInNow()
+        #expect(api.heartbeats.last?.signIn == true); #expect(api.heartbeats.last?.loginMethod == "link")
+        await hb.now()
+        #expect(api.heartbeats.last?.signIn == false)    // landed: plain again
     }
 
     @Test func unknownRegistrationWireValueReadsAsNone() async {

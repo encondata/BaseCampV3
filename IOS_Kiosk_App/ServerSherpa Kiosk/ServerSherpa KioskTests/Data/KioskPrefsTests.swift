@@ -16,6 +16,25 @@ struct KioskPrefsTests {
         #expect(prefs.portalUrl == nil)
         #expect(prefs.kioskName == nil)
         #expect(prefs.cameraPosition == .back)
+        #expect(prefs.signInMethod == nil)
+    }
+
+    /// Android's key and wire values; nil removes it, and a value this app doesn't know reads
+    /// as unknown rather than as a guess.
+    @Test func theSignInMethodIsKeptUnderItsKey() {
+        let defaults = freshDefaults()
+        let prefs = KioskPrefs(defaults: defaults)
+        for method in [LoginMethod.password, .link, .biometric] {
+            prefs.signInMethod = method
+            #expect(defaults.string(forKey: "ss.kiosk.signInMethod") == method.rawValue)
+            #expect(KioskPrefs(defaults: defaults).signInMethod == method)
+        }
+        #expect(LoginMethod.link.rawValue == "link")
+        prefs.signInMethod = nil
+        #expect(defaults.object(forKey: "ss.kiosk.signInMethod") == nil)
+        #expect(KioskPrefs(defaults: defaults).signInMethod == nil)
+        defaults.set("sso", forKey: "ss.kiosk.signInMethod")
+        #expect(KioskPrefs(defaults: defaults).signInMethod == nil)
     }
 
     @Test func biometricEnrollmentRoundTripsAndNilRemoves() {

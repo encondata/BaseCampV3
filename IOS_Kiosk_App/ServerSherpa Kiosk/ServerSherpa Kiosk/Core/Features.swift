@@ -27,9 +27,10 @@ let FEATURES: [KioskFeature] = [
     KioskFeature(id: .settings, route: "settings", title: "Settings", blurb: "Appearance, sound, devices, and more.", alwaysAvailable: true),
 ]
 
-/// The Time Clock station's Home tile (web `TIMECLOCK_STATION_FEATURE`): signs the person out,
-/// which lands the station on its Welcome screen. Not in FEATURES: only a Time Clock station's
-/// Home shows it, first. It shares the Timeclock icon.
+/// The Time Clock station's Home tile (web `TIMECLOCK_STATION_FEATURE`): gets the station key if
+/// it is missing, then signs the person out, which lands the station on its Welcome screen
+/// (`StationTileModel`). Not in FEATURES: only a Time Clock station's Home shows it, first. It
+/// shares the Timeclock icon.
 let TIMECLOCK_STATION_FEATURE = KioskFeature(id: .timeclock, route: "timeclock/station", title: "Time Clock",
                                              blurb: "Start the time clock for workers.")
 

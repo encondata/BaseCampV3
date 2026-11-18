@@ -75,22 +75,25 @@ final class Heartbeat {
     /// Beat right now (after a rename). Resolves after the attempt.
     func now() async { await beat() }
 
-    /// A sign-in beat right now: the portal records this person as signed in here again (Kiosk
-    /// Setup's station key needs that, 403 `not_signed_in_here` otherwise). Resolves after the attempt.
-    /// A failed attempt leaves nothing pending, so a later beat never records a second sign-in.
-    func signInNow(_ method: LoginMethod) async {
-        await beat(signIn: method)
+    /// A sign-in beat right now: the portal records this person as signed in here again (a station
+    /// key is issued only to that person, 403 `not_signed_in_here` otherwise). Resolves after the
+    /// attempt. It carries the session's own method (Android `signInNow`): a sign-in still pending,
+    /// else the one this kiosk recorded (`KioskPrefs.signInMethod`; a restored session is that
+    /// sign-in). With neither known it goes without a method rather than a made-up one. A failed
+    /// attempt leaves nothing new pending, so a later beat never records a second sign-in.
+    func signInNow() async {
+        await beat(signIn: true)
     }
 
-    /// `signIn`: a one-off sign-in beat (`signInNow`); otherwise any pending sign-in rides along.
-    /// Every beat carries a Clear Setup ack still owed (`setup_cleared`).
-    private func beat(signIn: LoginMethod? = nil) async {
+    /// `signIn`: a one-off sign-in beat (`signInNow`); otherwise only a pending sign-in makes it
+    /// one. Every beat carries a Clear Setup ack still owed (`setup_cleared`).
+    private func beat(signIn: Bool = false) async {
         let started = generation
         let me = identity.current
-        let asSignIn = signIn ?? pendingSignIn
+        let asSignIn = pendingSignIn ?? (signIn ? prefs.signInMethod : nil)
         let ack = prefs.pendingSetupClearAck()
-        let body = HeartbeatIn(serial: me.serial, name: me.name, mode: "ios", version: version, rawInfo: rawInfo(), signIn: asSignIn != nil, loginMethod: asSignIn?.rawValue,
-                               setupCleared: ack)
+        let body = HeartbeatIn(serial: me.serial, name: me.name, mode: "ios", version: version, rawInfo: rawInfo(),
+                               signIn: signIn || asSignIn != nil, loginMethod: asSignIn?.rawValue, setupCleared: ack)
         do {
             let result = try await api.heartbeat(body)
             // stop() ran meanwhile: the reply is dropped whole (no ack, no clear, no registration)

@@ -365,7 +365,7 @@ final class KioskSetupViewModel {
             return
         }
         do {
-            station.storeKey(try await issueStationKey(serial: serial))
+            try await station.issueKey(api: api, signInBeat: { await heartbeat.signInNow() })
         } catch {
             saving = false
             keyError = (error as? ApiError)?.code ?? "unknown_error"
@@ -374,18 +374,6 @@ final class KioskSetupViewModel {
         saving = false
         step = .summary
         await auth.logout()
-    }
-
-    /// `POST /kiosk/station-key`. The portal issues it only to the person it last saw sign in
-    /// here (a sign-in heartbeat stamps that): on 403 `not_signed_in_here`, one sign-in beat
-    /// and one retry.
-    private func issueStationKey(serial: String) async throws -> String {
-        do {
-            return try await api.issueStationKey(serial: serial)
-        } catch let error as ApiError where error.status == 403 && error.code == "not_signed_in_here" {
-            await heartbeat.signInNow(auth.lastSignIn ?? .password)
-            return try await api.issueStationKey(serial: serial)
-        }
     }
 
     func syncAgain() {

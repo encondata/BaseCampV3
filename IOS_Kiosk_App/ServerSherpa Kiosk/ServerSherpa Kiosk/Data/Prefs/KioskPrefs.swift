@@ -51,6 +51,7 @@ final class KioskPrefs {
         static let labels = "ss.kiosk.labels"
         static let biometric = "ss.kiosk.biometric"
         static let setupClear = "ss.kiosk.setupClear"
+        static let signInMethod = "ss.kiosk.signInMethod"
     }
 
     nonisolated static let printerStopsKey = "ss.kiosk.printerStops"
@@ -82,6 +83,11 @@ final class KioskPrefs {
     var portalUrl: String? { didSet { Self.store(portalUrl, Key.portalUrl, defaults) } }
     var kioskName: String? { didSet { Self.store(kioskName, Key.name, defaults) } }
     var cameraPosition: CameraPosition { didSet { defaults.set(cameraPosition.rawValue, forKey: Key.cameraPosition) } }
+    /// How the person signed in here last (Android `ss.kiosk.signInMethod`: password, link or
+    /// biometric), written by each sign-in. A session restored from the cookie is that same
+    /// sign-in, so its sign-in beat reports this. Nil when unknown (never set, or a value this app
+    /// doesn't know): the beat then sends no method rather than a guess.
+    var signInMethod: LoginMethod? { didSet { Self.store(signInMethod?.rawValue, Key.signInMethod, defaults) } }
     /// The saved printer, offsets and peel/tear choice; defaults when nothing (or nothing
     /// readable) is saved. The label kind lives in `setupSelection`.
     private(set) var labels: LabelOptions {
@@ -125,6 +131,7 @@ final class KioskPrefs {
         portalUrl = defaults.string(forKey: Key.portalUrl)
         kioskName = defaults.string(forKey: Key.name)
         cameraPosition = defaults.string(forKey: Key.cameraPosition).flatMap(CameraPosition.init(rawValue:)) ?? .back
+        signInMethod = defaults.string(forKey: Key.signInMethod).flatMap(LoginMethod.init(rawValue:))
         labels = defaults.string(forKey: Key.labels)
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? KioskJSON.decoder.decode(LabelOptions.self, from: $0) } ?? LabelOptions()
