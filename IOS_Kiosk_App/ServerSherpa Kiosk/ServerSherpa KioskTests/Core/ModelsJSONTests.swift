@@ -86,4 +86,33 @@ struct ModelsJSONTests {
         let st = try KioskJSON.decoder.decode(SystemStatus.self, from: Data("{}".utf8))
         #expect(st.readOnly == false && st.readOnlyMessage == "" && st.banner == nil)
     }
+
+    /// Android `lookupModelsDecodeTheApiShape`: the Asset Lookup payloads, with their defaults.
+    @Test func lookupModelsDecodeTheApiShape() throws {
+        let res = try KioskJSON.decoder.decode(KioskLookupResult.self, from: Data(#"{"matches":[{"id":"a1","name":"Core","asset_tag":"T-1","serial_number":"S1","matched":["asset_tag","rfid"]},{"id":"a2","name":null,"asset_tag":"T-2","serial_number":null,"matched":["name"]}],"truncated":true}"#.utf8))
+        #expect(res.matches.count == 2); #expect(res.matches[0].matched == ["asset_tag", "rfid"])
+        #expect(res.matches[1].name == nil); #expect(res.truncated)
+        #expect(try KioskJSON.decoder.decode(KioskLookupResult.self, from: Data("{}".utf8)) == KioskLookupResult())
+
+        let full = try KioskJSON.decoder.decode(KioskAssetDetail.self, from: Data(#"""
+            {"id":"a1","name":"Core","make":"Dell","model":"R740","make_model":"Dell R740","asset_tag":"T-1","serial_number":"S1","rfid":"E200",
+              "routes":[{"initiative_id":"i1","initiative_name":"Move A","source":{"site_name":"Origin","rack":"R1","ru":"12"},"destination":{"site_name":"Dest","pod":"P2","position":"3"}}],
+              "full":{"status":"staged","status_label":"Staged","status_color":"#abc","moves":[{"initiative_id":"i1","initiative_name":"Move A","status":"staged","status_label":"Staged","status_color":"#abc"}],"container_name":"C-9","truck_name":null,"location_detail":"Dock"}}
+            """#.utf8))
+        #expect(full.makeModel == "Dell R740"); #expect(full.rfid == "E200")
+        #expect(full.routes[0].source.siteName == "Origin"); #expect(full.routes[0].source.rack == "R1"); #expect(full.routes[0].source.pod == nil)
+        #expect(full.routes[0].destination.position == "3")
+        #expect(full.full?.statusLabel == "Staged"); #expect(full.full?.containerName == "C-9"); #expect(full.full?.moves.count == 1)
+        #expect(full.full?.locationDetail == "Dock"); #expect(full.full?.moves.first?.statusColor == "#abc")
+        let bare = try KioskJSON.decoder.decode(KioskAssetDetail.self, from: Data(#"{"id":"a1","asset_tag":"T-1","routes":[],"full":null}"#.utf8))
+        #expect(bare.full == nil); #expect(bare.makeModel == "")
+
+        let scans = try KioskJSON.decoder.decode([AssetScanRow].self, from: Data(#"""
+            [{"id":"s1","scanned_value":"T-1","scan_type":"pre_stage","scan_type_label":"Pre-stage","scan_type_color":"#abc","status":null,"scanned_at":"2026-11-10T09:00:00Z","device_id":"d1","operator_name":"Tina","site_name":"Origin","location_detail":"R1","off_move":true,"extra":"x"},
+             {"id":"s2","scanned_at":"2026-11-10T08:00:00Z"}]
+            """#.utf8))
+        #expect(scans[0].offMove); #expect(scans[0].scanTypeLabel == "Pre-stage"); #expect(scans[0].operatorName == "Tina")
+        #expect(scans[0].status == nil); #expect(scans[0].scannedAt == "2026-11-10T09:00:00Z")
+        #expect(!scans[1].offMove); #expect(scans[1].deviceId == "")
+    }
 }

@@ -60,6 +60,21 @@ protocol KioskApi: Sendable {
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus
 
+    // MARK: Asset Lookup (kiosk:view, read-only: none of these records a scan)
+    // Each sends the kiosk's `serial`, which names its move; the server decides the reach and what
+    // the person may see. 403 move_locked (a move-password session on another move's kiosk),
+    // 404 device_not_found (an unknown kiosk).
+
+    /// `GET /kiosk/assets/lookup?serial=&q=`: the matches for a typed or scanned value, at most 25
+    /// (`truncated` when more). A device outside the reach is simply not matched.
+    func lookupAssets(serial: String, value: String) async throws -> KioskLookupResult
+    /// `GET /kiosk/assets/{id}?serial=`: the details card; `full` only for admin and above.
+    /// 404 asset_not_found (also outside the reach).
+    func assetDetail(serial: String, assetId: String) async throws -> KioskAssetDetail
+    /// `GET /kiosk/assets/{id}/scans?serial=&limit=`: the newest `limit` scans; `[]` when the device
+    /// is on no live move. 403 forbidden below admin or without `scans:view`; 404 asset_not_found.
+    func assetScans(serial: String, assetId: String, limit: Int) async throws -> [AssetScanRow]
+
     // MARK: Time Clock station
 
     /// `POST /kiosk/station-key` under the signed-in session: a new station key for this

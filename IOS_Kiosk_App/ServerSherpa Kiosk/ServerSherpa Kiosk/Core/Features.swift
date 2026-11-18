@@ -1,7 +1,7 @@
 import Foundation
 
 enum FeatureId: String, CaseIterable, Sendable {
-    case setup, scan, enroll, containers, trucks, labels, timeclock, settings, rolodex
+    case setup, scan, enroll, containers, trucks, lookup, labels, timeclock, settings, rolodex
 }
 
 /// One launcher tile / route. `placeholder` features open the generic
@@ -40,8 +40,14 @@ let TIMECLOCK_STATION_FEATURE = KioskFeature(id: .timeclock, route: "timeclock/s
 let ROLODEX_FEATURE = KioskFeature(id: .rolodex, route: "rolodex", title: "Rolodex",
                                    blurb: "Look up workers, edit their details, and take photos.", alwaysAvailable: true)
 
-/// Every feature a route can open (`feature(_:)` finds the Rolodex too).
-private let ALL_FEATURES = FEATURES + [ROLODEX_FEATURE]
+/// Asset Lookup (Android's Features.kt): scan or type an asset tag, serial, RFID or name and see
+/// the device. A move tile, so it needs Kiosk Setup. Its place on Home is after Trucks (Android's
+/// order); it joins FEATURES when its screen does.
+let LOOKUP_FEATURE = KioskFeature(id: .lookup, route: "lookup", title: "Asset Lookup",
+                                  blurb: "Scan an asset to see what it is and where it goes.")
+
+/// Every feature a route can open (`feature(_:)` finds the Rolodex and Asset Lookup too).
+private let ALL_FEATURES = FEATURES + [ROLODEX_FEATURE, LOOKUP_FEATURE]
 
 /// What Home shows (web `homeFeatures`): a Time Clock station only Time Clock, Kiosk Setup and
 /// Settings (web `STATION_TILES.timeclock`; Jimmy owns these lists); any other kiosk every feature.

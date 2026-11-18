@@ -63,6 +63,24 @@ struct FeaturesTests {
         #expect(routeAllowed(.rolodexWorker("p1"), setupState: .failed, devMode: false))
     }
 
+    /// Asset Lookup (Android's Features.kt): the tile's words, a move tile (needs setup), and its
+    /// route resolves.
+    @Test func lookupFeatureResolves() {
+        let lookup = feature(.lookup)
+        #expect(lookup == LOOKUP_FEATURE)
+        #expect(lookup.title == "Asset Lookup" && lookup.route == "lookup")
+        #expect(lookup.blurb == "Scan an asset to see what it is and where it goes.")
+        #expect(!lookup.alwaysAvailable && !lookup.placeholder)
+        #expect(!featureAvailable(lookup, setupState: .incomplete))
+        #expect(featureAvailable(lookup, setupState: .complete))
+        #expect(featureForRoute("lookup")?.id == .lookup)
+        #expect(Route.forFeature(.lookup) == .lookup)
+        #expect(!routeAllowed(.lookup, setupState: .incomplete, devMode: false))
+        // Android's FeatureId order: after Trucks, before Label Printing
+        let ids = FeatureId.allCases
+        #expect(ids.firstIndex(of: .lookup) == ids.firstIndex(of: .trucks).map { $0 + 1 })
+    }
+
     @Test func setupStateWire() {
         #expect(SetupState.fromWire("complete") == .complete)
         #expect(SetupState.fromWire("failed") == .failed)

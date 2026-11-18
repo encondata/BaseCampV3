@@ -21,6 +21,15 @@ struct LabelBuildSnapshot: Sendable {
     var templates: [LabelTemplateRow] = []
 }
 
+/// One read of the synced move for an offline Asset Lookup: the move, its raw label context,
+/// each asset's raw JSON in the server's order, and the containers' names by id.
+struct LookupSnapshot: Sendable {
+    var meta: SyncMeta?
+    var labelContext: String?
+    var payloads: [(id: String, json: String)]
+    var containerNames: [String: String]
+}
+
 /// The only thing that touches the SwiftData container. Everything crossing
 /// the actor boundary is a Core value type, never a `@Model` object.
 ///
@@ -229,6 +238,15 @@ actor KioskStore: ModelActor {
             modelContext.rollback()
             throw error
         }
+    }
+
+    /// Everything an offline Asset Lookup reads, in one actor turn with no suspension, so a sync
+    /// can't land between the reads (one sync's assets with the next one's containers).
+    func lookupSnapshot() throws -> LookupSnapshot {
+        let names = Dictionary(try modelContext.fetch(FetchDescriptor<ContainerRecord>()).map { ($0.id, $0.name) },
+                               uniquingKeysWith: { first, _ in first })
+        return LookupSnapshot(meta: try meta(), labelContext: try labelContext(), payloads: try assetPayloads(),
+                              containerNames: names)
     }
 
     /// The move, its label context and, with `withRows` while both exist, the payloads and the

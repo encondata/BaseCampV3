@@ -48,6 +48,15 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var imageResult: @Sendable (String) throws -> Data = { _ in throw unset }
     var stationKeyResult: @Sendable (String) async throws -> String = { _ in throw unset }
 
+    // Asset Lookup. Unset, each throws Android's fake answer (404 not_found). Their calls are
+    // recorded as "lookupAssets:<value>", "assetDetail:<id>" and "assetScans:<id>" (as Android's).
+    var lookupAssetsResult: @Sendable (String, String) async throws -> KioskLookupResult = { _, _ in throw ApiError(status: 404, code: "not_found") }
+    var assetDetailResult: @Sendable (String, String) async throws -> KioskAssetDetail = { _, _ in throw ApiError(status: 404, code: "not_found") }
+    var assetScansResult: @Sendable (String, String, Int) async throws -> [AssetScanRow] = { _, _, _ in throw ApiError(status: 404, code: "not_found") }
+    /// When set, every Asset Lookup call awaits this (with its recorded name) before answering:
+    /// holds a lookup, open or scan-history read in flight.
+    var lookupGate: (@Sendable (String) async -> Void)?
+
     // Rolodex. Options default to empty and duplicates to no matches; the rest throw `unset`.
     var rolodexWorkersResult: @Sendable () async throws -> RolodexList = { throw unset }
     var rolodexWorkerResult: @Sendable (String) async throws -> RolodexDetail = { _ in throw unset }
@@ -156,6 +165,18 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); await clockInGate?(); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
     func issueStationKey(serial: String) async throws -> String { record("issueStationKey"); return try await stationKeyResult(serial) }
+    func lookupAssets(serial: String, value: String) async throws -> KioskLookupResult {
+        let name = "lookupAssets:\(value)"
+        record(name); await lookupGate?(name); return try await lookupAssetsResult(serial, value)
+    }
+    func assetDetail(serial: String, assetId: String) async throws -> KioskAssetDetail {
+        let name = "assetDetail:\(assetId)"
+        record(name); await lookupGate?(name); return try await assetDetailResult(serial, assetId)
+    }
+    func assetScans(serial: String, assetId: String, limit: Int) async throws -> [AssetScanRow] {
+        let name = "assetScans:\(assetId)"
+        record(name); await lookupGate?(name); return try await assetScansResult(serial, assetId, limit)
+    }
     func rolodexWorkers() async throws -> RolodexList {
         record("rolodexWorkers"); await rolodexGate?("rolodexWorkers"); return try await rolodexWorkersResult()
     }
