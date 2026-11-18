@@ -200,3 +200,57 @@ def test_from_settings_reads_file_and_errors_clearly(sa_setting, tmp_path):
     sa_setting(str(tmp_path / "missing.json"))
     with pytest.raises(RuntimeError, match="FCM service account"):
         FcmClient.from_settings()
+
+
+@pytest.fixture
+def b64_setting(monkeypatch):
+    def apply(file: str, b64: str) -> None:
+        monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_FILE", file)
+        monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_B64", b64)
+        get_settings.cache_clear()
+
+    yield apply
+    monkeypatch.undo()
+    get_settings.cache_clear()
+
+
+def _b64(account: dict) -> str:
+    import base64
+
+    body = {"type": "service_account", **account}
+    return base64.b64encode(json.dumps(body).encode()).decode()
+
+
+def test_from_settings_reads_base64(b64_setting):
+    b64_setting("", _b64(_account()))
+    client = FcmClient.from_settings()
+    assert isinstance(client, FcmClient)
+    assert client._project_id == "proj-1"
+
+
+def test_file_wins_over_base64(b64_setting, tmp_path):
+    path = tmp_path / "sa.json"
+    path.write_text(json.dumps({**_account(), "project_id": "from-file"}))
+    b64_setting(str(path), _b64({**_account(), "project_id": "from-b64"}))
+    assert FcmClient.from_settings()._project_id == "from-file"
+
+
+@pytest.mark.parametrize("bad", [
+    "not base64 at all!!",
+    "bm90IGpzb24=",  # "not json"
+    "W10=",  # a JSON list
+    "e30=",  # an empty object
+    "A" * 9000,  # over the length cap
+], ids=["not-base64", "not-json", "json-list", "empty-object", "too-long"])
+def test_bad_base64_is_a_clear_error_without_the_key(b64_setting, bad):
+    b64_setting("", bad)
+    with pytest.raises(RuntimeError, match="FCM service account") as info:
+        FcmClient.from_settings()
+    assert bad[:20] not in str(info.value)
+
+
+def test_base64_must_be_a_service_account(b64_setting):
+    b64_setting("", _b64({**_account(), "type": "authorized_user"}))
+    with pytest.raises(RuntimeError, match="FCM service account") as info:
+        FcmClient.from_settings()
+    assert _PRIVATE_PEM[:40] not in str(info.value)

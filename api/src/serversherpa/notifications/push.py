@@ -62,8 +62,10 @@ def _now() -> datetime:
 
 
 def push_enabled() -> bool:
-    """Whether the server has a push key configured (SS_FCM_SERVICE_ACCOUNT_FILE)."""
-    return get_settings().fcm_service_account_file != ""
+    """Whether the server has a push key configured (SS_FCM_SERVICE_ACCOUNT_FILE or
+    SS_FCM_SERVICE_ACCOUNT_B64)."""
+    s = get_settings()
+    return s.fcm_service_account_file != "" or s.fcm_service_account_b64 != ""
 
 
 async def live_registrations(db: AsyncSession, person_id: uuid.UUID,

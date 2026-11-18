@@ -197,7 +197,8 @@ async def run_push(maker, state: dict) -> int:
     try:
         # one client for the life of the config: its access-token cache lives
         # on the instance. Rebuilt when the key path changes or a build failed.
-        path = get_settings().fcm_service_account_file
+        cfg = get_settings()
+        path = (cfg.fcm_service_account_file, cfg.fcm_service_account_b64)
         client = state.get("client")
         if client is None or state.get("path") != path:
             state.pop("client", None)

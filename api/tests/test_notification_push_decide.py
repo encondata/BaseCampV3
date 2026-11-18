@@ -266,3 +266,14 @@ async def test_delivery_log_push_channel(db):
         record(db, event, channel="push")
     await db.flush()
     assert await db.scalar(select(func.count()).select_from(NotificationLog)) == 9
+
+
+def test_push_enabled_with_base64_only(monkeypatch):
+    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_FILE", "")
+    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_B64", "e30=")
+    get_settings.cache_clear()
+    try:
+        assert push_enabled() is True
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()

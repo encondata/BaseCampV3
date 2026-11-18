@@ -6,7 +6,9 @@ tokens are never logged and never placed in error text.
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -22,6 +24,8 @@ _SEND_URL = "https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 _TOKEN_LIFETIME = 3600
 _REFRESH_MARGIN = 300
 _TIMEOUT = 15.0
+_MAX_B64 = 8192
+_B64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 
 Outcome = Literal["sent", "token_dead", "retry", "fatal"]
 
@@ -51,8 +55,11 @@ class FcmClient:
 
     @classmethod
     def from_settings(cls) -> FcmClient | None:
-        path = get_settings().fcm_service_account_file
+        settings = get_settings()
+        path = settings.fcm_service_account_file
         if not path:
+            if settings.fcm_service_account_b64:
+                return cls._from_b64(settings.fcm_service_account_b64)
             return None
         try:
             with open(path, encoding="utf-8") as fh:
@@ -63,6 +70,29 @@ class FcmClient:
             raise RuntimeError(
                 f"FCM service account file at {path} is unreadable or invalid "
                 f"({type(exc).__name__})"
+            ) from None
+
+    @classmethod
+    def _from_b64(cls, value: str) -> FcmClient:
+        try:
+            if len(value) > _MAX_B64 or not _B64_RE.fullmatch(value):
+                raise ValueError
+            account = json.loads(base64.b64decode(value, validate=True))
+            if (
+                not isinstance(account, dict)
+                or account.get("type") != "service_account"
+                or not all(
+                    isinstance(account.get(k), str) and account[k]
+                    for k in ("project_id", "client_email", "private_key")
+                )
+            ):
+                raise ValueError
+            return cls(account)
+        except (ValueError, KeyError):
+            # Never the value or the decoded text: both are the secret.
+            raise RuntimeError(
+                "FCM service account in SS_FCM_SERVICE_ACCOUNT_B64 is not valid "
+                "base64 of a service-account JSON key"
             ) from None
 
     def _assertion(self, now: float) -> str:
