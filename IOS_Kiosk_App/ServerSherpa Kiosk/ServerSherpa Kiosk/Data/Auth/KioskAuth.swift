@@ -131,6 +131,14 @@ final class KioskAuth {
         state = .anon
     }
 
+    #if DEBUG
+    /// Debug builds only (`-uiTestAssetLookup`): shows `session` as signed in, for the shell's
+    /// layout on sample data. Nothing is stored, nothing is sent, and nothing else is applied.
+    func showSampleSessionForUITest(_ session: SessionData) {
+        state = .authed(session)
+    }
+    #endif
+
     func can(_ resource: String, _ action: String) -> Bool {
         guard case .authed(let s) = state else { return computeCan(nil, resource, action) }
         return computeCan(s.perms, resource, action)

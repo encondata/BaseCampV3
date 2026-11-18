@@ -2,8 +2,9 @@
 import SwiftUI
 
 /// Debug builds only (`-uiTestAssetLookup <empty|detail|list|offline>`): the real Asset Lookup
-/// screen inside the kiosk shell, answered from memory, so its layout can be checked on the
-/// Simulator with no server, no sign-in and no Kiosk Setup. Nothing is stored or sent. "102466"
+/// screen inside the kiosk shell (shown signed in, as in production), answered from memory, so
+/// its layout can be checked on the Simulator with no server, no sign-in and no Kiosk Setup.
+/// Nothing is stored or sent. "102466"
 /// opens an admin's card, anything with "asset" in it lists three matches, and the rest miss.
 enum AssetLookupSampleMode: String {
     case empty, detail, list, offline
@@ -99,6 +100,12 @@ struct AssetLookupSampleHost: View {
         }
         .kioskTheme(accent: "amber", scheme: nil)
         .task {
+            // The shell as production shows it: someone signed in, a registration chip, Sign out.
+            container.auth.showSampleSessionForUITest(SessionData(
+                accessToken: "sample", expiresIn: 900, sessionExpiresAt: "2099-01-01T00:00:00Z",
+                person: PersonOut(id: "p1", firstName: "Person", lastName: "A Lastname", displayName: "Person A Lastname"),
+                roles: ["admin"], perms: ["kiosk": ["view": true], "scans": ["view": true]], maxRank: 60))
+            container.heartbeat.showSampleRegistrationForUITest(.ok)
             if let first = mode.firstScan { vm.onScan(first) }
         }
     }

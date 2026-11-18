@@ -137,6 +137,7 @@ struct KioskShell<Content: View>: View {
                 ViewThatFits(in: .horizontal) {
                     regularRow(showChip: true, showTitle: true)
                     regularRow(showChip: false, showTitle: true)
+                    regularRow(showChip: false, showTitle: false)
                     compactRows
                 }
             } else if sizeClass == .compact {

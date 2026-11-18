@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// kiosk/src/pages/AssetLookup.tsx (Android `AssetLookupScreen.kt`): one box for an asset tag,
 /// serial, RFID or name, from typing, a keyboard scanner or the camera. Read-only: the view model
@@ -52,6 +53,12 @@ func lookupRowCutOff(rowTop: CGFloat, rowHeight: CGFloat, viewport: CGFloat) -> 
     rowTop + rowHeight > viewport + 0.5
 }
 
+/// How far the page is scrolled and how far it can scroll.
+struct ScrollSpot: Equatable {
+    var offset: CGFloat
+    var max: CGFloat
+}
+
 /// The screen itself, top to bottom: the header, the box with Search and Clear, the results. The
 /// box row is a pinned section header: once the header scrolls away the row sticks at the top, so
 /// the buttons are never only reachable by scrolling. When an answer lands out of sight, the page
@@ -74,46 +81,51 @@ struct AssetLookupBody: View {
     /// Where the header ends in the scroll view: the box row starts there, or sticks at 0.
     @State private var headerBottom: CGFloat = 0
     @State private var cardTop: CGFloat = 0
+    /// The page's scroll position, moved to bring the row or an answer into view, and how far it is
+    /// scrolled now and can scroll at most.
+    @State private var position = ScrollPosition(edge: .top)
+    @State private var scrolled = ScrollSpot(offset: 0, max: 0)
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.kioskPalette) private var palette
 
     private static let wideWidth: CGFloat = 700
-    private static let cardMark = "lookup-card-start"
-    /// The header's end, where the box row starts: scrolled to the top, the row sticks there with
-    /// the results right under it. A direct child of the lazy stack, so it is always there to find.
-    private static let rowMark = "lookup-row-start"
     private static let scrollSpace = "lookup-scroll"
 
     /// Until the first measurement, regular-width devices (iPad) start wide so there is no stacked first frame.
     private var wide: Bool { contentWidth.map { $0 >= Self.wideWidth } ?? (sizeClass == .regular) }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    PageHeader(eyebrow: "Kiosk · Asset Lookup", title: "Asset Lookup", subtitle: subtitle)
-                        .padding([.horizontal, .top], 16)
-                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).maxY } action: { headerBottom = $0 }
-                    Color.clear.frame(height: 0).id(Self.rowMark)
-                    Section {
-                        VStack(alignment: .leading, spacing: 0) { results }
-                            .padding([.horizontal, .bottom], 16)
-                    } header: {
-                        boxRow
-                    }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                PageHeader(eyebrow: "Kiosk · Asset Lookup", title: "Asset Lookup", subtitle: subtitle)
+                    .padding([.horizontal, .top], 16)
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).maxY } action: { headerBottom = $0 }
+                Section {
+                    VStack(alignment: .leading, spacing: 0) { results }
+                        .padding([.horizontal, .bottom], 16)
+                } header: {
+                    boxRow
                 }
             }
-            .coordinateSpace(.named(Self.scrollSpace))
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
-            .scrollDismissesKeyboard(.never)
-            // A lookup or a pick just answered.
-            .onChange(of: vm.ui.searching) { was, now in
-                if was && !now { reveal(proxy) }
-            }
-            // The keyboard came up or the device turned: the whole box row stays on screen.
-            .onChange(of: viewport) { _, _ in keepRowInView(proxy) }
-            .onAppear { keepRowInView(proxy) }
         }
+        .coordinateSpace(.named(Self.scrollSpace))
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: ScrollSpot.self) { g in
+            ScrollSpot(offset: g.contentOffset.y + g.contentInsets.top,
+                       max: g.contentSize.height + g.contentInsets.top + g.contentInsets.bottom - g.containerSize.height)
+        } action: { _, spot in scrolled = spot }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
+        .scrollDismissesKeyboard(.never)
+        // A lookup or a pick just answered.
+        .onChange(of: vm.ui.searching) { was, now in
+            if was && !now { reveal() }
+        }
+        // The visible height changed (the device turned, the keyboard came or went), and once the
+        // keyboard has finished coming up (after the system's own scroll to the box): the answer,
+        // else the whole box row, is brought back on screen.
+        .onChange(of: viewport) { _, _ in settle() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in settle() }
+        .onAppear { settle() }
         .onGeometryChange(for: CGFloat.self) { $0.size.width - 32 } action: { contentWidth = $0 }
         .background(palette.paper2)
         .task(id: ready) {
@@ -125,36 +137,39 @@ struct AssetLookupBody: View {
         }
     }
 
-    /// A zero-height marker the page scrolls to, reporting where it is in the scroll view.
-    private func mark(_ id: String, _ report: @escaping (CGFloat) -> Void) -> some View {
-        Color.clear.frame(height: 0).id(id)
-            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { report($0) }
+    /// The answer on screen, if any, and where its first line is in the visible area: a picked
+    /// row's card (the list stays above it, as on the web), else the results right under the row.
+    private var answerTop: CGFloat? {
+        let ui = vm.ui
+        guard !ui.searching, ui.list != nil || ui.detail != nil || ui.miss != nil || ui.error != nil || ui.offline else { return nil }
+        return ui.list != nil && ui.detail != nil ? cardTop : headerBottom + rowHeight
     }
 
-    /// Where a zero-height marker lands right under the stuck box row (a fraction of the height).
-    private var underRow: UnitPoint { UnitPoint(x: 0, y: min(rowHeight / max(viewport, 1), 0.9)) }
+    /// Scrolls by `by` points (positive: the page moves up), within what the page can scroll.
+    private func scroll(by: CGFloat) {
+        let target = min(max(scrolled.offset + by, 0), max(scrolled.max, 0))
+        withAnimation { position.scrollTo(y: target) }
+    }
 
-    /// When the header leaves too little room for the whole box row, the header scrolls away and
-    /// the row sticks at the top. Checked once the keyboard has finished coming up: a scroll made
-    /// while it animates in is undone by the keyboard's own adjustment.
-    private func keepRowInView(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            guard lookupRowCutOff(rowTop: max(headerBottom, 0), rowHeight: rowHeight, viewport: viewport) else { return }
-            withAnimation { proxy.scrollTo(Self.rowMark, anchor: .top) }
+    /// A lookup or a pick just answered: its first line is brought in just under the box row when
+    /// it landed out of sight. Read once the new answer is laid out.
+    private func reveal() {
+        DispatchQueue.main.async {
+            guard let top = answerTop, lookupNeedsReveal(top: top, viewport: viewport, pinned: rowHeight) else { return }
+            scroll(by: top - rowHeight)
         }
     }
 
-    /// Brings the answer's first line in just under the stuck box row when it landed out of sight:
-    /// a picked row's card (the list stays above it, as on the web), else the results. Read once
-    /// the new answer is laid out.
-    private func reveal(_ proxy: ScrollViewProxy) {
-        let pick = vm.ui.list != nil && vm.ui.detail != nil
+    /// After a change of the visible height or the keyboard settling: the answer's first line if
+    /// it is out of sight, else the whole box row if it runs off the bottom. Only while the header
+    /// still shows, so someone who has scrolled into the results is never pulled back.
+    private func settle() {
         DispatchQueue.main.async {
-            // The results start right under the row (stuck or not).
-            let top = pick ? cardTop : headerBottom + rowHeight
-            guard lookupNeedsReveal(top: top, viewport: viewport, pinned: rowHeight) else { return }
-            withAnimation {
-                if pick { proxy.scrollTo(Self.cardMark, anchor: underRow) } else { proxy.scrollTo(Self.rowMark, anchor: .top) }
+            guard headerBottom > 0 else { return }
+            if let top = answerTop, lookupNeedsReveal(top: top, viewport: viewport, pinned: rowHeight) {
+                scroll(by: top - rowHeight)
+            } else if lookupRowCutOff(rowTop: headerBottom, rowHeight: rowHeight, viewport: viewport) {
+                scroll(by: headerBottom)
             }
         }
     }
@@ -223,8 +238,8 @@ struct AssetLookupBody: View {
                 .accessibilityLabel("Looking up")
         }
         if let detail = ui.detail {
-            mark(Self.cardMark) { cardTop = $0 }
             DetailCard(detail: detail, scans: ui.scans, wide: wide)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { cardTop = $0 }
         }
     }
 }

@@ -37,8 +37,10 @@ final class AssetLookupUITests: XCTestCase {
                 settle(search)
                 let context = "\(mode), \(orientation.isLandscape ? "landscape" : "portrait")"
                 let keyboard = softKeyboard(app, context)
+                if keyboard { settleAfterKeyboard() }
                 try keepScreenshot(mode + (keyboard ? "-keyboard" : ""), orientation)
                 assertReachable(app, context)
+                if let first = firstLine(app, mode: mode) { assertShown(first, app, context) }
                 if mode == "list" {
                     app.buttons["lookup-match-a2"].tap()
                     let card = app.descendants(matching: .any)["lookup-card"].firstMatch
@@ -46,11 +48,45 @@ final class AssetLookupUITests: XCTestCase {
                     settle(card)
                     try keepScreenshot("picked" + (keyboard ? "-keyboard" : ""), orientation)
                     assertReachable(app, context + ", after a pick")
+                    // The card's first match is its name (the identifier reaches its first line).
+                    assertShown(card, app, context + ", after a pick")
                 }
                 app.terminate()
             }
         }
     }
+
+    /// The answer's first line in each state: the list's table header (wide) or first row, the
+    /// card's name, the offline notice. Nil for the empty screen.
+    @MainActor
+    private func firstLine(_ app: XCUIApplication, mode: String) -> XCUIElement? {
+        switch mode {
+        case "list":
+            let header = app.staticTexts["NAME"]
+            return header.exists ? header : app.buttons["lookup-match-a1"]
+        case "detail": return app.staticTexts["Asset A"]
+        case "offline": return app.descendants(matching: .any)["lookup-offline"].firstMatch
+        default: return nil
+        }
+    }
+
+    /// The top `line` of `answer` is on screen with no gesture: below the box row, above the footer
+    /// and above the on-screen keyboard.
+    @MainActor
+    private func assertShown(_ answer: XCUIElement, _ app: XCUIApplication, _ context: String, line: CGFloat = 24) {
+        let top = answer.frame.minY
+        let rowBottom = max(app.textFields["scan-input"].frame.maxY, app.buttons["lookup-search"].frame.maxY)
+        var bottom = app.windows.firstMatch.frame.maxY
+        let footer = app.staticTexts["MODE"]
+        if footer.exists { bottom = min(bottom, footer.frame.minY) }
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
+        XCTAssertGreaterThanOrEqual(top, rowBottom - 0.5, "\(context): the answer \(answer.frame) is under the box row (\(rowBottom))")
+        XCTAssertLessThanOrEqual(top + line, bottom + 0.5, "\(context): the answer \(answer.frame) is not on screen above \(bottom)")
+    }
+
+    /// The keyboard has finished coming up and the screen has settled after it.
+    private func settleAfterKeyboard() { Thread.sleep(forTimeInterval: 1.0) }
 
     /// Search, Clear and the shell's "‹ Home" lie inside the window and are hittable, with no gesture.
     @MainActor

@@ -34,6 +34,14 @@ final class Heartbeat {
     /// generation belongs to a stopped heartbeat and is dropped.
     @ObservationIgnored private var generation = 0
 
+    #if DEBUG
+    /// Debug builds only (`-uiTestAssetLookup`): a registration chip for the shell's layout on
+    /// sample data, with no heartbeat sent.
+    func showSampleRegistrationForUITest(_ state: RegistrationState) {
+        registration = state
+    }
+    #endif
+
     init(
         api: KioskApi,
         identity: Identity,
