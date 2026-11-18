@@ -37,6 +37,16 @@ Postgres database and its own bucket. It trusts the main API for sign-in.
 
 Ports: API 8099, web 5180.
 
+Shortcut: `cp devices/.env.example devices/.env`, fill the `CHANGEME` values,
+and put the same service token in the repo `.env` as
+`SS_DEVICES_SERVICE_TOKEN` (plus `SS_DEVICES_ORIGIN` for the portal link),
+then restart the main API so it picks them up and applies its migrations.
+
+Processes: `Procfile.dev` has `devicesapi`, `deviceswork` and `devicesweb`
+(`api/.venv/bin/honcho start -f Procfile.dev devicesapi deviceswork devicesweb`).
+The web dev server is on 5180; point the NPM proxy host
+`devices.dev.serversherpa.com` at it.
+
 ## Tests
 
 From `devices/api`: `.venv/bin/pytest -q`
