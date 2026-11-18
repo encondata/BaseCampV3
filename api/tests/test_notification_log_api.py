@@ -299,7 +299,7 @@ async def _check(client, hdrs, person, kind="report_ready", **params):
 
 CHECK_KEYS = {
     "person_id", "person_name", "kind", "kind_label", "category", "owner_copy", "active",
-    "has_account", "inbox", "inbox_reason", "inbox_source", "email_enabled", "critical", "switches",
+    "has_account", "inbox", "inbox_reason", "inbox_source", "email_enabled", "push_enabled", "push", "critical", "switches",
     "schedule", "outcome", "after_summary", "send_at", "summary_at", "reason", "address",
     "address_source", "watches",
 }
@@ -344,7 +344,8 @@ async def test_check_outcomes(client, db, email_on):
     assert (body["address"], body["address_source"]) == ("olive@test.example.com", "contact")
     assert body["send_at"] is not None and body["summary_at"] is None
     assert body["switches"] == {"inbox": {"on": True, "source": "default"},
-                                "email": {"on": True, "source": "default"}}
+                                "email": {"on": True, "source": "default"},
+                                "push": {"on": False, "source": "default"}}
     assert body["schedule"] == {"timezone": "America/New_York", "days": EVERY_DAY,
                                 "quiet_start": None, "quiet_end": None, "state": "open"}
     assert body["watches"] is None                  # nobody can watch for Report ready
@@ -354,7 +355,8 @@ async def test_check_outcomes(client, db, email_on):
         "suppressed", "category_off", "own")
     assert (body["outcome"], body["reason"]) == ("not_sent", "category_off")
     assert body["switches"] == {"inbox": {"on": False, "source": "own"},
-                                "email": {"on": False, "source": "own"}}
+                                "email": {"on": False, "source": "own"},
+                                "push": {"on": False, "source": "default"}}
     assert body["has_account"] is True
     assert body["send_at"] is None and body["summary_at"] is None
 
@@ -465,7 +467,8 @@ async def test_check_owner_copy_now(client, db, email_on):
     assert (body["address"], body["address_source"]) == ("owner.login@test.example.com", "login")
     assert (body["category"], body["critical"], body["inbox"]) == ("security", True, "written")
     assert body["switches"] == {"inbox": {"on": True, "source": "fixed"},
-                                "email": {"on": True, "source": "fixed"}}
+                                "email": {"on": True, "source": "fixed"},
+                                "push": {"on": False, "source": "fixed"}}
     assert body["schedule"]["state"] == "quiet_hours"
     assert body["send_at"] is not None and body["summary_at"] is None
 

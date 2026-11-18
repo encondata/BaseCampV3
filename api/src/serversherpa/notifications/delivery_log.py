@@ -28,11 +28,13 @@ EVENTS: tuple[str, ...] = (
     "inbox_written", "inbox_suppressed",
     "email_queued", "email_not_queued", "email_held", "email_summarized",
     "email_sent", "email_skipped", "email_retry", "email_failed",
+    "push_queued", "push_not_queued", "push_sent", "push_dropped", "push_failed",
+    "push_retry", "push_token_removed", "push_snoozed", "push_cleared",
 )
 
-# The table's CHECK also allows text and push, for the channels that may
-# arrive later; the writer only accepts the ones in use.
-LOG_CHANNELS: tuple[str, ...] = ("inbox", "email")
+# The table's CHECK also allows text, for a channel that may arrive later; the
+# writer only accepts the ones in use.
+LOG_CHANNELS: tuple[str, ...] = ("inbox", "email", "push")
 
 
 def record(db: AsyncSession, event: str, *, channel: str,

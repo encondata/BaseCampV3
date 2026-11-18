@@ -3270,6 +3270,15 @@ class CheckWatchOut(BaseModel):
     via: WatchViaOut
 
 
+class DeliveryCheckPushOut(BaseModel):
+    """The push answer: `now` (queued for the person's phones) or `not_sent`
+    with the reason code. `phones` counts the person's live phones."""
+
+    outcome: Literal["now", "not_sent"]
+    reason: str | None = None
+    phones: int
+
+
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
     kind. Nothing is written. `inbox` is notify()'s answer, with the source of
@@ -3300,6 +3309,7 @@ class DeliveryCheckOut(BaseModel):
     inbox_reason: str | None = None
     inbox_source: Literal["default", "own", "fixed"]
     email_enabled: bool
+    push_enabled: bool
     critical: bool
     switches: DeliveryCheckSwitchesOut
     schedule: DeliveryCheckScheduleOut
@@ -3310,6 +3320,7 @@ class DeliveryCheckOut(BaseModel):
     reason: str | None = None
     address: str | None = None
     address_source: str | None = None
+    push: DeliveryCheckPushOut
     watches: list[CheckWatchOut] | None = None
 
 

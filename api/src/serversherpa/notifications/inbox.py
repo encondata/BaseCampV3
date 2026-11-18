@@ -16,6 +16,7 @@ from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.email import effective_switches, load_contact, maybe_email
 from serversherpa.notifications.kinds import kind_info
 from serversherpa.notifications.live import signal_inbox
+from serversherpa.notifications.push import maybe_push
 
 
 async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, *,
@@ -64,4 +65,5 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
            category=info.category if info else None, detail=log_detail)
     await maybe_email(db, row, info=info, owner_notice=owner_notice,
                       contact=contact, company=company)
+    await maybe_push(db, row, info=info, contact=contact, company=company)
     return row
