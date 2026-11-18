@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.update
 
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.update.BAD_ANSWER
 import com.serversherpa.kiosk.core.update.NO_DEVICES_HOST
 import com.serversherpa.kiosk.core.update.UpdateAnswer
 import com.serversherpa.kiosk.data.api.ApiHarness
@@ -8,6 +9,7 @@ import com.serversherpa.kiosk.data.api.jsonResponse
 import com.serversherpa.kiosk.data.api.sessionResponse
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.mockwebserver.MockResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -132,6 +134,41 @@ class DevicesUpdateClientTest {
             val before = h.server.requestCount
             assertEquals(UpdateAnswer.Blocked(NO_DEVICES_HOST), h.devices("http://10.0.2.2:8010").check("com.serversherpa.kiosk", 2, digest))
             assertEquals(before, h.server.requestCount)
+        }
+    }
+
+    @Test fun neverSendsCookiesEvenOnesTheJarWouldMatch() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            val cookie = okhttp3.Cookie.Builder().name("sid").value("x").domain("test").path("/").build()
+            h.cookieJar.saveFromResponse("http://api.test/".toHttpUrl(), listOf(cookie))
+            assertTrue(h.cookieJar.loadForRequest("http://devices.test/api/updates".toHttpUrl()).isNotEmpty())
+            h.server.enqueue(jsonResponse(200, """{"status":"up_to_date"}"""))
+            h.devices().check("com.serversherpa.kiosk", 2, digest)
+            assertNull(h.server.takeRequest().getHeader("Cookie"))
+        }
+    }
+
+    @Test fun aNonJsonAnswerIsBlockedAsBad() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(MockResponse().setResponseCode(200).setBody("<html>hi</html>"))
+            assertEquals(UpdateAnswer.Blocked(BAD_ANSWER), h.devices().check("com.serversherpa.kiosk", 2, digest))
+        }
+    }
+
+    @Test fun a401WithARefusedRefreshThrowsAndEmitsNothing() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(401, """{"detail":"no"}"""))
+            h.server.enqueue(jsonResponse(401, """{"detail":"refresh refused"}"""))
+            val seen = java.util.concurrent.atomic.AtomicInteger()
+            val job = h.scope.launch(kotlinx.coroutines.Dispatchers.Unconfined) { h.session.sessionEnded.collect { seen.incrementAndGet() } }
+            try { h.devices().check("com.serversherpa.kiosk", 2, digest); fail() } catch (e: ApiError) {
+                assertEquals(401, e.status)
+            }
+            job.cancel()
+            assertEquals(0, seen.get())
         }
     }
 }
