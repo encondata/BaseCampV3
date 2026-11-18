@@ -11,6 +11,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
 import httpx
@@ -75,19 +76,7 @@ class FcmClient:
     @classmethod
     def _from_b64(cls, value: str) -> FcmClient:
         try:
-            if len(value) > _MAX_B64 or not _B64_RE.fullmatch(value):
-                raise ValueError
-            account = json.loads(base64.b64decode(value, validate=True))
-            if (
-                not isinstance(account, dict)
-                or account.get("type") != "service_account"
-                or not all(
-                    isinstance(account.get(k), str) and account[k]
-                    for k in ("project_id", "client_email", "private_key")
-                )
-            ):
-                raise ValueError
-            return cls(account)
+            return cls(parse_b64_account(value))
         except (ValueError, KeyError):
             # Never the value or the decoded text: both are the secret.
             raise RuntimeError(
@@ -166,6 +155,34 @@ class FcmClient:
         except Exception as exc:  # noqa: BLE001 - e.g. a bad private key
             return SendResult("fatal", f"auth error {type(exc).__name__}")
         return _classify(resp)
+
+
+def parse_b64_account(value: str) -> dict:
+    """Decode and validate SS_FCM_SERVICE_ACCOUNT_B64; ValueError when invalid."""
+    if len(value) > _MAX_B64 or not _B64_RE.fullmatch(value):
+        raise ValueError("invalid")
+    account = json.loads(base64.b64decode(value, validate=True))
+    if (
+        not isinstance(account, dict)
+        or account.get("type") != "service_account"
+        or not all(
+            isinstance(account.get(k), str) and account[k]
+            for k in ("project_id", "client_email", "private_key")
+        )
+    ):
+        raise ValueError("invalid")
+    return account
+
+
+@lru_cache(maxsize=8)
+def b64_account_valid(value: str) -> bool:
+    """Cached validity of a base64 key value (the key text is never kept apart
+    from the cache entry itself)."""
+    try:
+        parse_b64_account(value)
+    except ValueError:
+        return False
+    return True
 
 
 class _TokenError(Exception):

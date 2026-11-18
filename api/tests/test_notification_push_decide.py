@@ -268,12 +268,31 @@ async def test_delivery_log_push_channel(db):
     assert await db.scalar(select(func.count()).select_from(NotificationLog)) == 9
 
 
-def test_push_enabled_with_base64_only(monkeypatch):
+def _b64_of(obj) -> str:
+    import base64
+    import json
+
+    return base64.b64encode(json.dumps(obj).encode()).decode()
+
+
+_GOOD = {"type": "service_account", "project_id": "p", "client_email": "e@x",
+         "private_key": "k"}
+
+
+@pytest.mark.parametrize("value,expected", [
+    (_b64_of(_GOOD), True),
+    ("not base64!!", False),
+    (_b64_of("just a string"), False),
+    ("bm90IGpzb24=", False),
+    (_b64_of({**_GOOD, "type": "authorized_user"}), False),
+    (_b64_of({k: v for k, v in _GOOD.items() if k != "private_key"}), False),
+], ids=["valid", "bad-chars", "string-json", "not-json", "wrong-type", "missing-field"])
+def test_push_enabled_with_base64_only(monkeypatch, value, expected):
     monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_FILE", "")
-    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_B64", "e30=")
+    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_B64", value)
     get_settings.cache_clear()
     try:
-        assert push_enabled() is True
+        assert push_enabled() is expected
     finally:
         monkeypatch.undo()
         get_settings.cache_clear()
