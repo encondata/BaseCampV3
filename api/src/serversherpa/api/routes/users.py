@@ -60,7 +60,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.mail import email_enabled
 from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
-from serversherpa.services import biometric, invites
+from serversherpa.services import biometric, invites, push_registrations
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -699,6 +699,7 @@ async def disable_account(
     await revoke_all_sessions(db, person_id, "account_disabled")
     await biometric.revoke_keys(db, person_id=person_id, reason="account_disabled",
                                 actor_id=actor.person.id)
+    await push_registrations.drop_for_person(db, person_id, reason="account_disabled")
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.disable")
     await db.commit()
@@ -814,6 +815,7 @@ async def demote_to_worker(
         # delete, so the keys must be revoked explicitly (and audited).
         await biometric.revoke_keys(db, person_id=person_id, reason="demoted",
                                     actor_id=actor.person.id, ip=client_ip(request))
+        await push_registrations.drop_for_person(db, person_id, reason="demoted")
         await db.delete(account)   # password_history cascades
 
         audit(db, actor_id=actor.person.id, entity_type="user_account",

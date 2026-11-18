@@ -32,7 +32,7 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
-from serversherpa.services import biometric
+from serversherpa.services import biometric, push_registrations
 from serversherpa.services.audit import audit
 
 __all__ = ["BulkImportError", "MAX_BYTES", "MAX_ROWS"]
@@ -600,6 +600,7 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
                 .values(revoked_at=now, revoke_reason="account_disabled"))
             await biometric.revoke_keys(db, person_id=person.id, reason="blacklist",
                                         actor_id=actor_id)
+            await push_registrations.drop_for_person(db, person.id, reason="blacklist")
         elif old_status == "blacklist" and new_status != "blacklist":
             account.disabled_at = None
             account.failed_login_count = 0

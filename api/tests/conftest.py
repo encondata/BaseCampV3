@@ -440,6 +440,8 @@ async def clean_db():
     from serversherpa.api.routes.kiosk import learning_link_limiter, override_limiter
     override_limiter.reset()
     learning_link_limiter.reset()
+    from serversherpa.api.routes.kiosk_push import push_key_limiter
+    push_key_limiter.reset()
     yield
     await dispose_engine()
 
