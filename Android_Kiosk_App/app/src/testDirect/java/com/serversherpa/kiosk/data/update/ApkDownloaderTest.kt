@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.update
 
 import com.serversherpa.kiosk.core.update.UpdateOffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
@@ -11,10 +12,12 @@ import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -110,6 +113,27 @@ class ApkDownloaderTest {
         assertTrue(File(dir, "3.apk.part").exists())
         withTimeout(10_000) { job.cancelAndJoin() }
         assertTrue(dir.list().orEmpty().toList().toString(), dir.list().orEmpty().isEmpty())
+    }
+
+    @Test fun cancelingBeforeTheResponseIsACancellation() = runBlocking {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val caught = CompletableDeferred<Throwable>()
+        val job = launch(Dispatchers.Default) {
+            try { downloader.download(offer(size = 1000), base) {} } catch (e: Throwable) { caught.complete(e); throw e }
+        }
+        assertNotNull(server.takeRequest(10, TimeUnit.SECONDS))   // the call is waiting on headers
+        withTimeout(10_000) { job.cancelAndJoin() }
+        val e = withTimeout(1_000) { caught.await() }
+        assertTrue(e.toString(), e is CancellationException)
+        assertTrue(dir.list().orEmpty().isEmpty())
+    }
+
+    @Test fun anUnreachableHostIsRefused() = runBlocking {
+        server.shutdown()
+        try { downloader.download(offer(), base) {}; fail() } catch (e: UpdateError) {
+            assertEquals("Couldn't reach devices.test. Check the connection and try again.", e.message)
+        }
+        assertTrue(dir.list().orEmpty().isEmpty())
     }
 
     @Test fun clearEmptiesTheFolder() {

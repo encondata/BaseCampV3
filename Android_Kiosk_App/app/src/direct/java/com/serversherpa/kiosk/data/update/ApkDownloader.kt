@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.update
 
 import com.serversherpa.kiosk.core.update.UpdateOffer
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
@@ -37,22 +38,29 @@ class ApkDownloader(client: OkHttpClient, private val dir: File) {
         val call = http.newCall(Request.Builder().url(url).get().build())
         return coroutineScope {
             // A blocking read can't see coroutine cancellation: cancel the call so the read throws.
-            val watcher = launch { try { awaitCancellation() } finally { call.cancel() } }
+            // Undispatched, so even a cancel that lands before the watcher would run still reaches the call.
+            val watcher = launch(start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
             try {
-                withContext(Dispatchers.IO) { fetch(call, offer, onProgress) }
+                withContext(Dispatchers.IO) { fetch(call, offer, host, onProgress) }
             } finally {
                 watcher.cancel()
             }
         }
     }
 
-    private suspend fun fetch(call: Call, offer: UpdateOffer, onProgress: (Float?) -> Unit): File {
+    private suspend fun fetch(call: Call, offer: UpdateOffer, host: String, onProgress: (Float?) -> Unit): File {
         dir.mkdirs()
         val target = File(dir, "${offer.build}.apk")
         val part = File(dir, "${offer.build}.apk.part")
         var done = false
         try {
-            call.execute().use { resp ->
+            val response = try {
+                call.execute()
+            } catch (e: IOException) {
+                currentCoroutineContext().ensureActive()   // a cancel shows up here as an IOException
+                throw UpdateError("Couldn't reach $host. Check the connection and try again.")
+            }
+            response.use { resp ->
                 if (!resp.isSuccessful) throw UpdateError("The download failed (HTTP ${resp.code}).")
                 val body = resp.body ?: throw UpdateError("The download was cut short. Try again.")
                 val total = offer.size ?: body.contentLength().takeIf { it > 0 }
