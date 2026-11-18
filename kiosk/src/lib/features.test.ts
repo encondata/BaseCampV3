@@ -93,3 +93,11 @@ it('a Dock shows Dock, RFID Reader, Kiosk Setup and Settings', () => {
   });
   expect(homeFeatures(false, 'dock')).toBe(FEATURES);
 });
+
+it('every laptop station shows its own tiles first, then Kiosk Setup and Settings last', () => {
+  for (const s of ['rfid', 'label', 'timeclock', 'dock'] as const) {
+    const ids = homeFeatures(true, s).map((f) => f.id);
+    expect(ids.slice(-2)).toEqual(['setup', 'settings']);
+    expect(ids[0]).not.toBe('setup');
+  }
+});

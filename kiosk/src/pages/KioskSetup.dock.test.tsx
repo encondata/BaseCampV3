@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-/** Kiosk Setup's Dock path (laptop only): the RFID Station's path — Select
- *  reader → Connect → Pair → Network check → Move → Site → Scan type →
- *  Confirm & verify — with only RFID scan types, ending on the Dock screen. */
+/** Kiosk Setup's Dock path (laptop only): Select reader → Connect → Pair →
+ *  Network check → Move → Site → Scan type → Confirm & verify (the reader
+ *  first, unlike the RFID Station), with only RFID scan types, ending on
+ *  the Dock screen. */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -132,7 +133,7 @@ async function toScanStep(user: ReturnType<typeof userEvent.setup>) {
   await user.click(cardFor('NAP22 Hall'));
 }
 
-it('step 1 offers a fourth card, Dock Station, with its next steps', async () => {
+it('step 1 offers the Dock Station card, third, with its next steps', async () => {
   renderPage();
   const card = await screen.findByRole('option', { name: /Dock Station/ });
   expect(within(card).getByText('Dock Station')).toBeTruthy();
@@ -141,7 +142,7 @@ it('step 1 offers a fourth card, Dock Station, with its next steps', async () =>
   )).toBeTruthy();
   const titles = within(screen.getByRole('listbox', { name: 'Station types' }))
     .getAllByRole('option').map((o) => o.querySelector('.setup-card-title')?.textContent);
-  expect(titles).toEqual(['Label Station', 'RFID Station', 'Time Clock', 'Dock Station']);
+  expect(titles).toEqual(['Label Station', 'RFID Station', 'Dock Station', 'Timeclock Station']);
 });
 
 it('the Dock path walks Select reader first, counted out of 9 like the RFID path', async () => {
