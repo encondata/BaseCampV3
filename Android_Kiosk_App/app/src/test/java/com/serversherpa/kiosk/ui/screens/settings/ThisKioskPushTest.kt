@@ -210,6 +210,23 @@ class ThisKioskPushTest {
         assertFalse(api.calls.contains("registerPush"))
     }
 
+    private fun failedLoadShowsTryAgainAndReloads() {
+        val (c, api) = phone(personal = PersonalState(on = false, ownerName = "Sam S"))
+        val owned = api.getPersonalResult
+        api.getPersonalResult = { throw ApiError(0, "network") }
+        show(c)
+        waitForText(PERSONAL_LOAD_FAILED)
+        compose.onNodeWithText(PERSONAL_LOAD_FAILED).performScrollTo().assertIsDisplayed()
+        api.getPersonalResult = owned
+        compose.onNodeWithText(PERSONAL_TRY_AGAIN).performScrollTo().assertIsDisplayed().performClick()
+        waitForText(personalOwnedBy("Sam S"))
+        compose.onNodeWithText(PERSONAL_TRY_AGAIN).assertDoesNotExist()
+        assertEquals(2, api.calls.count { it == "getPersonal" })
+    }
+
+    @Test fun failed_load_shows_try_again_and_reloads() = failedLoadShowsTryAgainAndReloads()
+    @Test @Config(qualifiers = "w320dp-h470dp") fun failed_load_shows_try_again_and_reloads_compact() = failedLoadShowsTryAgainAndReloads()
+
     @Test fun released_in_the_portal_clears_the_phones_key() {
         val fcm = FakeFcmTokens()
         val (c, _) = phone(personal = PersonalState(on = false, ownerName = null), fcm = fcm)

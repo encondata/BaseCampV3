@@ -114,7 +114,8 @@ const val PERSONAL_LABEL = "This is my phone"
 const val PERSONAL_HINT = "Marks this phone as yours: your notifications come here, and biometric sign-in can be turned on."
 const val PERSONAL_CHECKING = "Checking…"
 const val PERSONAL_PUSH_NOT_SET_UP = "Push isn't set up on this phone yet. The app tries again each time you sign in or open Settings."
-const val PERSONAL_LOAD_FAILED = "Couldn't check whether this phone is yours. Settings checks again when you come back to it."
+const val PERSONAL_LOAD_FAILED = "Couldn't check whether this phone is yours."
+const val PERSONAL_TRY_AGAIN = "Try again"
 const val NOTIFICATIONS_BLOCKED_TEXT = "Notifications are blocked for this app."
 const val OPEN_NOTIFICATION_SETTINGS = "Open notification settings"
 const val PUSH_UNAVAILABLE_TEXT = "Push isn't available in this build."
@@ -194,13 +195,10 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
     var allowed by remember { mutableStateOf(notificationsAllowed(context)) }
     var loads by remember { mutableStateOf(0) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = notificationsAllowed(context) }
-    // Back from the notification settings (Android sends nothing when they change), or back after
-    // a read that failed.
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        allowed = notificationsAllowed(context)
-        if (loadFailed) loads++
-    }
+    // Back from the notification settings: Android sends nothing when they change.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { allowed = notificationsAllowed(context) }
     LaunchedEffect(signedIn.person.id, bound, loads) {
+        loadFailed = false          // "Checking…" while it runs
         try {
             state = container.scope.async { registrar.check() }.await()
             loadFailed = false
@@ -237,7 +235,11 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
     SettingsRow(PERSONAL_LABEL, PERSONAL_HINT) {
         val s = state
         when {
-            s == null && loadFailed -> Column(Modifier.testTag("personal-row")) { KioskToast(PERSONAL_LOAD_FAILED, error = true) }
+            s == null && loadFailed -> Column(Modifier.testTag("personal-row")) {
+                KioskToast(PERSONAL_LOAD_FAILED, error = true)
+                // Re-runs the load: PushRegistrar.check on the app scope, behind its mutex.
+                MiniButton(PERSONAL_TRY_AGAIN, onClick = { loads++ }, modifier = Modifier.padding(top = 8.dp).testTag("personal-try-again"))
+            }
             s == null -> Text(PERSONAL_CHECKING, color = c.textMute, modifier = Modifier.testTag("personal-row"))
             !s.on && s.ownerName != null ->
                 Text(personalOwnedBy(s.ownerName), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("personal-row"))
