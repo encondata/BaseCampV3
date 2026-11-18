@@ -5,6 +5,7 @@ class FakeFcmTokens(
     var tokenResult: suspend () -> String = { "fcm-token-1" },
     var deleteResult: suspend () -> Unit = { },
 ) : FcmTokens {
+    override var available: Boolean = true
     @Volatile var tokenCalls = 0
     @Volatile var deletes = 0
     override suspend fun token(): String { tokenCalls++; return tokenResult() }

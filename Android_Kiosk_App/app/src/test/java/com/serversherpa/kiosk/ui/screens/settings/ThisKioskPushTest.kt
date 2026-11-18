@@ -35,12 +35,14 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowBuild
 
 /** Settings › This Kiosk's "This is my phone" block, on a standard (360 dp) and a compact (320 dp) phone. */
 @RunWith(RobolectricTestRunner::class)
@@ -161,6 +163,60 @@ class ThisKioskPushTest {
     @Test fun zebra_hides_the_block() {
         assertFalse(personalBlockVisible(isAdmin = true, zebra = true))
         assertFalse(personalBlockVisible(isAdmin = false, zebra = false))
-        assert(personalBlockVisible(isAdmin = true, zebra = false))
+        assertTrue(personalBlockVisible(isAdmin = true, zebra = false))
+    }
+
+    @Test fun hidden_for_an_admin_on_a_zebra() {
+        // isZebraHost is read once, when the container is built.
+        ShadowBuild.setManufacturer("Zebra Technologies")
+        val (c, api) = phone()
+        assertTrue(c.isZebraHost)
+        show(c)
+        waitForText("Serial")
+        compose.waitForIdle()
+        compose.onNodeWithText(PERSONAL_LABEL).assertDoesNotExist()
+        assertFalse(api.calls.contains("getPersonal"))
+    }
+
+    // ── automatic registration ──
+
+    @Test fun opening_settings_registers_push_silently() {
+        val (c, api) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = false))
+        show(c)
+        compose.waitUntil(5_000) { api.calls.contains("registerPush") }
+        waitForTag("personal-switch")
+        compose.waitForIdle()
+        compose.onNodeWithTag("personal-switch").assertIsOn()
+        compose.onNodeWithText(PERSONAL_PUSH_NOT_SET_UP).assertDoesNotExist()
+        compose.onNodeWithText("Set up push").assertDoesNotExist()
+        assertEquals("reg-1", c.pushKeys.get("http://127.0.0.1:1")?.registrationId)
+    }
+
+    @Test fun a_failed_registration_shows_only_the_status_line() {
+        val (c, api) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = false))
+        api.registerPushResult = { throw ApiError(0, "network") }
+        show(c)
+        waitForText(PERSONAL_PUSH_NOT_SET_UP)
+        compose.onNodeWithText(PERSONAL_PUSH_NOT_SET_UP).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Set up push").assertDoesNotExist()
+    }
+
+    @Test fun without_firebase_an_on_phone_says_push_is_unavailable_up_front() {
+        val (c, api) = phone(personal = PersonalState(on = true, ownerName = "Tina T", pushRegistered = false), fcm = NoFcmTokens)
+        show(c)
+        waitForText(PUSH_UNAVAILABLE_TEXT)
+        compose.onNodeWithTag("personal-switch").assertIsOn()
+        compose.onNodeWithText(PERSONAL_PUSH_NOT_SET_UP).assertDoesNotExist()
+        assertFalse(api.calls.contains("registerPush"))
+    }
+
+    @Test fun released_in_the_portal_clears_the_phones_key() {
+        val fcm = FakeFcmTokens()
+        val (c, _) = phone(personal = PersonalState(on = false, ownerName = null), fcm = fcm)
+        c.pushKeys.save("reg-1", "push-key-1", "http://127.0.0.1:1", "p1")
+        show(c)
+        waitForTag("personal-switch")
+        compose.waitUntil(5_000) { !c.pushKeys.hasKey() }
+        assertEquals(1, fcm.deletes)
     }
 }

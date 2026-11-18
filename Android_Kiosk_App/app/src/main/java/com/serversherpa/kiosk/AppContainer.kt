@@ -97,6 +97,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -152,7 +154,10 @@ class AppContainer(
      *  on first use, after Firebase's own startup has run. */
     val pushKeys = PushKeyStore(secretStore)
     val pushRegistrar by lazy {
-        PushRegistrar(api, pushKeys, fcmTokensOverride ?: FirebaseFcmTokens.forApp(app), apiBase = { config.apiUrlNow() })
+        PushRegistrar(
+            api, pushKeys, fcmTokensOverride ?: FirebaseFcmTokens.forApp(app), apiBase = { config.apiUrlNow() },
+            personId = { (auth.state.value as? AuthState.Authed)?.person?.id },
+        )
     }
     val auth = KioskAuth(api, session, identity, scope)
     /** Fingerprint or face sign-in on a personal phone: the offer, Turn on, the card, Forget. */
@@ -317,6 +322,20 @@ class AppContainer(
         startSledWiring()
         // A push token update that failed before (network, read-only mode) goes again.
         scope.launch { pushRegistrar.onAppStart() }
+        watchPersonalPhone()
+    }
+
+    /** Each sign-in and each start or return to the front, once the heartbeat has bound the session
+     *  to this phone: an admin's phone is brought in line with the server (PushRegistrar.check:
+     *  push registered again silently, or a released phone's key dropped). Never on a Zebra.
+     *  Failures are let go; the next sign-in, return or Settings open tries again. Called by start(). */
+    internal fun watchPersonalPhone(): Job = scope.launch {
+        combine(auth.state, heartbeat.registration) { state, registration ->
+            (state as? AuthState.Authed)?.takeIf { registration != null && it.isAdmin && !isZebraHost }?.person?.id
+        }.distinctUntilChanged().collect { personId ->
+            if (personId == null) return@collect
+            try { pushRegistrar.check() } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
     }
 
     /** The sled's scanner state into the guard, its barcodes onto the scan bus once, and the

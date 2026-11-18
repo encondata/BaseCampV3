@@ -5,6 +5,7 @@ import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.core.model.PushRegistration
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.api.MemorySecretStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
@@ -22,12 +23,18 @@ class PushRegistrarTest {
     private val store = PushKeyStore(secrets)
     private val fcm = FakeFcmTokens()
     private var apiBase = base
-    private val registrar = PushRegistrar(api, store, fcm, apiBase = { apiBase }, io = Dispatchers.Unconfined)
+    /** The signed-in person. */
+    private var me: String? = "p1"
+    private val registrar = registrar(fcm)
+
+    private fun registrar(tokens: FcmTokens) =
+        PushRegistrar(api, store, tokens, apiBase = { apiBase }, personId = { me }, io = Dispatchers.Unconfined)
 
     private fun refusal(reason: String) =
         ApiError(422, "not_eligible", buildJsonObject { put("code", JsonPrimitive("not_eligible")); put("reason", JsonPrimitive(reason)) })
 
-    private fun storeKey() = store.save("reg-1", "push-key-1", "https://api.example.com:443")
+    /** A key Tina's (p1) registration stored. */
+    private fun storeKey() = store.save("reg-1", "push-key-1", "https://api.example.com:443", "p1")
 
     @Test fun turnOn_registers_and_stores_key() = runBlocking {
         api.setPersonalResult = { on -> PersonalState(on = on, ownerName = "Tina T") }
@@ -40,7 +47,107 @@ class PushRegistrarTest {
         assertEquals("reg-1", key.registrationId)
         assertEquals("push-key-1", key.key)
         assertEquals("PushKey reg-1.push-key-1", key.header)
+        assertEquals("p1", store.personId())
         assertFalse("the key never reaches a log line", key.toString().contains("push-key-1"))
+    }
+
+    @Test fun turnOn_cancelled_token_task_is_a_failure() = runBlocking {
+        // FCM canceling its own work is not this coroutine being canceled.
+        fcm.tokenResult = { throw CancellationException("fcm task canceled") }
+        val failed = registrar.turnOn().exceptionOrNull() as PushSetupFailed
+        assertTrue(failed.state.on)
+        assertNull(store.get(base))
+    }
+
+    // ── check(): each Settings open, and each sign-in / start once the session is bound ──
+
+    @Test fun check_on_but_not_registered_registers_silently() = runBlocking {
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Tina T", pushRegistered = false) }
+        assertEquals(PersonalState(on = true, ownerName = "Tina T", pushRegistered = true), registrar.check())
+        assertEquals(listOf("getPersonal", "registerPush"), api.calls)
+        assertEquals("reg-1", store.get(base)?.registrationId)
+        assertEquals("p1", store.personId())
+    }
+
+    @Test fun check_registered_with_a_local_key_does_nothing_more() = runBlocking {
+        storeKey()
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Tina T", pushRegistered = true) }
+        assertTrue(registrar.check().pushRegistered)
+        assertEquals(listOf("getPersonal"), api.calls)
+        assertEquals(0, fcm.tokenCalls)
+    }
+
+    @Test fun check_registered_but_no_local_key_registers_again() = runBlocking {
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Tina T", pushRegistered = true) }
+        assertTrue(registrar.check().pushRegistered)
+        assertEquals(listOf("getPersonal", "registerPush"), api.calls)
+        assertEquals("reg-1", store.get(base)?.registrationId)
+    }
+
+    @Test fun check_key_for_another_origin_registers_again() = runBlocking {
+        store.save("reg-0", "old-key", "https://old.example.com:443", "p1")
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Tina T", pushRegistered = true) }
+        registrar.check()
+        assertEquals(listOf("getPersonal", "registerPush"), api.calls)
+        assertEquals("reg-1", store.get(base)?.registrationId)
+    }
+
+    @Test fun check_without_firebase_does_not_register() = runBlocking {
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Tina T", pushRegistered = false) }
+        val noFirebase = registrar(NoFcmTokens)
+        assertFalse(noFirebase.pushAvailable)
+        assertEquals(PersonalState(on = true, ownerName = "Tina T", pushRegistered = false), noFirebase.check())
+        assertEquals(listOf("getPersonal"), api.calls)
+    }
+
+    @Test fun check_registration_failure_reports_not_registered_and_retries_next_time() = runBlocking {
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Tina T", pushRegistered = true) }
+        api.registerPushResult = { throw ApiError(0, "network") }
+        assertFalse("no local key: push isn't really set up", registrar.check().pushRegistered)
+        api.registerPushResult = { PushRegistration("reg-2", "push-key-2") }
+        assertTrue(registrar.check().pushRegistered)
+        assertEquals("reg-2", store.get(base)?.registrationId)
+    }
+
+    @Test fun check_no_longer_on_clears_store_and_deletes_token() = runBlocking {
+        storeKey()
+        api.getPersonalResult = { PersonalState(on = false, ownerName = null) }   // released in the portal
+        assertFalse(registrar.check().on)
+        assertNull(store.get(base))
+        assertFalse(store.hasKey())
+        assertEquals(1, fcm.deletes)
+        assertEquals(listOf("getPersonal"), api.calls)
+    }
+
+    @Test fun check_reassigned_away_from_the_signed_in_owner_clears_store() = runBlocking {
+        storeKey()
+        api.getPersonalResult = { PersonalState(on = false, ownerName = "Sam S") }
+        registrar.check()
+        assertFalse(store.hasKey())
+        assertEquals(1, fcm.deletes)
+    }
+
+    @Test fun check_by_another_admin_on_the_owners_phone_keeps_the_owners_key() = runBlocking {
+        storeKey()
+        me = "p2"
+        api.getPersonalResult = { PersonalState(on = false, ownerName = "Tina T") }
+        registrar.check()
+        assertEquals("reg-1", store.get(base)?.registrationId)
+        assertEquals(0, fcm.deletes)
+    }
+
+    @Test fun check_no_longer_on_without_a_key_touches_nothing() = runBlocking {
+        api.getPersonalResult = { PersonalState(on = false, ownerName = null) }
+        registrar.check()
+        assertEquals(0, fcm.deletes)
+    }
+
+    @Test fun check_phone_now_another_admins_registers_for_them() = runBlocking {
+        storeKey()
+        me = "p2"
+        api.getPersonalResult = { PersonalState(on = true, ownerName = "Sam S", pushRegistered = false) }
+        assertTrue(registrar.check().pushRegistered)
+        assertEquals("p2", store.personId())
     }
 
     @Test fun turnOn_refused_keeps_nothing() = runBlocking {
@@ -56,8 +163,7 @@ class PushRegistrarTest {
     }
 
     @Test fun turnOn_without_firebase_keeps_the_phone_claimed() = runBlocking {
-        val noFirebase = PushRegistrar(api, store, NoFcmTokens, apiBase = { apiBase }, io = Dispatchers.Unconfined)
-        val result = noFirebase.turnOn()
+        val result = registrar(NoFcmTokens).turnOn()
         val failed = result.exceptionOrNull() as PushSetupFailed
         assertTrue("the phone is still claimed", failed.state.on)
         assertFalse(failed.state.pushRegistered)

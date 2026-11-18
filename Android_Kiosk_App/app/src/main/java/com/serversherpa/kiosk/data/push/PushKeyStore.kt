@@ -23,6 +23,8 @@ class PushKey(val registrationId: String, val key: String, val baseUrl: String) 
  *
  * Like the station key, it is bound to the API origin that issued it (`push.origin`): asked for
  * under any other origin, it is cleared instead, so it never reaches another server.
+ * `push.person_id` is whose registration it is, so another admin signed in on the owner's phone
+ * never clears or replaces the owner's key.
  * `push.token_pending` marks a token update to send again on the next app start.
  */
 class PushKeyStore(private val secrets: SecretStore) {
@@ -37,20 +39,31 @@ class PushKeyStore(private val secrets: SecretStore) {
         return PushKey(id, key, baseUrl)
     }
 
-    /** Clears first, then writes the key, its id and its origin: an app killed between two writes
-     *  leaves no key or an unbound one (cleared on its next read), never an old key under a new id. */
+    /** Clears first, then writes the key, its id, its person and its origin: an app killed between
+     *  two writes leaves no key or an unbound one (cleared on its next read), never an old key
+     *  under a new id. */
     @Synchronized
-    fun save(registrationId: String, key: String, origin: String) {
+    fun save(registrationId: String, key: String, origin: String, personId: String) {
         clear()
         secrets.put(KEY, key)
         secrets.put(REGISTRATION_ID, registrationId)
+        secrets.put(PERSON_ID, personId)
         secrets.put(ORIGIN, origin)
     }
+
+    /** Whether any key is stored, whatever its origin. */
+    @Synchronized
+    fun hasKey(): Boolean = !secrets.get(KEY).isNullOrBlank()
+
+    /** The person whose registration the stored key is (the phone's owner when it was made). */
+    @Synchronized
+    fun personId(): String? = secrets.get(PERSON_ID)
 
     @Synchronized
     fun clear() {
         secrets.remove(REGISTRATION_ID)
         secrets.remove(KEY)
+        secrets.remove(PERSON_ID)
         secrets.remove(ORIGIN)
         secrets.remove(TOKEN_PENDING)
     }
@@ -68,6 +81,7 @@ class PushKeyStore(private val secrets: SecretStore) {
         const val REGISTRATION_ID = "push.registration_id"
         const val KEY = "push.key"
         const val ORIGIN = "push.origin"
+        const val PERSON_ID = "push.person_id"
         const val TOKEN_PENDING = "push.token_pending"
 
         fun originOf(baseUrl: String): String = KioskConfig.originOf(baseUrl) ?: baseUrl

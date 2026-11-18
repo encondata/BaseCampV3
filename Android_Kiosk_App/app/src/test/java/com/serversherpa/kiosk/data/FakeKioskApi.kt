@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.data
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.*
 import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.push.PushKey
 
 /** A KioskApi whose answers are set per test. Unset answers throw. */
 open class FakeKioskApi : KioskApi {
@@ -85,13 +86,13 @@ open class FakeKioskApi : KioskApi {
     var registerPushResult: suspend (String) -> PushRegistration = { PushRegistration(registrationId = "reg-1", pushKey = "push-key-1") }
     val pushRegistrations = ArrayList<String>()
     var deletePushResult: suspend () -> Unit = { }
-    var updatePushTokenResult: suspend (String, com.serversherpa.kiosk.data.push.PushKey) -> Unit = { _, _ -> }
-    val pushTokenUpdates = ArrayList<Pair<String, com.serversherpa.kiosk.data.push.PushKey>>()
+    var updatePushTokenResult: suspend (String, PushKey) -> Unit = { _, _ -> }
+    val pushTokenUpdates = ArrayList<Pair<String, PushKey>>()
     override suspend fun getPersonal(): PersonalState { calls += "getPersonal"; return getPersonalResult() }
     override suspend fun setPersonal(on: Boolean): PersonalState { calls += "setPersonal:$on"; return setPersonalResult(on) }
     override suspend fun registerPush(token: String): PushRegistration { calls += "registerPush"; pushRegistrations += token; return registerPushResult(token) }
     override suspend fun deletePush() { calls += "deletePush"; deletePushResult() }
-    override suspend fun updatePushToken(token: String, key: com.serversherpa.kiosk.data.push.PushKey) {
+    override suspend fun updatePushToken(token: String, key: PushKey) {
         calls += "updatePushToken"; pushTokenUpdates += token to key; updatePushTokenResult(token, key)
     }
 

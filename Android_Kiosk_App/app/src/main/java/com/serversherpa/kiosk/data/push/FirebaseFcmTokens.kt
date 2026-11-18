@@ -35,12 +35,15 @@ class FirebaseFcmTokens : FcmTokens {
     }
 }
 
+/** Thrown when FCM cancels its own Task: an ordinary failure, never a coroutine cancellation. */
+class FcmTaskCanceled : Exception("fcm_task_canceled")
+
 private suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { cont ->
     addOnCompleteListener { task ->
         val error = task.exception
         when {
             error != null -> cont.resumeWithException(error)
-            task.isCanceled -> cont.cancel()
+            task.isCanceled -> cont.resumeWithException(FcmTaskCanceled())
             else -> cont.resume(task.result)
         }
     }

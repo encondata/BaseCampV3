@@ -49,11 +49,11 @@ import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.LinkButton
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.SettingsRow
-import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 const val FINGERPRINT_ON_TEXT = "Fingerprint sign-in: On ·"
@@ -113,9 +113,8 @@ private fun FingerprintRow() {
 const val PERSONAL_LABEL = "This is my phone"
 const val PERSONAL_HINT = "Marks this phone as yours: your notifications come here, and biometric sign-in can be turned on."
 const val PERSONAL_CHECKING = "Checking…"
-const val PERSONAL_PUSH_NOT_SET_UP = "Push isn't set up on this phone yet."
-const val PERSONAL_SET_UP_PUSH = "Set up push"
-const val PERSONAL_TRY_AGAIN = "Try again"
+const val PERSONAL_PUSH_NOT_SET_UP = "Push isn't set up on this phone yet. The app tries again each time you sign in or open Settings."
+const val PERSONAL_LOAD_FAILED = "Couldn't check whether this phone is yours. Settings checks again when you come back to it."
 const val NOTIFICATIONS_BLOCKED_TEXT = "Notifications are blocked for this app."
 const val OPEN_NOTIFICATION_SETTINGS = "Open notification settings"
 const val PUSH_UNAVAILABLE_TEXT = "Push isn't available in this build."
@@ -153,10 +152,12 @@ fun personalErrorText(e: Throwable): String {
 
 private fun pushErrorText(cause: Throwable): String = when {
     cause is PushUnavailable -> PUSH_UNAVAILABLE_TEXT
-    cause is ApiError && cause.isNetwork -> "This phone is yours, but push couldn't be set up: the portal couldn't be reached."
-    cause is ApiError && cause.status == 423 -> "This phone is yours, but push couldn't be set up: the portal is read-only right now."
-    else -> "This phone is yours, but push couldn't be set up."
+    cause is ApiError && cause.isNetwork -> "This phone is yours, but push couldn't be set up: the portal couldn't be reached. $PUSH_RETRIES"
+    cause is ApiError && cause.status == 423 -> "This phone is yours, but push couldn't be set up: the portal is read-only right now. $PUSH_RETRIES"
+    else -> "This phone is yours, but push couldn't be set up. $PUSH_RETRIES"
 }
+
+private const val PUSH_RETRIES = "The app tries again each time you sign in or open Settings."
 
 private fun notificationsAllowed(context: Context): Boolean = NotificationManagerCompat.from(context).areNotificationsEnabled()
 
@@ -169,8 +170,12 @@ private fun needsNotificationPermission(context: Context): Boolean =
  * reassignment shows. Someone else's phone shows its owner and no switch. Turning it on claims the
  * phone and registers it for push, then (Android 13+) asks for POST_NOTIFICATIONS; refused, the
  * switch stays on (biometric sign-in still works) and a line says notifications are blocked, with
- * a button to the app's notification settings. A phone that is on without push offers Set up push,
- * so push can be retried without turning the switch off (which revokes biometric sign-in).
+ * a button to the app's notification settings.
+ *
+ * Reading the state also brings the phone in line (PushRegistrar.check): push registered again
+ * silently when it is missing, a released phone's key dropped. Every call runs on the app's own
+ * scope and the screen only awaits it, so leaving Settings mid-call can't leave the server
+ * registered and the phone without its key.
  */
 @Composable
 private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
@@ -178,48 +183,50 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val c = LocalKioskColors.current
+    val registrar = container.pushRegistrar
+    // Non-null once a heartbeat has bound the session to this phone: a read made before then
+    // (403 not_this_kiosk) is made again.
+    val bound = container.heartbeat.registration.collectAsStateWithLifecycle().value != null
     var state by remember { mutableStateOf<PersonalState?>(null) }
-    var loadError by remember { mutableStateOf<String?>(null) }
+    var loadFailed by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var pushUnavailable by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var allowed by remember { mutableStateOf(notificationsAllowed(context)) }
     var loads by remember { mutableStateOf(0) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = notificationsAllowed(context) }
-    // Back from the notification settings: Android sends nothing when they change.
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { allowed = notificationsAllowed(context) }
-    LaunchedEffect(signedIn.person.id, loads) {
-        loadError = null
+    // Back from the notification settings (Android sends nothing when they change), or back after
+    // a read that failed.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        allowed = notificationsAllowed(context)
+        if (loadFailed) loads++
+    }
+    LaunchedEffect(signedIn.person.id, bound, loads) {
         try {
-            state = container.pushRegistrar.state()
+            state = container.scope.async { registrar.check() }.await()
+            loadFailed = false
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            loadError = personalErrorText(e)
+            loadFailed = state == null
         }
     }
 
-    /** Runs one switch or Set up push [call] (one at a time) and shows its outcome. A build without
-     *  Firebase is not an error: the plain "isn't available" line says so. */
-    fun run(call: suspend () -> Result<PersonalState>, askForNotifications: Boolean) {
+    /** Runs the switch's call (one at a time) and shows its outcome. A build without Firebase is
+     *  not an error: the plain "isn't available" line says so. */
+    fun change(on: Boolean) {
         if (busy) return
         busy = true
         error = null
         scope.launch {
             try {
-                call().onSuccess { s ->
+                container.scope.async { if (on) registrar.turnOn() else registrar.turnOff() }.await().onSuccess { s ->
                     state = s
-                    pushUnavailable = false
-                    if (askForNotifications && s.on && needsNotificationPermission(context)) {
+                    if (on && s.pushRegistered && needsNotificationPermission(context)) {
                         permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }.onFailure { e ->
-                    val unavailable = e is PushSetupFailed && e.cause is PushUnavailable
-                    if (e is PushSetupFailed) {
-                        state = e.state
-                        pushUnavailable = unavailable
-                    }
-                    error = if (unavailable) null else personalErrorText(e)
+                    if (e is PushSetupFailed) state = e.state
+                    error = if (e is PushSetupFailed && e.cause is PushUnavailable) null else personalErrorText(e)
                 }
             } finally {
                 busy = false
@@ -229,34 +236,20 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
 
     SettingsRow(PERSONAL_LABEL, PERSONAL_HINT) {
         val s = state
-        val failedToLoad = loadError
         when {
-            s == null && failedToLoad != null -> Column(Modifier.testTag("personal-row")) {
-                Text(failedToLoad, color = ChipTone.RED.text)
-                MiniButton(PERSONAL_TRY_AGAIN, onClick = { loads++ }, modifier = Modifier.padding(top = 8.dp))
-            }
+            s == null && loadFailed -> Column(Modifier.testTag("personal-row")) { KioskToast(PERSONAL_LOAD_FAILED, error = true) }
             s == null -> Text(PERSONAL_CHECKING, color = c.textMute, modifier = Modifier.testTag("personal-row"))
             !s.on && s.ownerName != null ->
                 Text(personalOwnedBy(s.ownerName), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("personal-row"))
             else -> Column(Modifier.testTag("personal-row")) {
                 Row {
-                    Switch(
-                        checked = s.on, enabled = !busy, modifier = Modifier.testTag("personal-switch"),
-                        onCheckedChange = { on ->
-                            run({ if (on) container.pushRegistrar.turnOn() else container.pushRegistrar.turnOff() }, askForNotifications = on)
-                        },
-                    )
+                    Switch(checked = s.on, enabled = !busy, modifier = Modifier.testTag("personal-switch"), onCheckedChange = { change(it) })
                 }
                 val shown = error
                 when {
-                    shown != null -> Text(shown, color = ChipTone.RED.text, modifier = Modifier.padding(top = 4.dp))
-                    s.on && !s.pushRegistered ->
-                        Text(if (pushUnavailable) PUSH_UNAVAILABLE_TEXT else PERSONAL_PUSH_NOT_SET_UP, color = c.textMute, modifier = Modifier.padding(top = 4.dp))
-                }
-                if (s.on && !s.pushRegistered && !pushUnavailable) {
-                    MiniButton(PERSONAL_SET_UP_PUSH, enabled = !busy, modifier = Modifier.padding(top = 8.dp), onClick = {
-                        run({ container.pushRegistrar.registerPush(s) }, askForNotifications = true)
-                    })
+                    shown != null -> KioskToast(shown, error = true)
+                    s.on && !registrar.pushAvailable -> Text(PUSH_UNAVAILABLE_TEXT, color = c.textMute, modifier = Modifier.padding(top = 4.dp))
+                    s.on && !s.pushRegistered -> Text(PERSONAL_PUSH_NOT_SET_UP, color = c.textMute, modifier = Modifier.padding(top = 4.dp))
                 }
                 if (s.on && s.pushRegistered && !allowed) {
                     Text(NOTIFICATIONS_BLOCKED_TEXT, color = c.textMute, modifier = Modifier.padding(top = 4.dp))
