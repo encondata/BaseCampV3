@@ -6252,3 +6252,29 @@ class HealthStorageOut(BaseModel):
     total_objects: int
     total_bytes: int
     measured_at: datetime
+
+
+# ── App distribution (the separate Devices service) ──────────────────
+
+
+class AppDistAuthorizeOut(BaseModel):
+    """What the Devices service learns about a user's bearer token."""
+    person_id: uuid.UUID
+    display_name: str
+    email: str | None
+    client: Literal["portal", "kiosk"]
+    kiosk_serial: str | None
+    actions: list[Literal["view", "add", "change", "delete"]]
+    password_change_required: bool
+    read_only: bool
+    read_only_message: str | None
+
+
+class AppDistAuditIn(BaseModel):
+    actor_person_id: uuid.UUID | None = None
+    entity_type: Literal["appdist_app", "appdist_version", "appdist_device",
+                         "appdist_apple"]
+    entity_id: str
+    action: Annotated[str, StringConstraints(max_length=64)]
+    changes: dict = {}
+    ip: str | None = None

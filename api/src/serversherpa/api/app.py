@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from serversherpa.api.routes import (
-    access, ai, asset_models, assets, attachments, audit, auth, cleanup, client_groups, containers,
+    access, app_distribution_internal, ai, asset_models, assets, attachments, audit, auth, cleanup, client_groups, containers,
     devices, devtools, health, initiatives, kiosk, kiosk_biometric, kiosk_rolodex, labels,
     learn, learning, matching_rules, me,
     move_setup,
@@ -161,6 +161,7 @@ def create_app() -> FastAPI:
     app.include_router(blocked_addresses.router)
     app.include_router(notifications.router)
     app.include_router(wiki.router)
+    app.include_router(app_distribution_internal.router)
     app.include_router(learning.router)
     app.include_router(plans.router)
     app.include_router(learn.router)
