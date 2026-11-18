@@ -461,3 +461,74 @@ None. The two raised by the builder check are answered as decisions 14
 Payload length cuts, retry counts and backoff, the exact Settings tab for the
 switch, receiver mechanics (`goAsync` vs WorkManager), the test seam for
 Firebase, and the migration number.
+
+## Implementation notes (2026-11-18)
+
+What differs from, or adds to, the design above. Written after the build.
+
+### API
+
+- Two migrations: 0131 (push tables) and 0132. 0132 widens the delivery-log
+  event CHECK to allow the push events. They stay separate because both were
+  unmerged when the CHECK change came up.
+- Push log rows carry the outbox id in `detail.push_outbox_id`, not in
+  `notification_log.outbox_id` (that column is a foreign key to `email_outbox`).
+- `push_not_set_up` writes no log row. It only shows in Check delivery.
+- New log reason `alerted_again`: a re-alert on an open notification.
+- Plans notices DO push. There is no special case; the earlier
+  `plans_not_pushed` reason was removed.
+- `/system/status` returns `push_enabled`, next to `email_enabled`.
+- Revoke-all (per person and system-wide) also drops that person's push
+  registrations. Password change and Forget fingerprint do not.
+- Push-key write routes honor read-only mode and return 423. A token refresh
+  waits until maintenance ends.
+- A token already registered to another device returns 409 `token_conflict`.
+- Refused push keys are capped at 20 per hour per address.
+
+### Worker
+
+- The worker commits one outbox row at a time, so one bad row cannot cause a
+  resend loop.
+- It skips a notification that is being changed (SKIP LOCKED). A push may wait
+  one more drain.
+- Restart the worker after rotating the FCM key file. The key is read once.
+
+### Kiosk routes and push key
+
+- Kiosk notification items carry no payload.
+- The push key authenticates only the push routes. A 401 `push_key_invalid`
+  tells the app to drop its local key.
+
+### Portal
+
+- The Defaults grid and the /me grid disable Push when the server cannot push
+  (`push_enabled` false).
+
+### Android
+
+- The google-services plugin applies only when `app/google-services.json`
+  exists. Without it the app still builds and runs, and the switch says "Push
+  isn't available in this build."
+- FCM auto-init is off until the switch is turned on.
+- Registration repeats automatically. There is no "Set up push" button. A
+  failed load shows a visible Try again.
+- On a portal-assigned phone, Settings asks for the notification permission
+  once.
+- A tap uses action `com.serversherpa.kiosk.push.OPEN_NOTIFICATION` with
+  extras `open_notification_id` and `owner_person_id`. The owner-mismatch
+  screen names the owner, read from `GET /kiosk/personal`.
+- The push-key call carries the Internet Test marker, so the RemovalGuardTest
+  count is 3.
+- Compact layout: when the android-compact branch merges, the Notifications
+  page needs its "‹ Home" label and a hidden title. `CompactFit.kt` was copied
+  verbatim from that branch, so the merge will collide on it.
+- Deploy the API before shipping the app build.
+
+### Still open
+
+- Device pass (Task 13): waiting on the Firebase project, `google-services.json`
+  and the service-account key.
+- A rare deadlock is parked: a snooze row's fifth-attempt fallback ends the
+  snooze without SKIP LOCKED. Postgres detects it; the worst case is one failed
+  Mark read or a row left queued.
+- The iOS pass.
