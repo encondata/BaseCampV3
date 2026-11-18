@@ -150,6 +150,39 @@ async def test_register_conflict_marks_failed_with_reason(db, apple):
     assert not await run_once(get_sessionmaker())
 
 
+async def test_device_failed_error_has_no_udid(db, apple):
+    bare = UDID_A.replace("-", "").lower()
+    detail = (f"A device with number '{UDID_A}' already exists on this team "
+              f"(also listed as {bare}).")
+    apple._post_devices = lambda request, item, body: error(
+        409, "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", detail)
+    device = await seed_device(db, UDID_A)
+    await queue("register_device", {"device_id": str(device.id)})
+
+    assert await run_once(get_sessionmaker())
+    saved = await fresh(IosDevice, device.id)
+    assert saved.status == "failed"
+    assert saved.error == ("Apple refused this iPhone: A device with number 'this iPhone' "
+                           "already exists on this team (also listed as this iPhone).")
+    (job,) = await jobs_of()
+    for text in (saved.error, job.error):
+        assert UDID_A.lower() not in text.lower() and bare not in text.lower()
+
+
+async def test_register_retried_error_has_no_udid(db, apple):
+    apple._post_devices = lambda request, item, body: error(
+        500, "UNEXPECTED_ERROR", f"Something broke for {UDID_A.lower()}.")
+    device = await seed_device(db, UDID_A)
+    await queue("register_device", {"device_id": str(device.id)})
+
+    assert await run_once(get_sessionmaker())
+    saved = await fresh(IosDevice, device.id)
+    assert saved.error == "Apple refused this iPhone: Something broke for this iPhone."
+    (job,) = await jobs_of()
+    assert job.status == "queued"
+    assert UDID_A.lower() not in job.error.lower()
+
+
 async def test_register_other_apple_error_is_retried(db, apple):
     apple.refuse("This key can't use this API.")
     device = await seed_device(db, UDID_A)

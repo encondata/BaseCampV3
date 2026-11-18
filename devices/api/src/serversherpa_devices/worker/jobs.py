@@ -43,6 +43,7 @@ from serversherpa_devices.db.models import (
     SignedBuild,
 )
 from serversherpa_devices.packages import PackageError, provision
+from serversherpa_devices.redact import without_udid
 from serversherpa_devices.services import storage
 from serversherpa_devices.signing import SignError, entitlements, resign
 from serversherpa_devices.worker.queue import ERROR_MAX, JobFailed, enqueue
@@ -122,11 +123,13 @@ async def register_device(db: AsyncSession, job: Job) -> dict:
     except AscRateLimited:
         raise
     except AscError as exc:
-        reason = f"Apple refused this iPhone: {exc.detail}"
+        # Apple's detail can quote the UDID back; it never reaches the row or the job.
+        detail = without_udid(exc.detail, udid)
+        reason = f"Apple refused this iPhone: {detail}"
         await _device_failed(db, device_id, reason)
         if exc.status == 409:          # the request itself is wrong: never retried
             raise JobFailed(reason) from None
-        raise
+        raise AscError(exc.status, exc.code, detail) from None
 
     device = await _locked(db, IosDevice, device_id)
     if device is None:

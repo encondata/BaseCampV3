@@ -18,6 +18,7 @@ from serversherpa_devices.auth.deps import client_ip, require
 from serversherpa_devices.auth.main_api import MainApiClient, Principal, get_main_api
 from serversherpa_devices.db.engine import get_db
 from serversherpa_devices.db.models import AppleDeviceCount, AppleSettings, IosDevice, Job
+from serversherpa_devices.redact import without_udid
 
 router = APIRouter(tags=["devices"])
 
@@ -50,7 +51,11 @@ class DevicesOut(BaseModel):
 
 
 def _device_out(device: IosDevice) -> DeviceOut:
-    return DeviceOut.model_validate(device, from_attributes=True)
+    out = DeviceOut.model_validate(device, from_attributes=True)
+    # the worker scrubs Apple's detail before storing it; rows from before that, too
+    if out.error:
+        out.error = without_udid(out.error, device.udid)
+    return out
 
 
 async def _queue_sync_if_stale(db: AsyncSession, counts: list[AppleDeviceCount]) -> None:

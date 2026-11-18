@@ -127,3 +127,19 @@ async def test_disable_blocked_in_read_only_mode(api, main_fake, db):
     assert r.status_code == 423
     assert r.json()["detail"]["message"] == "Maintenance until 14:00."
     assert (await fresh(IosDevice, device.id)).status == "registered"
+
+
+async def test_list_devices_never_returns_udid_in_error(api, db):
+    # a row written before the worker scrubbed Apple's detail
+    device = await seed_device(db, UDID_A, status="failed")
+    device.error = (f"Apple refused this iPhone: A device with number '{UDID_A.lower()}' "
+                    f"already exists ({UDID_A.replace('-', '')}).")
+    await db.commit()
+
+    r = await api.get("/api/devices")
+    assert r.status_code == 200
+    (out,) = r.json()["devices"]
+    assert out["error"] == ("Apple refused this iPhone: A device with number 'this iPhone' "
+                            "already exists (this iPhone).")
+    bare = UDID_A.replace("-", "").lower()
+    assert UDID_A.lower() not in r.text.lower() and bare not in r.text.lower()
