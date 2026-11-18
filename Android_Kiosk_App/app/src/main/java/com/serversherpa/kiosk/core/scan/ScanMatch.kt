@@ -53,6 +53,12 @@ fun <A : ScanAsset> matchScan(index: ScanIndex<A>, raw: String): ScanMatch<A>? {
     return null
 }
 
+/** Print Labels: asset ID, then serial, then RFID (a tag's value read from its barcode). RFID
+ *  comes last so a value that is one asset's ID and another's tag still prints the asset ID's
+ *  label, as it did before RFID values matched here. */
+fun <A : ScanAsset> matchLabelScan(index: ScanIndex<A>, raw: String): ScanMatch<A>? =
+    matchAssetOrSerial(index, raw) ?: rfidKey(raw)?.let { index.byRfid[it] }?.let { ScanMatch(ScanMatchKind.RFID, it) }
+
 /** Asset ID or serial only — RFID Enroll's first step, where a tag read
  *  must not silently pick "re-tag that asset". */
 fun <A : ScanAsset> matchAssetOrSerial(index: ScanIndex<A>, raw: String): ScanMatch<A>? {

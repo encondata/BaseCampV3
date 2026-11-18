@@ -31,6 +31,22 @@ class ScanMatchTest {
         assertEquals(2, i.size)
     }
 
+    @Test fun labelScansTryAssetIdThenSerialThenRfid() {
+        assertEquals(ScanMatchKind.ASSET_ID, matchLabelScan(index, "a-100")?.kind)
+        assertEquals(ScanMatchKind.SERIAL, matchLabelScan(index, "SN-2")?.kind)
+        assertEquals("1", matchLabelScan(index, "100348")?.asset?.id)
+        assertEquals(ScanMatchKind.RFID, matchLabelScan(index, "000000000000000000100348")?.kind)
+        assertNull(matchLabelScan(index, "nothing"))
+    }
+
+    @Test fun aLabelScanThatIsOneAssetsIdAndAnothersTagPicksTheAssetId() {
+        val tagged = A("3", "A-300", "Tagged", rfid = "000000000000000000777777")
+        val numbered = A("4", "777777", "Numbered")
+        val i = buildScanIndex(listOf(tagged, numbered))
+        assertEquals("4", matchLabelScan(i, "777777")?.asset?.id)
+        assertEquals("3", matchScan(i, "777777")?.asset?.id) // Scanning keeps RFID first
+    }
+
     @Test fun assetOrSerialNeverMatchesByTag() {
         assertNull(matchAssetOrSerial(index, "100348"))
         assertEquals(ScanMatchKind.ASSET_ID, matchAssetOrSerial(index, "A-100")?.kind)
