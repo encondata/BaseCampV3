@@ -38,7 +38,7 @@ Run these from `Android_Kiosk_App/`.
    ```
    export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
    export ANDROID_HOME=~/Library/Android/sdk
-   ./gradlew testDebugUnitTest assembleDebug
+   ./gradlew testPlayDebugUnitTest assembleDebug
    ```
 
 ## What stays

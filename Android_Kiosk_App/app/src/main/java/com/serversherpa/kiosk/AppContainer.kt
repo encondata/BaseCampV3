@@ -38,6 +38,9 @@ import com.serversherpa.kiosk.data.auth.KioskAuth
 import com.serversherpa.kiosk.data.auth.MoveSetupGuard
 import com.serversherpa.kiosk.data.auth.SessionCoordinator
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.update.AppUpdates
+import com.serversherpa.kiosk.data.update.UpdateDeps
+import com.serversherpa.kiosk.data.update.createAppUpdates
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
@@ -124,6 +127,8 @@ class AppContainer(
     biometricKeysOverride: BiometricKeys? = null,
     /** Tests: the FCM token source (JVM tests never touch Firebase). */
     fcmTokensOverride: FcmTokens? = null,
+    /** Tests: the update check (the direct flavor's real one talks to devices.<env>). */
+    updatesOverride: AppUpdates? = null,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -221,6 +226,14 @@ class AppContainer(
         )
     })
     val foreground = MutableStateFlow(false)
+
+    /** The in-app update check: real in the direct flavor, [NoAppUpdates] in the Play one. */
+    val updates: AppUpdates by lazy {
+        updatesOverride ?: createAppUpdates(
+            UpdateDeps(app, httpClient, session, apiUrl = { config.apiUrlNow() },
+                authState = auth.state, foreground = foreground, scope = scope),
+        )
+    }
     val scanBus = ScanBus()
     val dataWedgeReceiver = DataWedgeReceiver(scanBus)
     val flash = FlashController(scope)
@@ -318,6 +331,7 @@ class AppContainer(
         // Clear Setup revokes a Time Clock station's key on the portal; drop it here too.
         scope.launch(Dispatchers.IO) { heartbeat.setupCleared.collect { stationKeys.clear() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
+        updates.start()
         // A dropped setup can't keep a Time Clock station's key either.
         MoveSetupGuard(auth.state, prefs, scope, onSetupDropped = { station.drop() },
             onDropped = internetTest::onSetupDropped, // INTERNET-TEST

@@ -44,6 +44,17 @@ android {
         }
     }
 
+    // play: the Google Play build, with no self-update code. direct: the build installed from
+    // devices.<env>, which checks that site for a newer APK. Same applicationId and version.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("play") {
+            dimension = "distribution"
+            isDefault = true
+        }
+        create("direct") { dimension = "distribution" }
+    }
+
     buildTypes {
         debug {
             buildConfigField("String", "DEFAULT_API_URL", "\"https://api.dev.serversherpa.com\"")
