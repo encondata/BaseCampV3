@@ -16,6 +16,8 @@ interface ApkInstall {
     fun checkArchive(file: File, packageName: String, build: Long, versionName: String): String?
     fun install(file: File)                          // PackageInstaller session; commit → UpdateInstallReceiver
     fun launchPendingConfirm(): Boolean              // starts InstallEvents.pendingConfirm, clears it
+    /** Abandons this app's leftover installer sessions; never throws. */
+    fun abandonSessions()
 }
 
 class AndroidApkInstall(context: Context) : ApkInstall {
@@ -41,6 +43,7 @@ class AndroidApkInstall(context: Context) : ApkInstall {
     }
 
     override fun install(file: File) {
+        abandonSessions()   // one update at a time: an earlier session is stale
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(pkg)
@@ -64,6 +67,14 @@ class AndroidApkInstall(context: Context) : ApkInstall {
         } catch (e: Exception) {
             runCatching { installer.abandonSession(sessionId) }
             throw e
+        }
+    }
+
+    override fun abandonSessions() {
+        val installer = runCatching { context.packageManager.packageInstaller }.getOrNull() ?: return
+        val mine = runCatching { installer.mySessions }.getOrDefault(emptyList())
+        for (s in mine) {
+            if (s.appPackageName == pkg) runCatching { installer.abandonSession(s.sessionId) }
         }
     }
 

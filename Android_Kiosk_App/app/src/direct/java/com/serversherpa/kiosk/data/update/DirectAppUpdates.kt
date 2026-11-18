@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +37,9 @@ private const val INSTALL_CANCELED = "Install canceled."
 private const val DOWNLOAD_FAILED = "The download failed. Try again."
 private const val INSTALL_FAILED = "The install failed. Try again."
 private const val INSTALL_UNFINISHED = "The install didn't finish. Tap Update to try again."
+
+/** How long a return to the front with no confirm waiting gives a lagging installer broadcast. */
+private const val INSTALL_EVENT_WAIT_MS = 1_500L
 
 /**
  * The direct build's update check: checks once signed in and in front (again on return after an
@@ -76,7 +80,10 @@ class DirectAppUpdates(
         synchronized(lock) {
             if (started) return
             started = true
-            clearing = scope.launch(io) { clearQuietly() }
+            clearing = scope.launch(io) {
+                clearQuietly()
+                runCatching { installer.abandonSessions() }   // a session left by an earlier run
+            }
         }
         scope.launch { events.collect(::onInstallEvent) }
         scope.launch {
@@ -94,7 +101,8 @@ class DirectAppUpdates(
 
     /**
      * A [background] recheck from an offer or a Blocked message keeps that state (and the Home
-     * banner) until the answer arrives; only the Check for updates button shows Checking.
+     * banner) until the answer arrives, and keeps it if the check fails; only the Check for
+     * updates button shows Checking and Failed.
      */
     private fun check(background: Boolean) {
         synchronized(lock) {
@@ -108,7 +116,7 @@ class DirectAppUpdates(
             checking = scope.launch {
                 val next = answer()
                 // An Update tapped during a quiet recheck owns the state now: drop the answer.
-                synchronized(lock) { if (_state.value === shown) set(next) }
+                synchronized(lock) { if (_state.value === shown && !(quiet && next is UpdateState.Failed)) set(next) }
             }
         }
     }
@@ -119,7 +127,7 @@ class DirectAppUpdates(
             from = _state.value as? UpdateState.Available ?: return
             if (working?.isActive == true) return
             if (installer.canRequestInstalls()) {
-                download(from)
+                recheckThenDownload(from)
                 return
             }
             awaitingPermission = true
@@ -166,39 +174,57 @@ class DirectAppUpdates(
         UpdateState.Failed(CHECK_FAILED, clock())
     }
 
-    /** Call with [lock] held. */
-    private fun download(from: UpdateState.Available) {
-        val offer = from.offer
-        offerCheckedAt = from.checkedAtMillis
-        set(UpdateState.Downloading(offer, null))
+    /**
+     * Call with [lock] held. The offer's link expires (the Devices token lives 30 minutes), so ask
+     * again and download the fresh link; a failed re-check keeps the offer and never uses the old link.
+     */
+    private fun recheckThenDownload(from: UpdateState.Available) {
+        lastCheckAt = clock()
+        set(UpdateState.Downloading(from.offer, null))
         working = scope.launch {
             clearing?.join()
-            val file = try {
-                source.fetch(offer) { fraction ->
-                    synchronized(lock) { if (_state.value is UpdateState.Downloading) set(UpdateState.Downloading(offer, fraction)) }
+            val fresh = answer()
+            val offer = synchronized(lock) {
+                when {
+                    fresh is UpdateState.Available && fresh.offer.build >= from.offer.build -> {
+                        offerCheckedAt = fresh.checkedAtMillis
+                        set(UpdateState.Downloading(fresh.offer, null))
+                        fresh.offer
+                    }
+                    fresh is UpdateState.Failed -> { set(from.copy(notice = fresh.message)); null }
+                    else -> { set(fresh); null }   // up to date, blocked, or an older build on offer now
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: UpdateError) {
-                return@launch backTo(offer, e.message ?: DOWNLOAD_FAILED)
-            } catch (e: Exception) {
-                return@launch backTo(offer, DOWNLOAD_FAILED)
+            } ?: return@launch
+            download(offer)
+        }
+    }
+
+    private suspend fun download(offer: UpdateOffer) {
+        val file = try {
+            source.fetch(offer) { fraction ->
+                synchronized(lock) { if (_state.value is UpdateState.Downloading) set(UpdateState.Downloading(offer, fraction)) }
             }
-            try {
-                val refusal = withContext(io) { installer.checkArchive(file, packageName, offer.build, offer.versionName) }
-                if (refusal != null) {
-                    clearFiles()
-                    return@launch backTo(offer, refusal)
-                }
-                // Installing before the hand-off, so an installer event during it finds the state it belongs to.
-                synchronized(lock) { set(UpdateState.Installing(offer)) }
-                withContext(io) { installer.install(file) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: UpdateError) {
+            return backTo(offer, e.message ?: DOWNLOAD_FAILED)
+        } catch (e: Exception) {
+            return backTo(offer, DOWNLOAD_FAILED)
+        }
+        try {
+            val refusal = withContext(io) { installer.checkArchive(file, packageName, offer.build, offer.versionName) }
+            if (refusal != null) {
                 clearFiles()
-                backTo(offer, INSTALL_FAILED)
+                return backTo(offer, refusal)
             }
+            // Installing before the hand-off, so an installer event during it finds the state it belongs to.
+            synchronized(lock) { set(UpdateState.Installing(offer)) }
+            withContext(io) { installer.install(file) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            clearFiles()
+            backTo(offer, INSTALL_FAILED)
         }
     }
 
@@ -216,15 +242,21 @@ class DirectAppUpdates(
         if (current is UpdateState.Installing) {
             // While the hand-off still runs, the installer hasn't asked for a confirm yet.
             if (working?.isActive != true) {
-                val notice = try {
-                    // No confirm waiting and no event coming (e.g. Home from the confirm screen): don't stay stuck.
-                    if (installer.launchPendingConfirm()) null else INSTALL_UNFINISHED
-                } catch (e: RuntimeException) {
-                    INSTALL_FAILED
-                }
-                if (notice != null) {
+                val launched = try { installer.launchPendingConfirm() } catch (e: RuntimeException) { null }
+                if (launched == null) {
                     clearFiles()
-                    leaveInstalling(notice)
+                    leaveInstalling(INSTALL_FAILED)
+                } else if (!launched) {
+                    // No confirm waiting. Back on the confirm screen sends ABORTED, which can land just
+                    // after the return: give it a moment. Nothing by then (e.g. Home from the confirm
+                    // screen): don't stay stuck in Installing.
+                    scope.launch {
+                        delay(INSTALL_EVENT_WAIT_MS)
+                        if (_state.value === current) {
+                            clearFiles()
+                            leaveInstalling(INSTALL_UNFINISHED)
+                        }
+                    }
                 }
             }
         } else {
@@ -234,7 +266,7 @@ class DirectAppUpdates(
             if (!awaitingPermission) return
             awaitingPermission = false
             val from = _state.value as? UpdateState.Available ?: return
-            if (installer.canRequestInstalls()) download(from) else set(from.copy(notice = INSTALLS_OFF))
+            if (installer.canRequestInstalls()) recheckThenDownload(from) else set(from.copy(notice = INSTALLS_OFF))
         }
     }
 

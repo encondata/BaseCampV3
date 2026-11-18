@@ -67,6 +67,23 @@ class ApkInstallerTest {
         assertEquals(pkg, status.`package`)
     }
 
+    @Test fun aNewInstallAbandonsTheLastSession() {
+        installer.install(apk())
+        val first = app.packageManager.packageInstaller.mySessions.single().sessionId
+        installer.install(tmp.newFile("4.apk").also { it.writeBytes(ByteArray(2048)) })
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val left = app.packageManager.packageInstaller.allSessions.map { it.sessionId }
+        assertEquals(1, left.size)
+        assertTrue(first !in left)
+    }
+
+    @Test fun abandonSessionsClearsOurs() {
+        installer.install(apk())
+        installer.abandonSessions()
+        assertTrue(app.packageManager.packageInstaller.allSessions.isEmpty())
+    }
+
     @Test fun checkArchiveRejectsAnotherPackage() {
         val f = apk()
         archive(f, "com.example.other", 3)

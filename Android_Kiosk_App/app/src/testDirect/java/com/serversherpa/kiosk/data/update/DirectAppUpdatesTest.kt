@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -221,12 +222,15 @@ class DirectAppUpdatesTest {
         assertEquals(1, installer.settingsOpened)
         assertEquals(0, source.fetches)
 
+        val fresh = offer().copy(installUrl = "https://devices.test/d/3-fresh")
+        checker.answer = { UpdateAnswer.Available(fresh) }
         installer.canInstall = true
         bounce()
-        assertEquals(1, source.fetches)
+        assertEquals(2, checker.calls)   // the trip may have taken long enough for the link to expire
+        assertEquals(listOf(fresh.installUrl), source.fetched.map { it.installUrl })
         assertEquals(listOf(Triple(pkg, 3L, "1.3.0")), installer.checked)
         assertEquals(listOf(source.file), installer.installed)
-        assertEquals(UpdateState.Installing(offer()), u.state.value)
+        assertEquals(UpdateState.Installing(fresh), u.state.value)
     }
 
     @Test fun permissionStillOffShowsTheNotice() {
@@ -256,12 +260,88 @@ class DirectAppUpdatesTest {
 
         u.check()   // busy: no check
         scope.runCurrent()
-        assertEquals(1, checker.calls)
+        assertEquals(2, checker.calls)   // the first check and update()'s re-check
 
         gate.complete(Unit)
         scope.runCurrent()
         assertEquals(UpdateState.Installing(offer()), u.state.value)
         assertEquals(1, installer.installed.size)
+    }
+
+    @Test fun updateRechecksAndDownloadsTheFreshLink() {
+        val u = available()
+        now += 31 * 60_000L   // the offer's link has expired by now
+        val gate = CompletableDeferred<UpdateAnswer>()
+        checker.answer = { gate.await() }
+        u.update()
+        assertEquals(UpdateState.Downloading(offer(), null), u.state.value)   // the button reacts at once
+        scope.runCurrent()
+        assertEquals(2, checker.calls)
+        assertEquals(0, source.fetches)
+
+        val fresh = offer().copy(installUrl = "https://devices.test/d/3-fresh")
+        gate.complete(UpdateAnswer.Available(fresh))
+        scope.runCurrent()
+        assertEquals(listOf(fresh.installUrl), source.fetched.map { it.installUrl })
+        assertEquals(UpdateState.Installing(fresh), u.state.value)
+    }
+
+    @Test fun updateTakesANewerBuildOnOffer() {
+        val u = available()
+        checker.answer = { UpdateAnswer.Available(offer(4)) }
+        u.update()
+        scope.runCurrent()
+        assertEquals(listOf(offer(4)), source.fetched)
+        assertEquals(listOf(Triple(pkg, 4L, "1.4.0")), installer.checked)
+        assertEquals(UpdateState.Installing(offer(4)), u.state.value)
+    }
+
+    @Test fun updateShowsAnOlderOfferWithoutDownloading() {
+        val u = available()
+        now += 60_000
+        checker.answer = { UpdateAnswer.Available(offer(2)) }
+        u.update()
+        scope.runCurrent()
+        assertEquals(0, source.fetches)
+        assertEquals(UpdateState.Available(offer(2), now), u.state.value)
+    }
+
+    @Test fun aFailedRecheckKeepsTheOfferAndDoesNotDownload() {
+        val u = available()
+        now += 31 * 60_000L
+        checker.answer = { throw UpdateError("m") }
+        u.update()
+        scope.runCurrent()
+        assertEquals(0, source.fetches)
+        assertEquals(UpdateState.Available(offer(), 1_000_000L, notice = "m"), u.state.value)
+        assertTrue(u.homeBannerVisible.value)
+
+        checker.answer = { throw IllegalStateException("boom") }
+        u.update()
+        scope.runCurrent()
+        assertEquals(0, source.fetches)
+        assertEquals(UpdateState.Available(offer(), 1_000_000L, notice = "Couldn't check for updates. Try again later."), u.state.value)
+    }
+
+    @Test fun anUpToDateRecheckInstallsNothing() {
+        val u = available()
+        now += 60_000
+        checker.answer = { UpdateAnswer.UpToDate }
+        u.update()
+        scope.runCurrent()
+        assertEquals(0, source.fetches)
+        assertEquals(UpdateState.UpToDate(now), u.state.value)
+        assertFalse(u.homeBannerVisible.value)
+    }
+
+    @Test fun aBlockedRecheckShowsTheMessage() {
+        val u = available()
+        now += 60_000
+        checker.answer = { UpdateAnswer.Blocked("Reinstall") }
+        u.update()
+        scope.runCurrent()
+        assertEquals(0, source.fetches)
+        assertEquals(UpdateState.Blocked("Reinstall", now), u.state.value)
     }
 
     @Test fun aDownloadRefusalShowsItsMessage() {
@@ -338,12 +418,38 @@ class DirectAppUpdatesTest {
         installer.confirmResult = { false }   // e.g. Home from the confirm screen, then back to the kiosk
 
         bounce()
+        scope.advanceTimeBy(1_499)
+        scope.runCurrent()
+        assertEquals(UpdateState.Installing(offer()), u.state.value)   // an installer event may still be on its way
+        assertEquals(clearsBefore, source.clears)
+        scope.advanceTimeBy(1)
+        scope.runCurrent()
         assertEquals(UpdateState.Available(offer(), now, notice = "The install didn't finish. Tap Update to try again."), u.state.value)
         assertEquals(clearsBefore + 1, source.clears)
 
         events.tryEmit(InstallEvent.Canceled)   // late: ignored
         scope.runCurrent()
         assertEquals(UpdateState.Available(offer(), now, notice = "The install didn't finish. Tap Update to try again."), u.state.value)
+        assertEquals(clearsBefore + 1, source.clears)
+    }
+
+    @Test fun aCancelArrivingJustAfterTheReturnSaysCanceled() {
+        val u = available()
+        u.update()
+        scope.runCurrent()
+        val clearsBefore = source.clears
+        installer.confirmResult = { false }   // Back on the confirm screen: the ABORTED broadcast lags the return
+
+        bounce()
+        scope.advanceTimeBy(1_000)
+        scope.runCurrent()
+        events.tryEmit(InstallEvent.Canceled)
+        scope.runCurrent()
+        assertEquals(UpdateState.Available(offer(), now, notice = "Install canceled."), u.state.value)
+
+        scope.advanceTimeBy(1_000)   // past the wait: nothing replaces the canceled notice
+        scope.runCurrent()
+        assertEquals(UpdateState.Available(offer(), now, notice = "Install canceled."), u.state.value)
         assertEquals(clearsBefore + 1, source.clears)
     }
 
@@ -375,10 +481,35 @@ class DirectAppUpdatesTest {
         assertFalse(u.homeBannerVisible.value)
     }
 
+    @Test fun aFailedBackgroundRecheckKeepsTheOffer() {
+        val u = available()
+        checker.answer = { throw UpdateError("m") }
+        now += RECHECK_INTERVAL_MS
+        bounce()
+        assertEquals(2, checker.calls)
+        assertEquals(UpdateState.Available(offer(), 1_000_000L), u.state.value)
+        assertTrue(u.homeBannerVisible.value)
+    }
+
+    @Test fun aFailedBackgroundRecheckKeepsBlocked() {
+        checker.answer = { UpdateAnswer.Blocked("Reinstall") }
+        val u = updates()
+        u.start()
+        signedIn()
+        scope.runCurrent()
+        checker.answer = { throw IllegalStateException("boom") }
+        now += RECHECK_INTERVAL_MS
+        bounce()
+        assertEquals(2, checker.calls)
+        assertEquals(UpdateState.Blocked("Reinstall", 1_000_000L), u.state.value)
+        assertTrue(u.homeBannerVisible.value)
+    }
+
     @Test fun anUpdateDuringABackgroundRecheckWins() {
         val u = available()
         val gate = CompletableDeferred<UpdateAnswer>()
-        checker.answer = { gate.await() }
+        // The background recheck waits on the gate; update()'s own re-check answers at once.
+        checker.answer = { if (checker.calls == 2) gate.await() else UpdateAnswer.Available(offer()) }
         now += RECHECK_INTERVAL_MS
         bounce()
         u.update()
@@ -415,10 +546,19 @@ class DirectAppUpdatesTest {
         assertEquals(null, InstallEvents.pendingConfirm)
     }
 
-    @Test fun startClearsOldDownloads() {
+    @Test fun startClearsOldDownloadsAndSessions() {
         updates().start()
         scope.runCurrent()
         assertEquals(1, source.clears)
+        assertEquals(1, installer.abandons)
+    }
+
+    @Test fun anAbandonThatThrowsDoesNotStopStart() {
+        installer.abandonError = IllegalStateException("no installer")
+        val u = available()   // started, checked and offered as usual
+        assertEquals(1, installer.abandons)
+        assertEquals(1, source.clears)
+        assertTrue(u.homeBannerVisible.value)
     }
 
     private class FakeChecker : UpdateChecker {
@@ -432,6 +572,7 @@ class DirectAppUpdatesTest {
 
     private class FakeSource : ApkSource {
         var fetches = 0
+        val fetched = mutableListOf<UpdateOffer>()
         var clears = 0
         val file = File("3.apk")
         var progress: List<Float?> = emptyList()
@@ -440,6 +581,7 @@ class DirectAppUpdatesTest {
         var clearError: RuntimeException? = null
         override suspend fun fetch(offer: UpdateOffer, onProgress: (Float?) -> Unit): File {
             fetches++
+            fetched += offer
             progress.forEach(onProgress)
             gate?.await()
             error?.let { throw it }
@@ -459,6 +601,8 @@ class DirectAppUpdatesTest {
         val installed = mutableListOf<File>()
         var confirmsLaunched = 0
         var confirmResult: () -> Boolean = { true }
+        var abandons = 0
+        var abandonError: RuntimeException? = null
         override fun canRequestInstalls() = canInstall
         override fun openInstallPermissionSettings() { settingsOpened++ }
         override fun checkArchive(file: File, packageName: String, build: Long, versionName: String): String? {
@@ -469,6 +613,10 @@ class DirectAppUpdatesTest {
         override fun launchPendingConfirm(): Boolean {
             confirmsLaunched++
             return confirmResult()
+        }
+        override fun abandonSessions() {
+            abandons++
+            abandonError?.let { throw it }
         }
     }
 }
