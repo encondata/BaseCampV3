@@ -39,6 +39,8 @@ from serversherpa.notifications.event_sweep import run_events_once
 from serversherpa.notifications.password_reminders import run_reminders_once
 from serversherpa.notifications.summary import run_summaries_once
 from serversherpa.plans.reminders import run_plan_reminders_once
+from serversherpa.push.delivery import drain_push
+from serversherpa.push.fcm import FcmClient
 from serversherpa.security import attestation_status
 
 logger = logging.getLogger("serversherpa.notifications.worker")
@@ -188,6 +190,29 @@ async def run_summaries(maker, state: dict) -> None:
         logger.info("queued %d notification summary email(s)", queued)
 
 
+async def run_push(maker, state: dict) -> int:
+    """One push outbox drain; a no-op when push is not set up. A failure is
+    logged once per outage, never raised."""
+    try:
+        client = FcmClient.from_settings()
+        if client is None:
+            state["failed"] = False
+            return 0
+        async with maker() as db:
+            handled = await drain_push(db, client, now=datetime.now(UTC))
+        state["failed"] = False
+    except Exception as exc:  # noqa: BLE001 — the loop must never stop
+        # the class only: the text of an error can carry a token or SQL parameters
+        if not state["failed"]:
+            logger.warning("could not drain the push outbox — retrying (%s)",
+                           type(exc).__name__)
+        state["failed"] = True
+        return 0
+    if handled:
+        logger.info("handled %d push message(s)", handled)
+    return handled
+
+
 async def run_forever(poll_seconds: float = 5.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.admin_config import poll_workers_paused
@@ -204,6 +229,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     asset_watches_state = {"failed": False}
     events_state = {"failed": False}
     summary_state = {"failed": False}
+    push_state = {"failed": False}
     heartbeat = start_heartbeat("notification-worker", "worker",
                                 meta_fn=lambda: dict(pause_state))
 
@@ -253,6 +279,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                     logger.warning("could not deliver the email outbox — retrying",
                                    exc_info=True)
                 deliver_state["failed"] = True
+            await run_push(maker, push_state)
             now = time.monotonic()
             if now - last_reminders >= REMINDER_INTERVAL_SECONDS:
                 sent = await run_reminders_once(maker)
