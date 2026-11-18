@@ -59,7 +59,9 @@ class AppUpdatesRowTest {
 
     @Test fun failedShowsTheMessageAndWhenItChecked() {
         show(FakeAppUpdates(UpdateState.Failed("Couldn't reach devices.example.com.", at1405)))
-        compose.onNodeWithText("Couldn't reach devices.example.com. · checked 14:05").assertIsDisplayed()
+        compose.onNodeWithText("Couldn't reach devices.example.com.").assertIsDisplayed()
+        compose.onNodeWithText("Checked 14:05").assertIsDisplayed()
+        compose.onNodeWithText("checked", substring = true, ignoreCase = false).assertDoesNotExist()
     }
 
     @Test fun idleCheckingAndUnavailableStatusLines() {
@@ -82,9 +84,16 @@ class AppUpdatesRowTest {
         assertEquals(1, fake.updates)
     }
 
+    @Test fun availableWithoutASizeHasNoParentheses() {
+        show(FakeAppUpdates(UpdateState.Available(fakeOffer(size = null), at1405)))
+        compose.onNodeWithText("0.1.2 is available").assertIsDisplayed()
+        compose.onNodeWithText("(", substring = true).assertDoesNotExist()
+    }
+
     @Test fun downloadingAndInstallingShowAsOnHome() {
         val fake = FakeAppUpdates(UpdateState.Downloading(fakeOffer(), null))
         show(fake)
+        compose.onNodeWithText("Downloading 0.1.2…").assertIsDisplayed()
         compose.onNodeWithTag("update-progress").assertExists()
         compose.onNodeWithTag("update-now").assertDoesNotExist()
         fake.state.value = UpdateState.Installing(fakeOffer())

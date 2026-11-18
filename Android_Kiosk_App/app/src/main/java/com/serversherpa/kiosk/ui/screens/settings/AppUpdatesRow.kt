@@ -41,7 +41,10 @@ fun AppUpdatesRow(updates: AppUpdates, signedIn: Boolean) {
                 UpdateState.Idle -> Text("Not checked yet", style = body, color = c.textDark)
                 UpdateState.Checking -> Text("Checking…", style = body, color = c.textDark)
                 is UpdateState.UpToDate -> Text("Up to date · checked ${checkedTime(s.checkedAtMillis)}", style = body, color = c.textDark)
-                is UpdateState.Failed -> Text("${s.message} · checked ${checkedTime(s.checkedAtMillis)}", style = body, color = ChipTone.RED.text)
+                is UpdateState.Failed -> {
+                    Text(s.message, style = body, color = ChipTone.RED.text)
+                    Text("Checked ${checkedTime(s.checkedAtMillis)}", style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 4.dp))
+                }
                 is UpdateState.Unavailable -> Text(s.message, style = body, color = c.textDark)
                 is UpdateState.Blocked -> Text(s.message, style = body, color = c.textDark)
                 is UpdateState.Available -> {
