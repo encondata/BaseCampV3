@@ -26,10 +26,17 @@ in the `.env` (commented out in `env.example`): `SS_DEVICES_SERVICE_TOKEN`
 Apple settings and signs install links; a new key makes saved Apple settings
 unreadable), and optionally `DEVICES_IOS_OWNER_URL` (the devices site of the
 stack that owns iPhone installs, for a stack with no Apple settings);
-`STACK_DEVICES_PORT` (8093) is its port. The two secrets are needed only
-while the app runs: `ss-stack up` refuses to start it without them, and with
-it off (`STACK_APPS` without `devices`, as Sirdar writes it today) a `.env`
-can leave them out; the API's internal devices endpoints then stay off.
+`STACK_DEVICES_PORT` (8093) is its port. The two secrets turn the app on:
+- No `STACK_APPS` ("every app"): devices runs only once both are set (not
+  `CHANGEME`). Without them every other app runs, the devices stack stays
+  stopped, and `ss-stack` hands the compose calls that list as `STACK_APPS`,
+  so the portal shows no Devices link. An existing `.env` keeps working.
+- A `STACK_APPS` that lists `devices`: `ss-stack up` refuses to start
+  without both, naming the missing ones.
+- A `STACK_APPS` without `devices` (Sirdar writes one today): neither is
+  needed.
+
+With devices off, the API's internal devices endpoints stay off too.
 The devices database isn't in `ss-stack dump` / `restore` (they cover the
 main database only).
 
@@ -132,9 +139,9 @@ LAN environment is `uat`.
    - every `CHANGEME`: hex values from `openssl rand -hex 32`; the
      Fernet key (goes in `SS_TOTP_ENCRYPTION_KEY`) from
      `python3 -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'`.
-     With the devices app on (no `STACK_APPS`, or one that lists it),
-     uncomment and set `SS_DEVICES_SERVICE_TOKEN` (hex) and
-     `DEVICES_SECRET_KEY` (a Fernet key) the same way.
+     To run the devices app, uncomment and set `SS_DEVICES_SERVICE_TOKEN`
+     (hex) and `DEVICES_SECRET_KEY` (a Fernet key) the same way; left
+     commented, it stays off.
      To sign in with existing accounts later, `SS_PASSWORD_PEPPER` and
      `SS_TOTP_ENCRYPTION_KEY` must instead equal the values of the
      database you seed from.

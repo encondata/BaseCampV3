@@ -191,6 +191,12 @@ def test_adopting_an_env_that_runs_devices_is_refused(values):
     assert (e.value.code, e.value.extra) == ("adopt_value_invalid", {"key": "STACK_APPS"})
 
 
-def test_adopting_an_env_without_stack_apps_or_devices_secrets_runs_the_rest():
-    apps_on, _ = apps.from_env({}, "uat.serversherpa.com")
+@pytest.mark.parametrize("values", [
+    {},
+    {"SS_DEVICES_SERVICE_TOKEN": "0123abcd"},
+    {"SS_DEVICES_SERVICE_TOKEN": "0123abcd", "DEVICES_SECRET_KEY": "CHANGEME"},
+])
+def test_adopting_an_env_without_stack_apps_or_devices_secrets_runs_the_rest(values):
+    """ss-stack's rule: no STACK_APPS runs devices only with both secrets set."""
+    apps_on, _ = apps.from_env(values, "uat.serversherpa.com")
     assert apps_on == ["wiki", "kiosk", "learn", "status", "mailpit"]

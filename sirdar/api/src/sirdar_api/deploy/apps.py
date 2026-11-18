@@ -157,9 +157,10 @@ def from_env(values: dict[str, str], domain: str) -> tuple[list[str], dict]:
     raw = values.get("STACK_APPS", "")
     try:
         if not raw:
-            # ss-stack runs every app, devices too once its secrets are set:
-            # Sirdar couldn't deploy that back (NOT_RUN)
-            if all(values.get(k) for k in _DEVICES_SECRETS):
+            # ss-stack runs every app, devices too once both its secrets are
+            # set (not CHANGEME): Sirdar couldn't deploy that back (NOT_RUN)
+            if all(values.get(k, "") not in ("", envfile.PLACEHOLDER)
+                   for k in _DEVICES_SECRETS):
                 raise AppsError("apps_invalid")
             apps_on = check_apps(None)
         elif raw == "none":

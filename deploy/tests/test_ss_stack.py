@@ -31,6 +31,9 @@ case "$*" in
   *pg_restore*)
     cat > "$DOCKER_LOG.stdin"
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
+  *"/api/compose.yml up "*)
+    # the apps the API is told run (SS_APPS comes from STACK_APPS; unset: the .env's)
+    printf 'STACK_APPS=%s\n' "${STACK_APPS-unset}" >> "$DOCKER_LOG.apps" ;;
   # SQL on stdin (the devices database): recorded, so a test can read it
   *"psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q"|*" psql -v ON_ERROR_STOP=1 -q")
     cat >> "$DOCKER_LOG.sql"
@@ -847,19 +850,56 @@ def _without_devices_secrets(env_dir: Path, extra: str = "") -> None:
 
 
 @pytest.mark.parametrize("extra, missing", [
-    ("", "SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY"),
-    ("SS_DEVICES_SERVICE_TOKEN=0123abcd\n", "DEVICES_SECRET_KEY"),
-    ("DEVICES_SECRET_KEY=0123abcd\nSS_DEVICES_SERVICE_TOKEN=\n", "SS_DEVICES_SERVICE_TOKEN"),
+    ("STACK_APPS=wiki,devices,mailpit\n", "SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY"),
+    ("STACK_APPS=devices,mailpit\nSS_DEVICES_SERVICE_TOKEN=0123abcd\n", "DEVICES_SECRET_KEY"),
     ("STACK_APPS=wiki,devices,mailpit\nDEVICES_SECRET_KEY=0123abcd\n", "SS_DEVICES_SERVICE_TOKEN"),
 ])
-def test_devices_on_needs_its_secrets(env_dir: Path, fake: dict[str, str], extra: str,
-                                      missing: str) -> None:
+def test_explicit_devices_without_secrets_dies(env_dir: Path, fake: dict[str, str], extra: str,
+                                               missing: str) -> None:
     _without_devices_secrets(env_dir, extra)
     out = run(fake, "up", str(env_dir))
     assert out.returncode != 0
-    assert (f"The devices app is on (STACK_APPS lists it, or is unset): set {missing} in "
+    assert (f"The devices app is on (STACK_APPS lists it): set {missing} in "
             f"{env_dir}/.env, or leave devices out of STACK_APPS.") in out.stderr
     assert calls(fake) == []
+
+
+def _apps_seen(env: dict[str, str]) -> list[str]:
+    path = Path(env["DOCKER_LOG"] + ".apps")
+    return path.read_text().splitlines() if path.exists() else []
+
+
+@pytest.mark.parametrize("extra", [
+    "",                                            # no STACK_APPS (uat's .env)
+    "STACK_APPS=\n",
+    "SS_DEVICES_SERVICE_TOKEN=0123abcd\n",         # one secret isn't enough
+    "SS_DEVICES_SERVICE_TOKEN=0123abcd\nDEVICES_SECRET_KEY=\n",
+])
+def test_empty_stack_apps_without_devices_secrets_skips_devices(
+        env_dir: Path, fake: dict[str, str], extra: str) -> None:
+    """"Every app" means devices only once its secrets are set: an existing
+    .env without them keeps working, the devices stack stays stopped, and
+    the API is told the apps that run (no Devices link in the portal)."""
+    _without_devices_secrets(env_dir, extra)
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert dc(env_dir, "devices", "down") in c
+    assert dc(env_dir, "devices", WAIT) not in c
+    assert dc(env_dir, "db", DEVICES_DB) not in c
+    for stack in ("storage", "api", "web", "status"):
+        assert dc(env_dir, stack, WAIT) in c, stack
+    assert _apps_seen(fake) == ["STACK_APPS=wiki,kiosk,learn,status,mailpit"]
+
+
+def test_empty_stack_apps_with_devices_secrets_runs_devices(env_dir: Path,
+                                                            fake: dict[str, str]) -> None:
+    out = run({k: v for k, v in fake.items() if k != "STACK_APPS"}, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert c.index(dc(env_dir, "db", DEVICES_DB)) == c.index(dc(env_dir, "devices", WAIT)) - 1
+    # every app runs: the API reads the .env's own (empty) STACK_APPS
+    assert _apps_seen(fake) == ["STACK_APPS=unset"]
 
 
 def test_devices_secrets_left_at_changeme_are_refused(env_dir: Path, fake: dict[str, str]) -> None:
