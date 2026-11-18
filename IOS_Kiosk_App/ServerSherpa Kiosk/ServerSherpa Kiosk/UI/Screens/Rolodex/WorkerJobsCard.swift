@@ -12,9 +12,7 @@ struct WorkerJobsCard: View {
 
     var body: some View {
         let shown = RolodexLogic.jobsShown(jobs)
-        VStack(alignment: .leading, spacing: 0) {
-            Text("PREVIOUS JOBS").font(KioskType.labelSmall).tracking(1).foregroundStyle(palette.textMute)
-                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+        RolodexCard(title: "Previous jobs") {
             if shown.isEmpty {
                 line(RolodexLogic.noJobsText, font: KioskType.bodyMedium).accessibilityIdentifier("worker-jobs-empty")
             }
@@ -23,10 +21,6 @@ struct WorkerJobsCard: View {
                 line(more, font: KioskType.bodySmall).accessibilityIdentifier("worker-jobs-shown")
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.paper, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.paperLine, lineWidth: 1))
-        .padding(.top, 12)
         .accessibilityIdentifier("worker-jobs")
     }
 

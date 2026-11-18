@@ -628,10 +628,16 @@ struct RolodexModelTests {
         #expect(m.viewingPhoto)
         m.closePhotoViewer()
         #expect(!m.viewingPhoto)
-        // A worker with no photo never opens it.
+        // A worker with no photo (initials) never opens it, whatever the view says.
+        api.rolodexWorkerResult = { _ in RolodexDetail(row: BO) }
+        await m.select(BO.personId)
+        #expect(m.shownRow?.hasPhoto == false)
+        m.openPhotoViewer(photoShown: true)
+        #expect(!m.viewingPhoto)
         await m.select(nil)
         m.openPhotoViewer(photoShown: true)
         #expect(!m.viewingPhoto)
+        api.rolodexWorkerResult = { _ in anaDetail() }
         // Another worker, or a sign-out, closes it.
         await m.select(ANA.personId)
         m.openPhotoViewer(photoShown: true)

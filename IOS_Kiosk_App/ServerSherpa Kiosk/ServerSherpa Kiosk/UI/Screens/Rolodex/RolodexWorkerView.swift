@@ -170,18 +170,23 @@ struct RolodexWorkerView: View {
         }
         RolodexCard(title: "Work") {
             ForEach(RolodexLogic.workRows(row: row, detail: detail), id: \.label) { item in
-                RolodexKeyValue(key: item.label, value: item.value, mono: item.mono, wraps: item.wraps)
+                RolodexKeyValue(key: item.label, value: item.value, wraps: item.wraps)
             }
         }
-        WorkerJobsCard(jobs: detail?.jobs ?? [], total: detail?.jobsTotal ?? 0)
+        if let card = RolodexLogic.jobsCard(for: detail) { WorkerJobsCard(jobs: card.jobs, total: card.total) }
     }
 
     /// Phone and email arrive with the worker's page, never with the list.
     @ViewBuilder private var pending: some View {
         HStack(spacing: 8) {
             if model.detailLoading { ProgressView().tint(palette.textMute) }
-            Text(RolodexLogic.contactPendingText(loading: model.detailLoading))
+            Text(RolodexLogic.contactPendingText(loading: model.detailLoading, error: model.detailError))
                 .font(KioskType.bodySmall).foregroundStyle(palette.textMute)
+            if RolodexLogic.pageLoadFailed(detailLoaded: false, loading: model.detailLoading, error: model.detailError),
+               let id = model.selectedId {
+                Spacer(minLength: 0)
+                LinkButton("Try again") { Task { await model.select(id) } }.accessibilityIdentifier("rolodex-retry")
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -211,8 +216,7 @@ private struct RolodexPhotoBadge: View {
                 Button("Cancel", role: .cancel) { photo.close() }
             }
             .fullScreenCover(isPresented: Binding(get: { model.viewingPhoto }, set: { if !$0 { model.closePhotoViewer() } })) {
-                PhotoViewer(personId: row.personId, name: rolodexName(row), photoUrl: row.photoUrl, photoVersion: row.photoVersion,
-                            placeholder: shownImage, onClose: { model.closePhotoViewer() })
+                PhotoViewer(name: rolodexName(row), photo: shownImage, onClose: { model.closePhotoViewer() })
                     .rolodexPresented(container, model, palette)
             }
     }
@@ -230,6 +234,7 @@ private struct RolodexPhotoBadge: View {
             RolodexAvatar(row: row, size: size)
         }
         .buttonStyle(.plain)
+        .disabled(!row.hasPhoto)
         .accessibilityLabel("View photo of \(rolodexName(row))")
         .accessibilityIdentifier("rolodex-photo-view")
             .overlay(Circle().stroke(palette.paper, lineWidth: 4))
@@ -256,7 +261,7 @@ private struct RolodexPhotoBadge: View {
 }
 
 /// `.card` with an eyebrow title and key/value rows.
-private struct RolodexCard<Content: View>: View {
+struct RolodexCard<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
     @Environment(\.kioskPalette) private var palette

@@ -406,5 +406,24 @@ struct RolodexLogicTests {
     @Test func offlineContactWording() {
         #expect(RolodexLogic.contactPendingText(loading: false) == "Phone and email need a connection.")
         #expect(RolodexLogic.contactPendingText(loading: true) == "Loading…")
+        #expect(RolodexLogic.contactPendingText(loading: false, error: nil) == "Phone and email need a connection.")
+        #expect(RolodexLogic.contactPendingText(loading: false, error: "  ") == "Phone and email need a connection.")
+    }
+
+    @Test func aFailedPageLoadSaysWhy() {
+        #expect(RolodexLogic.contactPendingText(loading: false, error: "Something went wrong. Try again.") == "Something went wrong. Try again.")
+        #expect(RolodexLogic.contactPendingText(loading: true, error: "Something went wrong. Try again.") == "Loading…")
+        #expect(RolodexLogic.pageLoadFailed(detailLoaded: false, loading: false, error: "Something went wrong. Try again."))
+        #expect(!RolodexLogic.pageLoadFailed(detailLoaded: false, loading: true, error: "x"))
+        #expect(!RolodexLogic.pageLoadFailed(detailLoaded: true, loading: false, error: "x"))
+        #expect(!RolodexLogic.pageLoadFailed(detailLoaded: false, loading: false, error: nil))
+    }
+
+    @Test func theJobsCardWaitsForThePage() {
+        #expect(RolodexLogic.jobsCard(for: nil) == nil)
+        let loaded = RolodexDetail(row: RolodexRow(personId: "p1"), jobs: [], jobsTotal: 0)
+        let card = RolodexLogic.jobsCard(for: loaded)
+        #expect(card?.jobs.isEmpty == true)
+        #expect(card?.total == 0)
     }
 }

@@ -205,7 +205,6 @@ enum RolodexLogic {
 struct RolodexPageRow: Equatable, Sendable {
     var label: String
     var value: String?
-    var mono = false
     /// Shows every line (long free text).
     var wraps = false
 }
@@ -241,19 +240,33 @@ extension RolodexLogic {
     /// The jobs as the page lists them: newest first (the API already sends them so; a stable
     /// sort keeps that order for ties and puts undated ones last).
     static func jobsShown(_ jobs: [RolodexJob]) -> [RolodexJob] {
-        jobs.enumerated().sorted { a, b in
-            switch (parseTimestamp(a.element.addedAt), parseTimestamp(b.element.addedAt)) {
+        // Each date is parsed once, not per comparison.
+        jobs.enumerated().map { (offset: $0.offset, date: parseTimestamp($0.element.addedAt), job: $0.element) }.sorted { a, b in
+            switch (a.date, b.date) {
             case let (x?, y?): x != y ? x > y : a.offset < b.offset
             case (_?, nil): true
             case (nil, _?): false
             case (nil, nil): a.offset < b.offset
             }
-        }.map(\.element)
+        }.map(\.job)
     }
 
-    /// The Contact card's line while phone and email aren't here (Android's words).
-    static func contactPendingText(loading: Bool) -> String {
-        loading ? "Loading…" : "Phone and email need a connection."
+    /// The Contact card's line while phone and email aren't here: "Loading…", why the page failed
+    /// to load (`error`, the model's words), or Android's "Phone and email need a connection.".
+    static func contactPendingText(loading: Bool, error: String? = nil) -> String {
+        if loading { return "Loading…" }
+        return clean(error) ?? "Phone and email need a connection."
+    }
+
+    /// Whether the page's load failed and has stopped (so it offers Try again).
+    static func pageLoadFailed(detailLoaded: Bool, loading: Bool, error: String?) -> Bool {
+        !detailLoaded && !loading && clean(error) != nil
+    }
+
+    /// The jobs the Previous jobs card shows: nil (no card) until the worker's page has loaded, so
+    /// "No jobs yet." never shows while loading, offline or after an error.
+    static func jobsCard(for detail: RolodexDetail?) -> (jobs: [RolodexJob], total: Int)? {
+        detail.map { ($0.jobs, $0.jobsTotal) }
     }
 
     /// The Work card's rows. The Employee ID is not one of them (it stays on the Time Clock's
@@ -275,8 +288,13 @@ extension RolodexLogic {
     private static func parseTimestamp(_ text: String?) -> Date? {
         guard let text = clean(text) else { return nil }
         let whole = text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
+        return isoParser.date(from: whole)
+    }
+
+    /// ISO8601DateFormatter is thread-safe; one shared instance.
+    nonisolated(unsafe) private static let isoParser: ISO8601DateFormatter = {
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime]
-        return parser.date(from: whole)
-    }
+        return parser
+    }()
 }
