@@ -606,6 +606,42 @@ struct RolodexModelTests {
                 == "The system is in read-only mode, so changes can't be saved right now.")
         #expect(RolodexModel.errorText(for: ApiError.network()) == "No connection. Try again when you're back online.")
     }
+
+    // MARK: photo viewer and the Work card
+
+    @Test func employeeIdIsNotOnTheWorkerPage() async {
+        let m = await anaOpen()
+        let row = m.shownRow!
+        let labels = RolodexLogic.workRows(row: row, detail: m.detail).map(\.label)
+        #expect(m.detail?.externalId == "SC-1042")
+        #expect(!labels.contains("Employee ID"))
+        #expect(labels.contains("Company")); #expect(labels.contains("Trade · Level")); #expect(labels.contains("Will travel"))
+    }
+
+    @Test func aPhotoTapOpensTheViewerButInitialsDoNot() async {
+        let m = await anaOpen()
+        #expect(!m.viewingPhoto)
+        // The photo has not loaded yet (initials showing): a tap does nothing.
+        m.openPhotoViewer(photoShown: false)
+        #expect(!m.viewingPhoto)
+        m.openPhotoViewer(photoShown: true)
+        #expect(m.viewingPhoto)
+        m.closePhotoViewer()
+        #expect(!m.viewingPhoto)
+        // A worker with no photo never opens it.
+        await m.select(nil)
+        m.openPhotoViewer(photoShown: true)
+        #expect(!m.viewingPhoto)
+        // Another worker, or a sign-out, closes it.
+        await m.select(ANA.personId)
+        m.openPhotoViewer(photoShown: true)
+        await m.select(nil)
+        #expect(!m.viewingPhoto)
+        await m.select(ANA.personId)
+        m.openPhotoViewer(photoShown: true)
+        await m.clear().value
+        #expect(!m.viewingPhoto)
+    }
 }
 
 /// Counts the fetches a photo load makes.

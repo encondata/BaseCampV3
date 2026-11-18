@@ -198,3 +198,85 @@ enum RolodexLogic {
         return labels.count >= 2 && labels.allSatisfy { !$0.isEmpty }
     }
 }
+
+// MARK: - The worker page: Previous jobs, Work rows, Contact wording
+
+/// One key/value line of the worker page's Work card.
+struct RolodexPageRow: Equatable, Sendable {
+    var label: String
+    var value: String?
+    var mono = false
+    /// Shows every line (long free text).
+    var wraps = false
+}
+
+extension RolodexLogic {
+    static let noJobsText = "No jobs yet."
+
+    /// "Showing the latest 50 of 73 jobs.": only when the worker has more jobs (`total`) than the
+    /// `shown` ones the page lists; nil otherwise (an API from before the total sends 0).
+    static func jobsShownText(shown: Int, total: Int) -> String? {
+        total > shown ? "Showing the latest \(shown) of \(total) jobs." : nil
+    }
+
+    /// "Move · Lead · NAP11 Las Vegas": the job's type, the worker's work type and the site worked,
+    /// skipping any that's missing; nil with none.
+    static func jobLine(_ job: RolodexJob) -> String? {
+        let parts = [job.typeLabel, job.workTypeLabel, job.siteWorkedName].compactMap { clean($0) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// "Added Oct 3, 2026": the day the worker was added, in `timeZone` (the device's by default),
+    /// written as `locale` (the device's by default) writes year, short month and day (`yMMMd`), so
+    /// the month is always a name. Nil when `addedAt` isn't a timestamp. Dates only: no clock.
+    static func jobAddedText(_ addedAt: String?, timeZone: TimeZone = .current, locale: Locale = .current) -> String? {
+        guard let date = parseTimestamp(addedAt) else { return nil }
+        let format = DateFormatter()
+        format.locale = locale
+        format.timeZone = timeZone
+        format.setLocalizedDateFormatFromTemplate("yMMMd")
+        return "Added " + format.string(from: date)
+    }
+
+    /// The jobs as the page lists them: newest first (the API already sends them so; a stable
+    /// sort keeps that order for ties and puts undated ones last).
+    static func jobsShown(_ jobs: [RolodexJob]) -> [RolodexJob] {
+        jobs.enumerated().sorted { a, b in
+            switch (parseTimestamp(a.element.addedAt), parseTimestamp(b.element.addedAt)) {
+            case let (x?, y?): x != y ? x > y : a.offset < b.offset
+            case (_?, nil): true
+            case (nil, _?): false
+            case (nil, nil): a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+
+    /// The Contact card's line while phone and email aren't here (Android's words).
+    static func contactPendingText(loading: Bool) -> String {
+        loading ? "Loading…" : "Phone and email need a connection."
+    }
+
+    /// The Work card's rows. The Employee ID is not one of them (it stays on the Time Clock's
+    /// confirm card); travel and status note arrive with the worker's page, never the list.
+    static func workRows(row: RolodexRow, detail: RolodexDetail?) -> [RolodexPageRow] {
+        var rows = [RolodexPageRow(label: "Company", value: row.company?.name),
+                    RolodexPageRow(label: "Trade · Level", value: [row.trade, row.level].compactMap { clean($0) }.joined(separator: " · "))]
+        guard let detail else { return rows }
+        rows.append(RolodexPageRow(label: "Will travel", value: detail.willTravel.map { $0 ? "Yes" : "No" }))
+        if let region = clean(detail.travelRegion) { rows.append(RolodexPageRow(label: "Travel region", value: region, wraps: true)) }
+        if let restrictions = clean(detail.travelRestrictions) {
+            rows.append(RolodexPageRow(label: "Travel restrictions", value: restrictions, wraps: true))
+        }
+        if let note = clean(detail.statusNote) { rows.append(RolodexPageRow(label: "Status note", value: note)) }
+        return rows
+    }
+
+    /// ISO 8601 with an offset, with or without fractional seconds (any number of digits).
+    private static func parseTimestamp(_ text: String?) -> Date? {
+        guard let text = clean(text) else { return nil }
+        let whole = text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime]
+        return parser.date(from: whole)
+    }
+}

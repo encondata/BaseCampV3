@@ -169,30 +169,18 @@ struct RolodexWorkerView: View {
             }
         }
         RolodexCard(title: "Work") {
-            RolodexKeyValue(key: "Company", value: row.company?.name)
-            RolodexKeyValue(key: "Trade · Level", value: rolodexTradeLevel(trade: row.trade, level: row.level))
-            // Travel arrives with the worker's page, never with the (offline-cached) list.
-            if let detail {
-                RolodexKeyValue(key: "Will travel", value: detail.willTravel.map { $0 ? "Yes" : "No" })
-                if let region = RolodexLogic.clean(detail.travelRegion) {
-                    RolodexKeyValue(key: "Travel region", value: region, wraps: true)
-                }
-                if let restrictions = RolodexLogic.clean(detail.travelRestrictions) {
-                    RolodexKeyValue(key: "Travel restrictions", value: restrictions, wraps: true)
-                }
-                RolodexKeyValue(key: "Employee ID", value: detail.externalId, mono: true)
-                if let statusNote = RolodexLogic.clean(detail.statusNote) {
-                    RolodexKeyValue(key: "Status note", value: statusNote)
-                }
+            ForEach(RolodexLogic.workRows(row: row, detail: detail), id: \.label) { item in
+                RolodexKeyValue(key: item.label, value: item.value, mono: item.mono, wraps: item.wraps)
             }
         }
+        WorkerJobsCard(jobs: detail?.jobs ?? [], total: detail?.jobsTotal ?? 0)
     }
 
     /// Phone and email arrive with the worker's page, never with the list.
     @ViewBuilder private var pending: some View {
         HStack(spacing: 8) {
             if model.detailLoading { ProgressView().tint(palette.textMute) }
-            Text(model.detailLoading ? "Loading contact details…" : (model.detailError ?? "Contact details need a connection."))
+            Text(RolodexLogic.contactPendingText(loading: model.detailLoading))
                 .font(KioskType.bodySmall).foregroundStyle(palette.textMute)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
@@ -208,6 +196,7 @@ private struct RolodexPhotoBadge: View {
     let row: RolodexRow
     let size: CGFloat
     @Environment(RolodexModel.self) private var model
+    @Environment(\.container) private var container
     @Environment(\.kioskPalette) private var palette
 
     var body: some View {
@@ -221,11 +210,28 @@ private struct RolodexPhotoBadge: View {
                 Button("Choose photo") { photo.chooseFromLibrary() }
                 Button("Cancel", role: .cancel) { photo.close() }
             }
+            .fullScreenCover(isPresented: Binding(get: { model.viewingPhoto }, set: { if !$0 { model.closePhotoViewer() } })) {
+                PhotoViewer(personId: row.personId, name: rolodexName(row), photoUrl: row.photoUrl, photoVersion: row.photoVersion,
+                            placeholder: shownImage, onClose: { model.closePhotoViewer() })
+                    .rolodexPresented(container, model, palette)
+            }
+    }
+
+    /// The avatar's own decode, once it has loaded (nil while initials show): what a tap shows large.
+    private var shownImage: UIImage? {
+        guard row.hasPhoto, let version = row.photoVersion else { return nil }
+        return RolodexPhotoCache.shared.image(RolodexPhotoCache.key(personId: row.personId, photoVersion: version,
+                                                                    pixels: size <= 64 ? RolodexAvatar.rowPixels : RolodexAvatar.pagePixels))
     }
 
     @ViewBuilder private var photoWithBadge: some View {
         let badge = size >= 100 ? 34.0 : 28.0
-        RolodexAvatar(row: row, size: size)
+        Button { model.openPhotoViewer(photoShown: shownImage != nil) } label: {
+            RolodexAvatar(row: row, size: size)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("View photo of \(rolodexName(row))")
+        .accessibilityIdentifier("rolodex-photo-view")
             .overlay(Circle().stroke(palette.paper, lineWidth: 4))
             .shadow(color: palette.ink.opacity(0.18), radius: 9, y: 4)
             .overlay(alignment: .bottomTrailing) {
