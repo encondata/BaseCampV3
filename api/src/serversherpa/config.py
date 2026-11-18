@@ -165,6 +165,10 @@ class Settings(BaseSettings):
     # those routes skip require_permission and trust this token instead.
     wiki_service_token: SecretStr = SecretStr("")
     wiki_max_upload_bytes: int = 1_073_741_824
+    # Shared secret the separate Devices (app-distribution) service presents
+    # to /app-distribution/internal/*, and the origin of its web app.
+    devices_service_token: SecretStr = SecretStr("")
+    devices_origin: str = "http://localhost:5180"
     # days a soft-deleted node stays restorable before the purge job drops it
     wiki_trash_days: int = 30
     # the wiki server's own origin, used by the worker for POST

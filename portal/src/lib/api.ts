@@ -337,6 +337,16 @@ export function installVisibilityRefresh(): () => void {
   return () => document.removeEventListener('visibilitychange', handler);
 }
 
+/** The current access token for a sibling service (the Devices app), refreshed
+ *  first when stale through the same single-flight refresh as apiFetch.
+ *  null when signed out. */
+export async function accessTokenForService(): Promise<string | null> {
+  if (tokenIsStale()) {
+    await refreshSession();
+  }
+  return accessToken;
+}
+
 // ── authenticated fetch ─────────────────────────────────────────────
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {

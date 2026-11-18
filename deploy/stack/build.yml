@@ -39,3 +39,8 @@ services:
     build:
       context: ${STACK_REPO_DIR}
       dockerfile: status/Dockerfile
+  devices:
+    image: ${STACK_DEVICES_IMAGE:-serversherpa-devices}:${STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR}
+      dockerfile: devices/Dockerfile

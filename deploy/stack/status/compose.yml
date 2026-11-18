@@ -24,6 +24,7 @@ services:
       - "learn.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
       - "spaces.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
       - "status.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+      - "devices.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
     ports:
       - "${STACK_BIND_IP:-0.0.0.0}:${STACK_STATUS_PORT:-8095}:8080"
     volumes:

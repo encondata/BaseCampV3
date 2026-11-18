@@ -518,7 +518,7 @@ def test_teardown_playbook_stops_everything_and_removes_the_folder(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert [c.split(" -f ")[-1] for c in calls if c.startswith("compose")] == [
         f"{env_dir}/repo/deploy/stack/{s}/compose.yml down --volumes"
-        for s in ("status", "web", "api", "storage", "db")]
+        for s in ("status", "devices", "web", "api", "storage", "db")]
     assert "network rm ss-env" in calls
     assert not env_dir.exists()
     assert (REPO / "deploy" / "stack" / "ss-stack").is_file()      # the symlink went, not this

@@ -1,0 +1,80 @@
+# The devices service (devices.<domain>): crew app installs. One image
+# serves its API and its web app on :8080 and, as `worker`, runs its
+# background jobs (Apple registration, profiles, re-signing). Both share one
+# environment (x-devices-env). Its database, serversherpa_devices, lives on
+# the environment's database server (ss-stack creates it); the service
+# migrates it on start. Its bucket, serversherpa-devices, sits next to the
+# main one (the service creates it on start). The main API is reached over
+# the ss-<env> network; the service token must equal the API's.
+name: ss-${STACK_ENV:?set STACK_ENV}-devices
+
+x-devices-env: &devices-env
+  # Local stacks: the db stack's postgres; a DigitalOcean droplet's .env sets
+  # DEVICES_DATABASE_URL (serversherpa_devices on the managed database).
+  DEVICES_DATABASE_URL: ${DEVICES_DATABASE_URL:-postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa_devices}
+  DEVICES_DATABASE_SSL: ${SS_DATABASE_SSL:-disable}
+  DEVICES_MAIN_API_URL: http://api:8000
+  # Optional here so the stack can be stopped and listed with the app off;
+  # ss-stack up refuses to start it without them (and so does the service).
+  DEVICES_SERVICE_TOKEN: ${SS_DEVICES_SERVICE_TOKEN:-}
+  DEVICES_SECRET_KEY: ${DEVICES_SECRET_KEY:-}
+  DEVICES_PUBLIC_URL: https://devices.${STACK_DOMAIN:?set STACK_DOMAIN}
+  # the stack that owns iPhone installs, when this one has no Apple settings
+  DEVICES_IOS_OWNER_URL: ${DEVICES_IOS_OWNER_URL:-}
+  # presigned URLs are signed for this host, so it must be the public name;
+  # a DigitalOcean droplet's .env points these at its Spaces
+  DEVICES_SPACES_ENDPOINT: ${SS_SPACES_ENDPOINT:-https://spaces.${STACK_DOMAIN}}
+  DEVICES_SPACES_REGION: ${SS_SPACES_REGION:-us-east-1}
+  DEVICES_SPACES_BUCKET: ${DEVICES_SPACES_BUCKET:-serversherpa-devices}
+  DEVICES_SPACES_ACCESS_KEY: ${SS_SPACES_ACCESS_KEY:-serversherpa}
+  DEVICES_SPACES_SECRET_KEY: ${SS_SPACES_SECRET_KEY:-${SPACES_SECRET_KEY:?set SPACES_SECRET_KEY}}
+  DEVICES_SPACES_USE_PATH_STYLE: ${SS_SPACES_USE_PATH_STYLE:-true}
+  # uvicorn honors X-Forwarded-For only from NPM (or Caddy), so callers
+  # can't spoof their client IP
+  FORWARDED_ALLOW_IPS: ${STACK_PROXY_IP:?set STACK_PROXY_IP}
+
+x-devices-service: &devices-service
+  image: ${STACK_DEVICES_IMAGE:-serversherpa-devices}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}
+  environment: *devices-env
+  # the public names go straight to NPM on the LAN (or, on a DigitalOcean
+  # droplet, to the load balancer: STACK_HOSTS_IP), never out and back
+  # through the router (hairpin NAT is not a given)
+  extra_hosts:
+    - "api.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "portal.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "kiosk.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "wiki.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "learn.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "spaces.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "status.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "devices.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+  restart: unless-stopped
+
+services:
+  # migrates, then serves the API and the web app (docker-entrypoint.sh)
+  devices:
+    <<: *devices-service
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_DEVICES_PORT:-8093}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
+  devices-worker:
+    <<: *devices-service
+    command: ["worker"]
+    # the image's check is the web server's /healthz; the worker serves no HTTP
+    healthcheck:
+      disable: true
+    # starts once the service has migrated the database
+    depends_on:
+      devices:
+        condition: service_healthy
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true

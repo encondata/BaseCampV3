@@ -20,3 +20,6 @@ wikisvc: api/.venv/bin/serversherpa wiki-worker --reload
 portal: npm --prefix portal run dev
 kiosk: npm --prefix kiosk run dev
 learn: npm --prefix learn run dev
+devicesapi: devices/api/.venv/bin/python -m uvicorn --factory serversherpa_devices.api.app:create_app --app-dir devices/api/src --reload --host 0.0.0.0 --port 8099
+deviceswork: devices/api/.venv/bin/devices worker --reload
+devicesweb: npm --prefix devices/web run dev

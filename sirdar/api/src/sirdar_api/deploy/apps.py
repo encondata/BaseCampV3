@@ -1,6 +1,7 @@
 """Which apps an environment runs and where its mail goes (deploy phase 8c).
 API and portal always run; wiki, kiosk, learn, status and mailpit can be turned off
-when the environment is created. Mail goes to the environment's own Mailpit
+when the environment is created. deploy/stack's devices app is known but never
+run here yet: it needs two secrets Sirdar doesn't make (NOT_RUN). Mail goes to the environment's own Mailpit
 (nothing leaves the host) or to an SMTP server: ServerSherpa reads SMTP only
 from its environment (SS_SMTP_* in api/src/serversherpa/config.py), so Sirdar
 writes it into the .env. The SMTP password is the optional secret
@@ -10,9 +11,16 @@ import re
 
 from sirdar_api.deploy import envfile
 
-OPTIONAL_APPS = ("wiki", "kiosk", "learn", "status", "mailpit")
+# deploy/stack's list (ss-stack check_apps; tests/test_deploy_stack_drift.py)
+OPTIONAL_APPS = ("wiki", "kiosk", "learn", "status", "devices", "mailpit")
+# Apps Sirdar leaves off: devices needs SS_DEVICES_SERVICE_TOKEN and
+# DEVICES_SECRET_KEY, which Sirdar doesn't generate or store yet.
+NOT_RUN = ("devices",)
+RUNNABLE_APPS = tuple(a for a in OPTIONAL_APPS if a not in NOT_RUN)
 ALWAYS = ("api", "portal")
-_PUBLIC_APPS = ("wiki", "kiosk", "learn", "status")  # their public names go when they're off
+# their public names go when they're off
+_PUBLIC_APPS = ("wiki", "kiosk", "learn", "status", "devices")
+_DEVICES_SECRETS = ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY")
 DEFAULT_SMTP_PORT = 587                             # ServerSherpa's smtp_port default
 _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 # no whitespace, quotes, "$", "#", backslash, backtick or control character:
@@ -32,14 +40,14 @@ class AppsError(Exception):
 
 def check_apps(value) -> list[str]:
     if value is None:
-        return list(OPTIONAL_APPS)
+        return list(RUNNABLE_APPS)
     if (not isinstance(value, list) or not all(isinstance(a, str) for a in value)
-            or set(value) - set(OPTIONAL_APPS)):
+            or set(value) - set(RUNNABLE_APPS)):
         raise AppsError("apps_invalid")
     if "learn" in value and "wiki" not in value:
         # learning documents render through the wiki container
         raise AppsError("learn_needs_wiki")
-    return [a for a in OPTIONAL_APPS if a in value]
+    return [a for a in RUNNABLE_APPS if a in value]
 
 
 def check_digests(value) -> list[str]:
@@ -149,6 +157,11 @@ def from_env(values: dict[str, str], domain: str) -> tuple[list[str], dict]:
     raw = values.get("STACK_APPS", "")
     try:
         if not raw:
+            # ss-stack runs every app, devices too once both its secrets are
+            # set (not CHANGEME): Sirdar couldn't deploy that back (NOT_RUN)
+            if all(values.get(k, "") not in ("", envfile.PLACEHOLDER)
+                   for k in _DEVICES_SECRETS):
+                raise AppsError("apps_invalid")
             apps_on = check_apps(None)
         elif raw == "none":
             apps_on = []

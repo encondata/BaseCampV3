@@ -42,7 +42,14 @@ def test_app_on(monkeypatch, raw, on):
 async def test_the_status_says_which_apps_run(client, apps_env):
     apps_env("kiosk,status")
     body = (await client.get("/system/status")).json()
-    assert body["apps"] == {"wiki": False, "kiosk": True, "learn": False}
+    assert body["apps"] == {"wiki": False, "kiosk": True, "learn": False, "devices": False}
     apps_env("")
     body = (await client.get("/system/status")).json()
-    assert body["apps"] == {"wiki": True, "kiosk": True, "learn": True}
+    assert body["apps"] == {"wiki": True, "kiosk": True, "learn": True, "devices": True}
+
+
+async def test_devices_flag_follows_ss_apps(client, apps_env):
+    apps_env("wiki")
+    assert (await client.get("/system/status")).json()["apps"]["devices"] is False
+    apps_env("")
+    assert (await client.get("/system/status")).json()["apps"]["devices"] is True

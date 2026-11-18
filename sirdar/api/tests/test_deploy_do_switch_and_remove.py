@@ -644,8 +644,8 @@ async def test_a_foreign_certificate_on_the_load_balancer_fails_the_switch(db, d
 def do_envs_hosts():
     """The names the load balancer's smoke test asks for (uat9 is a dev
     environment with every app on: the five services and the bare name)."""
-    from sirdar_api.deploy import certs
-    return (*certs.PUBLIC_SERVICES, "home")
+    from sirdar_api.deploy import apps, certs
+    return (*(s for s in certs.PUBLIC_SERVICES if s not in apps.NOT_RUN), "home")
 
 
 async def test_a_one_slot_environment_says_the_droplet_already_runs_the_commit(db, do_build):

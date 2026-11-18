@@ -56,7 +56,7 @@ async def test_apps_turned_off_lose_their_names_and_turned_on_get_them(client, d
         "api": "api.qa1.serversherpa.com", "portal": "portal.qa1.serversherpa.com",
         "home": "qa1.serversherpa.com", "kiosk": "kiosk.qa1.serversherpa.com", "wiki": None,
         "learn": None, "spaces": "spaces.qa1.serversherpa.com",
-        "status": "status.qa1.serversherpa.com", "mailpit": None}
+        "status": "status.qa1.serversherpa.com", "devices": None, "mailpit": None}
     resp = await client.patch(f"{URL}/qa1", headers=h, json={
         "apps": ["wiki", "kiosk", "learn", "status", "mailpit"]})
     names = _names(resp.json())
@@ -279,7 +279,7 @@ async def test_on_digitalocean_the_names_follow_the_certificate_list(db, secrets
         "api": "api.uat9.serversherpa.com", "portal": "portal.uat9.serversherpa.com",
         "home": "uat9.serversherpa.com", "kiosk": "kiosk.uat9.serversherpa.com", "wiki": None,
         "learn": None, "spaces": None, "status": "status.uat9.serversherpa.com",
-        "mailpit": None}
+        "devices": None, "mailpit": None}
     await db.rollback()
 
 
