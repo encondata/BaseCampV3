@@ -75,9 +75,6 @@ async def kiosk_principal(
 
 
 def client_ip(request: Request) -> str | None:
-    """Real client IP, the main API's rule: Caddy (our only proxy) sets
-    X-Forwarded-For, whose first entry is the client."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """The caller's IP, for audit rows. X-Forwarded-For is never read here."""
+    # uvicorn --proxy-headers --forwarded-allow-ips=<proxy> rewrites request.client from it.
     return request.client.host if request.client else None

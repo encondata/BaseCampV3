@@ -262,7 +262,12 @@ async def test_audit_failure_does_not_raise(main_api, fake, caplog):
 
 
 async def test_client_ip(http):
-    r = await http.get("/api/_ip", headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"})
-    assert r.json() == {"ip": "203.0.113.9"}
     r = await http.get("/api/_ip")
+    assert r.json() == {"ip": "127.0.0.1"}
+
+
+async def test_client_ip_ignores_forged_forwarded_for(http):
+    """Only uvicorn's proxy-headers handling (trusted proxies) may rewrite
+    the client; a header the caller typed never reaches the audit log."""
+    r = await http.get("/api/_ip", headers={"X-Forwarded-For": "6.6.6.6"})
     assert r.json() == {"ip": "127.0.0.1"}
