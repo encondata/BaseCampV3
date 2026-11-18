@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Settings › This Kiosk: name, serial, mode, biometric sign-in, API/portal URLs, version — usable
+/// Settings › This Kiosk: name, serial, mode, biometric sign-in, API/portal URLs, version, app updates — usable
 /// signed out.
 struct ThisKioskPanel: View {
     @Environment(KioskConfig.self) private var config
@@ -92,6 +92,7 @@ struct ThisKioskPanel: View {
                 .padding(.top, 8)
             }
             SettingsRow(title: "Version") { Text(config.kioskVersion).font(KioskType.mono(13)).foregroundStyle(palette.text) }
+            AppUpdatesRow()
             KioskToast(text: saved)
         }
         .onAppear {

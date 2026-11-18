@@ -39,7 +39,7 @@ struct HomeScreen: View {
     }
 }
 
-/// The launcher's page body: header, setup banner, tiles.
+/// The launcher's page body: header, update banner, setup banner, tiles.
 struct HomeContent: View {
     @Binding var path: [Route]
     @Environment(KioskPrefs.self) private var prefs
@@ -61,6 +61,7 @@ struct HomeContent: View {
         let rows = stride(from: 0, to: tiles.count, by: perRow).map { Array(tiles[$0..<min($0 + perRow, tiles.count)]) }
         VStack(alignment: .leading, spacing: 0) {
             PageHeader(eyebrow: "Kiosk", title: "What would you like to do?")
+            UpdateBanner()
             if let banner { KioskToast(text: banner.text, error: banner.error) }
             // A Grid, not a LazyVGrid: every tile in a row takes the row's height.
             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
