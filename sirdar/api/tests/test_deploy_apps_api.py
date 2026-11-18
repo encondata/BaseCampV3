@@ -16,6 +16,7 @@ from .deploy_factories import (  # noqa: F401
     fake_provisioner,
     fake_publisher,
     fake_runner,
+    fcm_key,
     leak_guard,
     make_environment,
     remote_env_text,
@@ -88,6 +89,23 @@ async def test_the_env_file_carries_the_apps_and_smtp(client, db, target, fake_r
     assert (values["SS_SMTP_HOST"], values["SS_SMTP_PORT"], values["SS_SMTP_FROM"]) == (
         "smtp.example.com", "2525", "ops@example.com")
     assert values["SS_SMTP_PASSWORD"] == SMTP_PASSWORD
+
+
+async def test_the_env_file_carries_the_firebase_key_on_one_line(client, db, target, fake_runner):
+    await trust_fake(db, target)
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    key = fcm_key()
+    resp = await client.post(URL, headers=h, json={
+        **NEW, "secrets": {"SS_FCM_SERVICE_ACCOUNT_B64": key}})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["secrets_set"]["SS_FCM_SERVICE_ACCOUNT_B64"] is True
+    assert key not in resp.text
+    resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
+    await pipeline.wait(uuid.UUID(resp.json()["id"]))
+    render = next(r for r in fake_runner.requests if r.step == "render")
+    text = base64.b64decode(render.extravars["env_file_b64"]).decode()
+    assert f"\nSS_FCM_SERVICE_ACCOUNT_B64={key}\n" in text
 
 
 @pytest.mark.parametrize("body, code", [

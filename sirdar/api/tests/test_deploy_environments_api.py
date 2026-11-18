@@ -9,6 +9,7 @@ from .api_helpers import auth_headers
 from .deploy_factories import (  # noqa: F401
     ADOPT_SHA,
     CAT_ENV,
+    fcm_key,
     leak_guard,
     make_environment,
     remote_env_text,
@@ -77,7 +78,7 @@ async def test_environment_defaults(client, db):
         "bind_ip": "0.0.0.0", "keep_dumps": 5, "spaces_bucket": "serversherpa",
         "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
         "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD",
-                             "SS_SMTP_PASSWORD"],
+                             "SS_SMTP_PASSWORD", "SS_FCM_SERVICE_ACCOUNT_B64"],
         "vm": {"cores": 4, "memory_mb": 8192, "disk_gb": 64, "keep_snapshots": 3,
                "limits": {"cores": [1, 64], "memory_mb": [2048, 262144],
                           "disk_gb": [20, 4096], "keep_snapshots": [1, 10]}},
@@ -106,7 +107,8 @@ async def test_create_new_environment(client, db, target, leak_guard):
     assert body["services"][-1]["hostname"] is None
     assert body["secrets_set"] == {"SS_ANTHROPIC_API_KEY": False,
                                    "SS_DB_TESTING_PASSWORD": False,
-                                   "SS_SMTP_PASSWORD": False}
+                                   "SS_SMTP_PASSWORD": False,
+                                   "SS_FCM_SERVICE_ACCOUNT_B64": False}
     assert await _audits(db, "deploy.environment_create") == [{
         "name": "qa", "type": "custom", "target": "ssh", "base_domain": "qa.serversherpa.com",
         "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True,
@@ -207,7 +209,8 @@ async def test_patch_environment(client, db, target, leak_guard):
                                    "hostname": "api.uat2.serversherpa.com", "proxied": True}
     assert body["secrets_set"] == {"SS_ANTHROPIC_API_KEY": True,
                                    "SS_DB_TESTING_PASSWORD": False,
-                                   "SS_SMTP_PASSWORD": False}
+                                   "SS_SMTP_PASSWORD": False,
+                                   "SS_FCM_SERVICE_ACCOUNT_B64": False}
     assert await _audits(db, "deploy.environment_update") == [{"changed": [
         "base_domain", "services.api.port", "services.api.proxied",
         "secrets.SS_ANTHROPIC_API_KEY"]}]
@@ -308,3 +311,34 @@ async def test_publish_flag_on_create_adopt_and_patch(client, db, target, leak_g
     assert resp.json()["publish"] is True
     assert (await _audits(db, "deploy.environment_update"))[-1] == {"changed": ["publish"]}
     assert [c["publish"] for c in await _audits(db, "deploy.environment_create")] == [True, False]
+
+
+async def test_patch_a_firebase_key_is_write_only(client, db, target, leak_guard):
+    """Set, shown only as set, written to the .env record, cleared; a bad
+    one is refused with the usual error, naming the key and never the value."""
+    await make_environment(db)
+    h = await auth_headers(client, db)
+    key = fcm_key()
+    leak_guard.append(key)
+    leak_guard.append("MIIEvFAKEfcmKEYmaterial")
+    resp = await client.patch(f"{URL}/uat", headers=h,
+                              json={"secrets": {"SS_FCM_SERVICE_ACCOUNT_B64": key}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["secrets_set"]["SS_FCM_SERVICE_ACCOUNT_B64"] is True
+    assert await _audits(db, "deploy.environment_update") == [
+        {"changed": ["secrets.SS_FCM_SERVICE_ACCOUNT_B64"]}]
+    resp = await client.get(f"{URL}/uat", headers=h)
+    assert resp.json()["secrets_set"]["SS_FCM_SERVICE_ACCOUNT_B64"] is True
+
+    raw = '{"type": "service_account", "project_id": "p", "client_email": "e", "private_key": "SECRET-x"}'
+    for bad in (raw, "SECRET-x-not-base64", fcm_key(type="user", private_key="SECRET-x"),
+                fcm_key(private_key="SECRET-x" + "y" * 7000)):
+        resp = await client.patch(f"{URL}/uat", headers=h,
+                                  json={"secrets": {"SS_FCM_SERVICE_ACCOUNT_B64": bad}})
+        assert (resp.status_code, resp.json()) == (422, {"detail": {
+            "code": "secret_invalid", "key": "SS_FCM_SERVICE_ACCOUNT_B64"}})
+        assert "SECRET-x" not in resp.text and bad[:16] not in resp.text
+
+    resp = await client.patch(f"{URL}/uat", headers=h,
+                              json={"secrets": {"SS_FCM_SERVICE_ACCOUNT_B64": ""}})
+    assert resp.json()["secrets_set"]["SS_FCM_SERVICE_ACCOUNT_B64"] is False

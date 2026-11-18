@@ -1,5 +1,8 @@
 """Shared fixtures and builders for the deploy pipeline tests (phase 2a)."""
 
+import base64
+import json
+
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import select
@@ -24,6 +27,23 @@ ENV_SECRETS = {
     "SS_PASSWORD_PEPPER": "d4" * 8 + "99887766" * 6,
     "SS_WIKI_SERVICE_TOKEN": "e5" * 8 + "55443322" * 6,
 }
+
+
+# A Firebase service-account key shaped like Google's download (a made-up
+# private key): SS_FCM_SERVICE_ACCOUNT_B64 is its JSON, base64 on one line.
+FCM_ACCOUNT = {
+    "type": "service_account", "project_id": "ss-push-test", "private_key_id": "0a1b2c3d",
+    # as long as a real 2048-bit key, so the encoded key is ~2.5 KB like Google's
+    "private_key": ("-----BEGIN PRIVATE KEY-----\nMIIEvFAKEfcmKEYmaterial" + "Q" * 1600
+                    + "\n-----END PRIVATE KEY-----\n"),
+    "client_email": "push@ss-push-test.iam.gserviceaccount.com", "client_id": "1234567890",
+}
+
+
+def fcm_key(account: object = None, **over) -> str:
+    """SS_FCM_SERVICE_ACCOUNT_B64 for FCM_ACCOUNT with `over` applied (or for `account`)."""
+    data = {**FCM_ACCOUNT, **over} if account is None else account
+    return base64.b64encode(json.dumps(data, indent=2).encode()).decode()
 
 
 @pytest.fixture
