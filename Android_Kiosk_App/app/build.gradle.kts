@@ -83,7 +83,7 @@ android {
         // MigrationTestHelper loads exported schemas from the instrumentation context's assets,
         // and under Robolectric that is the tested variant's merged assets (src/test assets are
         // never merged). So the schemas ride in debug builds only (release stays clean), and
-        // testReleaseUnitTest does not see them: run the migration tests with testDebugUnitTest.
+        // testReleaseUnitTest does not see them: run the migration tests with testPlayDebugUnitTest (or testDirectDebugUnitTest).
         getByName("debug").assets.srcDir("$projectDir/schemas")
     }
 

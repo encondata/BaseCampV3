@@ -3,7 +3,6 @@ package com.serversherpa.kiosk
 import android.app.Application
 import android.content.pm.PackageManager
 import androidx.test.core.app.ApplicationProvider
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
