@@ -5,6 +5,8 @@ import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.core.model.PushRegistration
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.api.MemorySecretStore
+import com.serversherpa.kiosk.data.api.SecretStore
+import java.security.GeneralSecurityException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -255,6 +257,44 @@ class PushRegistrarTest {
         registrar.onAppStart()
         assertEquals(2, api.pushTokenUpdates.size)
         assertTrue(store.retryPending())
+    }
+
+    // ── a Keystore-backed store that throws: these run from the background, so never crash ──
+
+    /** A store whose every read or write throws, as a locked or broken Android Keystore does. */
+    private fun brokenRegistrar(failPut: Boolean = true, failGet: Boolean = true, inner: SecretStore = MemorySecretStore()) =
+        PushRegistrar(api, PushKeyStore(object : SecretStore {
+            override fun get(key: String): String? = if (failGet) throw GeneralSecurityException("keystore") else inner.get(key)
+            override fun put(key: String, value: String) = if (failPut) throw GeneralSecurityException("keystore") else inner.put(key, value)
+            override fun remove(key: String) = if (failPut) throw GeneralSecurityException("keystore") else inner.remove(key)
+        }), fcm, apiBase = { apiBase }, personId = { me }, io = Dispatchers.Unconfined)
+
+    @Test fun onNewToken_store_that_throws_does_not_crash() = runBlocking {
+        brokenRegistrar().onNewToken("fcm-token-2")
+        assertTrue("nothing is sent without a key", api.calls.isEmpty())
+    }
+
+    @Test fun onNewToken_store_write_that_throws_after_the_call_does_not_crash() = runBlocking {
+        // the key reads fine, the update goes, then marking the retry state fails
+        val inner = MemorySecretStore().apply {
+            put(PushKeyStore.KEY, "push-key-1")
+            put(PushKeyStore.REGISTRATION_ID, "reg-1")
+            put(PushKeyStore.PERSON_ID, "p1")
+            put(PushKeyStore.ORIGIN, "https://api.example.com:443")
+        }
+        brokenRegistrar(failGet = false, inner = inner).onNewToken("fcm-token-2")
+        assertEquals(listOf("updatePushToken"), api.calls)
+        api.updatePushTokenResult = { _, _ -> throw ApiError(0, "network") }
+        brokenRegistrar(failGet = false, inner = inner).onNewToken("fcm-token-3")
+        api.updatePushTokenResult = { _, _ -> throw ApiError(401, "push_key_invalid") }
+        brokenRegistrar(failGet = false, inner = inner).onNewToken("fcm-token-4")
+        assertEquals(3, api.pushTokenUpdates.size)
+    }
+
+    @Test fun onAppStart_store_that_throws_does_not_crash() = runBlocking {
+        brokenRegistrar().onAppStart()
+        assertTrue(api.calls.isEmpty())
+        assertEquals(0, fcm.tokenCalls)
     }
 
     @Test fun onAppStart_without_a_pending_retry_does_nothing() = runBlocking {

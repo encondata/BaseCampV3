@@ -118,28 +118,39 @@ class PushRegistrar(
      * configured API. A refused key (401 push_key_invalid) is dropped and never retried, since the
      * server caps refusals per address and a site's shared address would lock out other phones;
      * the next check or "This is my phone" makes a new one. Anything else is tried again on the
-     * next app start.
+     * next app start. Never throws (but cancellation): it runs from the background, and a key store
+     * that can't be read or written (the Keystore) is let go like a failed call.
      */
     suspend fun onNewToken(token: String) {
-        val key = withContext(io) { store.get(apiBase()) } ?: return
         try {
+            val key = withContext(io) { store.get(apiBase()) } ?: return
             api.updatePushToken(token, key)
-            withContext(io) { store.setRetryPending(false) }
+            quietly { store.setRetryPending(false) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiError) {
-            withContext(io) {
-                if (e.status == 401 && e.code == "push_key_invalid") store.clear() else store.setRetryPending(true)
-            }
+            quietly { if (e.status == 401 && e.code == "push_key_invalid") store.clear() else store.setRetryPending(true) }
         } catch (_: Exception) {
-            withContext(io) { store.setRetryPending(true) }
+            quietly { store.setRetryPending(true) }
         }
     }
 
-    /** The app started: a token update that failed before is sent again, with the current token. */
+    /** The app started: a token update that failed before is sent again, with the current token.
+     *  Never throws (but cancellation): it runs on every start of every device. */
     suspend fun onAppStart() {
-        if (!withContext(io) { store.retryPending() }) return
-        val token = try { fcm.token() } catch (e: CancellationException) { throw e } catch (_: Exception) { return }
+        val token = try {
+            if (!withContext(io) { store.retryPending() }) return
+            fcm.token()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return
+        }
         onNewToken(token)
+    }
+
+    /** A store write that may fail without failing the caller. */
+    private suspend fun quietly(write: () -> Unit) {
+        try { withContext(io) { write() } } catch (e: CancellationException) { throw e } catch (_: Exception) { }
     }
 }

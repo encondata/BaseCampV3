@@ -18,11 +18,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  * The alert's Snooze and Mark read buttons, from the lock screen too: no session, only the push key
  * (spec decision 12). [run] answers whether the alert should come down:
  * - done: yes.
- * - 404, or 409 not_live: it was already read, hidden or removed elsewhere, so yes.
+ * - 404 notification_not_found, or 409 not_live: it was already read, hidden or removed elsewhere,
+ *   so yes. Any other 404 (a proxy, a server without the route) keeps the alert.
  * - 401 push_key_invalid: the key is dead, so it is dropped (like a token update's refusal, never
  *   retried); the alert stays.
- * - no key for the configured API, read-only mode, the network, a slow server: the alert stays so
- *   the admin can try again.
+ * - no key for the configured API, a key store that can't be read, read-only mode, the network, a
+ *   slow server: the alert stays so the admin can try again. [run] never throws (but cancellation).
  * The key is never logged.
  */
 class PushActions(
@@ -34,8 +35,9 @@ class PushActions(
     private val timeoutMillis: Long = 8_000,
 ) {
     suspend fun run(action: String, notificationId: String): Boolean {
-        val key = withContext(io) { store.get(apiBase()) } ?: return false
         return try {
+            // inside the try: the Keystore-backed store can throw, and this runs from the background
+            val key = withContext(io) { store.get(apiBase()) } ?: return false
             withTimeoutOrNull(timeoutMillis) {
                 when (action) {
                     PushActionReceiver.ACTION_SNOOZE -> api.pushSnooze(notificationId, key)
@@ -48,14 +50,19 @@ class PushActions(
             throw e
         } catch (e: ApiError) {
             when {
-                e.status == 404 -> true
+                e.status == 404 && e.code == "notification_not_found" -> true
                 e.status == 409 && e.code == "not_live" -> true
-                e.status == 401 && e.code == "push_key_invalid" -> { withContext(io) { store.clear() }; false }
+                e.status == 401 && e.code == "push_key_invalid" -> { clearKey(); false }
                 else -> false
             }
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** A dead key is dropped; a store that can't be written keeps it (the next refusal tries again). */
+    private suspend fun clearKey() {
+        try { withContext(io) { store.clear() } } catch (e: CancellationException) { throw e } catch (_: Exception) { }
     }
 }
 
@@ -75,6 +82,10 @@ open class PushActionReceiver : BroadcastReceiver() {
         scope(context).launch {
             try {
                 if (actions.run(action, notificationId)) PushNotifier(app).clear(notificationId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // the app's scope has no handler: nothing here may crash the app from the background
             } finally {
                 pending?.finish()
             }

@@ -327,7 +327,11 @@ class AppContainer(
         rfid.start()
         startSledWiring()
         // A push token update that failed before (network, read-only mode) goes again.
-        scope.launch { pushRegistrar.onAppStart() }
+        // The scope has no exception handler, so nothing may escape: this runs on every start of
+        // every device, and the Keystore-backed key store can throw.
+        scope.launch {
+            try { pushRegistrar.onAppStart() } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
         watchPersonalPhone()
     }
 

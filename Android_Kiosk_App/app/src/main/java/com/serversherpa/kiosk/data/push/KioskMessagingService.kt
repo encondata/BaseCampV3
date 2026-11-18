@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.data.push
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.serversherpa.kiosk.KioskApplication
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
@@ -19,6 +20,9 @@ class KioskMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         val container = (application as? KioskApplication)?.container ?: return
-        container.scope.launch { container.pushRegistrar.onNewToken(token) }
+        container.scope.launch {
+            // the app's scope has no exception handler: nothing may escape into it from here
+            try { container.pushRegistrar.onNewToken(token) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
     }
 }
