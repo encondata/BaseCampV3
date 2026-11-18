@@ -43,6 +43,9 @@ final class AppContainer {
     let biometric: BiometricSignIn
     /// The Turn on sheet after a password sign-in, over the signed-in app; sign-out closes it.
     let enrollOffer: EnrollOffer
+    /// The Devices site's update check: after sign-in, on foreground every 6 hours, and from
+    /// Settings. Sign-out forgets it.
+    let updates: UpdateChecker
     /// Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
     /// keyed to the printer and applied under `printerLock` by the same callers. The stops are kept
     /// across launches (`KioskPrefs.printerStops`).
@@ -68,16 +71,20 @@ final class AppContainer {
     /// the real generator unless a test passes another (nothing starts it until a build runs,
     /// and only `launch()` starts the builder). `bluetoothClient` is CoreBluetooth unless a test
     /// passes a fake (nothing makes its central until a Bluetooth printer is used).
-    /// `biometricKeys` is the Secure Enclave key store unless a test passes a fake.
+    /// `biometricKeys` is the Secure Enclave key store unless a test passes a fake. `devicesApi` is
+    /// the Devices site on the shared session and `installed` this app's bundle unless a test (or a
+    /// DEBUG launch argument) passes others.
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
          backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine(),
-         bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil) {
+         bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil,
+         devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil) {
         let prefs = KioskPrefs(defaults: defaults)
         let config = KioskConfig(prefs: prefs)
         let identity = Identity(prefs: prefs, secrets: secrets)
         let cookies = RefreshCookie(secrets: secrets)
         let apiUrl: @Sendable () async -> String = { await MainActor.run { config.apiUrl } }
-        // One URLSession for all three: it carries the cross-origin redirect guard.
+        // One URLSession for all four (the Devices site's update check too): it carries the
+        // cross-origin redirect guard.
         let session = URLSessionKioskApi.makeSession()
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
         let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
@@ -143,6 +150,13 @@ final class AppContainer {
         let enrollOffer = EnrollOffer(biometric: biometric, auth: auth)
         self.biometric = biometric
         self.enrollOffer = enrollOffer
+        // The Devices site follows the API URL as it is now, so a changed one counts on the next check.
+        let devicesUrl: @MainActor () -> String? = { devicesBaseUrl(apiUrl: config.apiUrl) }
+        self.updates = UpdateChecker(
+            api: devicesApi ?? URLSessionDevicesApi(devicesUrl: { await MainActor.run { devicesBaseUrl(apiUrl: config.apiUrl) } },
+                                                    session: session, sessionStore: sessionStore),
+            installed: installed ?? InstalledApp.current(), devicesUrl: devicesUrl,
+            signedIn: { if case .authed = auth.state { return true } else { return false } })
 
         // Print Labels' list and its waiting jobs belong to one session on one move, and the
         // Bluetooth link to the session (a send in flight fails, and its printer gets a `~JX`).
@@ -242,9 +256,25 @@ final class AppContainer {
     /// Keychain, UserDefaults.standard and the on-disk store (see `openStore`).
     static func live() -> AppContainer {
         let opened = openStore()
+        let sample = sampleUpdateCheck()
         return AppContainer(defaults: .standard, secrets: KeychainSecretStore(), modelContainer: opened.container,
                             storeIsTemporary: opened.isTemporary, backgroundTask: UIKitBackgroundTasking(),
-                            fontsDir: Sync.defaultFontsDir)
+                            fontsDir: Sync.defaultFontsDir, devicesApi: sample.api, installed: sample.installed)
+    }
+
+    /// DEBUG only: UI tests and simulator checks pass `-uiTestUpdate <status>`, and the update check
+    /// answers a sample; `available` treats the install as Ad Hoc so the Update button shows.
+    /// Otherwise (and in Release) nil, nil: the Devices site and this app's own bundle.
+    private static func sampleUpdateCheck() -> (api: (any DevicesApi)?, installed: InstalledApp?) {
+        #if DEBUG
+        guard let status = SampleDevicesApi.status() else { return (nil, nil) }
+        guard status == "available" else { return (SampleDevicesApi(status: status), nil) }
+        var installed = InstalledApp.current()
+        installed.profile = .adhoc
+        return (SampleDevicesApi(status: status), installed)
+        #else
+        return (nil, nil)
+        #endif
     }
 
     /// For SwiftUI previews: nothing touches the Keychain, the real defaults or the disk.
@@ -303,9 +333,11 @@ final class AppContainer {
         await auth.restore()
     }
 
+    /// Also checks for an update when one is due (signed in, 6 hours since the last check).
     func onActive() {
         active = true
         refreshRunState()
+        Task { await updates.checkIfDue() }
     }
 
     /// The Bluetooth link closes (no Bluetooth in the background): a send in flight fails, and its
@@ -317,9 +349,15 @@ final class AppContainer {
     }
 
     /// Call on every auth-state change. A sign-in also ends a Time Clock station's gear request,
-    /// so the next sign-out rests on Welcome again.
+    /// so the next sign-out rests on Welcome again, and checks for an update when one is due. Signed
+    /// out, the update check forgets its result (the next sign-in checks at once).
     func authChanged() {
-        if case .authed = auth.state { station.signedIn() }
+        if case .authed = auth.state {
+            station.signedIn()
+            Task { await updates.checkIfDue() }
+        } else if auth.state == .anon {
+            updates.reset()
+        }
         refreshRunState()
     }
 
@@ -379,5 +417,6 @@ extension View {
             .environment(c.rolodex)
             .environment(c.biometric)
             .environment(c.enrollOffer)
+            .environment(c.updates)
     }
 }
