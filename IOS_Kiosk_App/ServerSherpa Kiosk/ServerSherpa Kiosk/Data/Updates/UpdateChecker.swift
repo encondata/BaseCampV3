@@ -11,7 +11,8 @@ enum UpdateCheckState: Equatable {
 
 /// Asks the Devices site for a newer build and holds what Home and Settings show. Checks only
 /// while signed in: after sign-in and on foreground once `interval` has passed since the last
-/// check (`checkIfDue`), and whenever Settings asks (`checkNow`). One request at a time: a check
+/// answer (`checkIfDue`; a failed check doesn't count, so the next foreground tries again), and
+/// whenever Settings asks (`checkNow`). One request at a time: a check
 /// asked for while one is out waits for that one. A failed check keeps the last offer for Home.
 /// Later hides the offer on Home until another one comes (in memory: a relaunch shows it again).
 @MainActor @Observable
@@ -21,8 +22,11 @@ final class UpdateChecker {
     static let noDevicesUrlMessage = "This kiosk's API address doesn't start with api., so the Devices site can't be found."
 
     private(set) var state: UpdateCheckState = .idle
-    /// When the last check finished (answered or failed); nil before the first one.
+    /// When the last check finished (answered or failed), for Settings' Last checked; nil before
+    /// the first one.
     private(set) var lastChecked: Date?
+    /// When the Devices site last answered: the 6-hour gate counts from here.
+    @ObservationIgnored private var lastAnswered: Date?
     let installed: InstalledApp
 
     /// The last answer's offer, kept through a failed check that follows it.
@@ -69,10 +73,10 @@ final class UpdateChecker {
         await task.value
     }
 
-    /// Checks when signed in and the last check is `interval` old or there was none.
+    /// Checks when signed in and the last answer is `interval` old or there was none.
     func checkIfDue() async {
         guard signedIn() else { return }
-        if let last = lastChecked, now().timeIntervalSince(last) < Self.interval { return }
+        if let last = lastAnswered, now().timeIntervalSince(last) < Self.interval { return }
         await checkNow()
     }
 
@@ -88,11 +92,14 @@ final class UpdateChecker {
         inFlight = nil
         state = .idle
         lastChecked = nil
+        lastAnswered = nil
         lastOffer = nil
         hidden = nil
     }
 
     private func run(generation: Int) async {
+        // A sign-out after `checkNow` queued this run but before it started: nothing to do.
+        guard generation == self.generation else { return }
         defer { if generation == self.generation { inFlight = nil } }
         guard let url = devicesUrl() else {
             finish(.failed(Self.noDevicesUrlMessage))
@@ -105,6 +112,7 @@ final class UpdateChecker {
             guard generation == self.generation else { return }
             let offer = updateOffer(answer, profile: installed.profile, devicesUrl: url)
             lastOffer = offer
+            lastAnswered = now()
             result = .done(offer)
         } catch {
             guard generation == self.generation else { return }

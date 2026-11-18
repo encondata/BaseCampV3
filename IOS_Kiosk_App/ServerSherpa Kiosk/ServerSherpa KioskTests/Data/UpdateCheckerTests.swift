@@ -75,17 +75,60 @@ struct UpdateCheckerTests {
         h.api.hold()
         h.api.enqueue(Self.available())
         let checker = h.checker
-        let first = Task { await checker.checkNow() }
-        let second = Task { await checker.checkNow() }
-        #expect(await waitUntil { h.api.callCount == 1 && checker.state == .checking })
-        let foreground = Task { await checker.checkIfDue() }  // a foreground meanwhile joins too
-        await Task.yield()
+        let started = MutableBox(0), finished = MutableBox(0)
+        // Two Check for updates taps and a foreground, all asked for while the first request is out.
+        let legs: [Task<Void, Never>] = [
+            Task { started.value += 1; await checker.checkNow(); finished.value += 1 },
+            Task { started.value += 1; await checker.checkNow(); finished.value += 1 },
+            Task { started.value += 1; await checker.checkIfDue(); finished.value += 1 },
+        ]
+        #expect(await waitUntil { started.value == 3 && h.api.callCount == 1 && checker.state == .checking })
+        // Each leg is parked on the one request (none returned early), and none sent another.
+        for _ in 0..<20 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(finished.value == 0)
+        #expect(h.api.callCount == 1)
         h.api.release()
-        await first.value
-        await second.value
-        await foreground.value
+        for leg in legs { await leg.value }
+        #expect(finished.value == 3)
         #expect(h.api.callCount == 1)
         #expect(h.checker.state == .done(Self.offer()))
+    }
+
+    /// A failed check doesn't count toward the 6 hours: the next foreground tries again, while
+    /// Settings' Last checked still shows the failed attempt.
+    @Test func aFailedCheckIsRetriedOnTheNextForeground() async {
+        let h = Harness()
+        h.api.enqueue(error: ApiError.network())
+        await h.checker.checkIfDue()
+        #expect(h.checker.state == .failed("Can't reach devices.dev.serversherpa.com."))
+        #expect(h.checker.lastChecked == Self.t0)
+        h.clock.value = Self.t0.addingTimeInterval(60)
+        await h.checker.checkIfDue()
+        #expect(h.api.callCount == 2)
+        #expect(h.checker.state == .done(.upToDate))
+        #expect(h.checker.lastChecked == Self.t0.addingTimeInterval(60))
+        h.clock.value = Self.t0.addingTimeInterval(120)
+        await h.checker.checkIfDue()                         // answered a minute ago: not due
+        #expect(h.api.callCount == 2)
+    }
+
+    /// A sign-out between Check for updates queuing its run and the run starting: the run does
+    /// nothing (no Checking, no failure, no Last checked, no request). The sign-out is queued on the
+    /// main actor first; `checkNow` runs inline up to its first suspension and queues its run after
+    /// it, so the sign-out lands in between.
+    @Test func resetBeforeTheRunStartsLeavesNothing() async {
+        for url in [nil, Self.devices] {
+            let h = Harness()
+            h.devicesUrl.value = url
+            let checker = h.checker
+            let signOut = Task { checker.reset() }
+            await checker.checkNow()
+            await signOut.value
+            #expect(h.checker.state == .idle, "devices url \(url ?? "nil")")
+            #expect(h.checker.lastChecked == nil)
+            #expect(h.api.callCount == 0)
+        }
     }
 
     @Test func laterHidesHomeUntilAnotherOffer() async {
