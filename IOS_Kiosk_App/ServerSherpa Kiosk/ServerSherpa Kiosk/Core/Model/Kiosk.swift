@@ -96,6 +96,9 @@ struct HeartbeatIn: Codable, Equatable, Sendable {
     var rawInfo: [String: String]
     var signIn: Bool
     var loginMethod: String?
+    /// A Clear Setup id this kiosk applied and is acknowledging; sent every beat until a reply
+    /// stops asking for it, omitted otherwise.
+    var setupCleared: String?
 
     enum CodingKeys: String, CodingKey {
         case serial
@@ -105,9 +108,11 @@ struct HeartbeatIn: Codable, Equatable, Sendable {
         case rawInfo = "raw_info"
         case signIn = "sign_in"
         case loginMethod = "login_method"
+        case setupCleared = "setup_cleared"
     }
 
-    init(serial: String, name: String, mode: String = "ios", version: String? = nil, rawInfo: [String: String] = [:], signIn: Bool = false, loginMethod: String? = nil) {
+    init(serial: String, name: String, mode: String = "ios", version: String? = nil, rawInfo: [String: String] = [:], signIn: Bool = false, loginMethod: String? = nil,
+         setupCleared: String? = nil) {
         self.serial = serial
         self.name = name
         self.mode = mode
@@ -115,6 +120,7 @@ struct HeartbeatIn: Codable, Equatable, Sendable {
         self.rawInfo = rawInfo
         self.signIn = signIn
         self.loginMethod = loginMethod
+        self.setupCleared = setupCleared
     }
 
     init(from decoder: Decoder) throws {
@@ -126,6 +132,7 @@ struct HeartbeatIn: Codable, Equatable, Sendable {
         rawInfo = try c.decodeIfPresent([String: String].self, forKey: .rawInfo) ?? [:]
         signIn = try c.decodeIfPresent(Bool.self, forKey: .signIn) ?? false
         loginMethod = try c.decodeIfPresent(String.self, forKey: .loginMethod)
+        setupCleared = try c.decodeIfPresent(String.self, forKey: .setupCleared)
     }
 }
 
@@ -134,19 +141,24 @@ struct HeartbeatResult: Codable, Equatable, Sendable {
     var name: String
     var registration: String
     var tokenExpiresAt: String?
+    /// A Clear Setup the portal is asking for (its id), repeated every beat until a beat
+    /// acknowledges it; nil when none is pending.
+    var clearSetup: String?
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
         case name
         case registration
         case tokenExpiresAt = "token_expires_at"
+        case clearSetup = "clear_setup"
     }
 
-    init(deviceId: String, name: String, registration: String, tokenExpiresAt: String? = nil) {
+    init(deviceId: String, name: String, registration: String, tokenExpiresAt: String? = nil, clearSetup: String? = nil) {
         self.deviceId = deviceId
         self.name = name
         self.registration = registration
         self.tokenExpiresAt = tokenExpiresAt
+        self.clearSetup = clearSetup
     }
 
     init(from decoder: Decoder) throws {
@@ -155,6 +167,7 @@ struct HeartbeatResult: Codable, Equatable, Sendable {
         name = try c.decode(String.self, forKey: .name)
         registration = try c.decode(String.self, forKey: .registration)
         tokenExpiresAt = try c.decodeIfPresent(String.self, forKey: .tokenExpiresAt)
+        clearSetup = try c.decodeIfPresent(String.self, forKey: .clearSetup)
     }
 }
 

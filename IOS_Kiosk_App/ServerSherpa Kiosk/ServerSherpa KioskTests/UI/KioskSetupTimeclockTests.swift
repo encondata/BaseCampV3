@@ -28,7 +28,7 @@ struct KioskSetupTimeclockTests {
         let store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         sync = Sync(api: api, store: store)
         auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: identity, prefs: prefs)
-        heartbeat = Heartbeat(api: api, identity: identity, version: "1", rawInfo: { [:] })
+        heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: "1", rawInfo: { [:] })
         let identity = self.identity
         station = TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { identity.current.serial }, apiUrl: { TEST_API_URL })
         let options = Self.options
@@ -189,6 +189,22 @@ struct KioskSetupTimeclockTests {
         #expect(keyStored == nil)
         #expect(prefs.setupSelection?.isTimeclockStation == true)        // the setup itself saved
         if case .authed = auth.state {} else { Issue.record("signed out on a failed key") }
+    }
+
+    /// A cleared kiosk set up again as a Time Clock station: the banner goes once the setup
+    /// saves (Android), even when the key then fails to arrive.
+    @Test func aTimeClockSetupDismissesTheClearNotice() async {
+        api.stationKeyResult = { _ in throw ApiError(status: 409, code: "setup_clear_pending") }
+        #expect(prefs.applySetupClear("c9"))
+        let vm = makeVM()
+        #expect(vm.showsClearNotice)
+        await vm.load()
+        vm.pickKind(.timeclock); vm.pickNoMove()
+        await vm.finishTimeclock(siteId: nil)
+        #expect(prefs.setupState == .complete)
+        #expect(!vm.showsClearNotice)
+        #expect(prefs.setupClear?.notice == false)
+        #expect(vm.keyError == "setup_clear_pending")
     }
 
     @Test func aFailedSetupSaveIssuesNoKey() async {

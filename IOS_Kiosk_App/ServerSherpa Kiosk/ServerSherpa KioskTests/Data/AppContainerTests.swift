@@ -73,6 +73,24 @@ struct AppContainerTests {
         #expect(c.rolodex.selectedId == nil)
     }
 
+    /// Clear Setup revokes a Time Clock station's key on the portal: the container drops it here
+    /// the moment the heartbeat applies the clear (Android `setupCleared` → `stationKeys.clear()`).
+    @Test func clearSetupDropsTheStationKey() throws {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = TEST_API_URL
+        let secrets = MemorySecretStore()
+        let c = AppContainer(defaults: defaults, secrets: secrets, modelContainer: try KioskSchema.inMemoryContainer(),
+                             backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
+        c.station.storeKey("k3y")
+        #expect(c.station.hasKey)
+        // the heartbeat runs this as it applies a clear (a beat would go over the network)
+        let onSetupCleared = try #require(c.heartbeat.onSetupCleared)
+        onSetupCleared("x1")
+        #expect(!c.station.hasKey)
+        #expect(c.stationKeys.get() == nil)
+        #expect(secrets.get("station_key") == nil)
+    }
+
     /// One no-match entry on the print jobs' list (no printer, no network, no engine); waits
     /// until the list shows it and returns its value.
     @discardableResult

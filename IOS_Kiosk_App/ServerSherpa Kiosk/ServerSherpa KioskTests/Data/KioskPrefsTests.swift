@@ -127,4 +127,64 @@ struct KioskPrefsTests {
         defaults.set(#"{"peel":true}"#, forKey: "ss.kiosk.labels")
         #expect(KioskPrefs(defaults: defaults).labels == LabelOptions(peel: true))
     }
+
+    // MARK: Clear Setup (Android KioskPrefsTest / HeartbeatTest)
+
+    /// Same key and stored shape as the web kiosk's setupClear.ts and Android: all three fields,
+    /// even at their defaults, read back by a relaunch.
+    @Test func setupClearIsStoredWithAllThreeFields() throws {
+        let defaults = freshDefaults()
+        let prefs = KioskPrefs(defaults: defaults)
+        #expect(prefs.applySetupClear("x1"))
+        func stored() throws -> [String: Any] {
+            let raw = try #require(defaults.string(forKey: "ss.kiosk.setupClear"))
+            return try #require(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+        }
+        var o = try stored()
+        #expect(o.count == 3)
+        #expect(o["id"] as? String == "x1"); #expect(o["acked"] as? Bool == false); #expect(o["notice"] as? Bool == true)
+        prefs.settleSetupClearAck(sentAck: "x1", replyId: nil)
+        prefs.dismissSetupClearNotice()
+        o = try stored()
+        #expect(o.count == 3)
+        #expect(o["acked"] as? Bool == true); #expect(o["notice"] as? Bool == false)
+        #expect(KioskPrefs(defaults: defaults).setupClear == SetupClearRecord(id: "x1", acked: true, notice: false))
+        defaults.set("{not json", forKey: "ss.kiosk.setupClear")
+        #expect(KioskPrefs(defaults: defaults).setupClear == nil)
+    }
+
+    /// Applying drops the saved setup and marks it incomplete, once per id; a re-request is a
+    /// new id and raises the notice again.
+    @Test func applyIsOncePerIdAndTheNoticeDismisses() {
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        prefs.setupState = .complete
+        prefs.setupSelection = testSelection(initiativeId: "i1")
+        #expect(prefs.applySetupClear("x6"))
+        #expect(prefs.setupState == .incomplete)
+        #expect(prefs.setupSelection == nil)
+        #expect(prefs.setupClear?.notice == true)
+        prefs.setupState = .complete                              // set up again
+        #expect(!prefs.applySetupClear("x6"))
+        #expect(prefs.setupState == .complete)                    // the same id never clears twice
+        prefs.dismissSetupClearNotice()
+        #expect(prefs.setupClear == SetupClearRecord(id: "x6", acked: false, notice: false))
+        #expect(prefs.applySetupClear("x7"))
+        #expect(prefs.setupClear == SetupClearRecord(id: "x7", acked: false, notice: true))
+    }
+
+    /// The ack lands only when the beat that carried it gets an answer that stopped asking.
+    @Test func theAckSettlesOnlyWhenItWasSentAndTheServerStoppedAsking() {
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        #expect(prefs.pendingSetupClearAck() == nil)
+        prefs.applySetupClear("x4")
+        prefs.settleSetupClearAck(sentAck: nil, replyId: nil)     // a beat that didn't carry it
+        #expect(prefs.pendingSetupClearAck() == "x4")
+        prefs.settleSetupClearAck(sentAck: "x4", replyId: "x4")   // the server still asks
+        #expect(prefs.pendingSetupClearAck() == "x4")
+        prefs.settleSetupClearAck(sentAck: "old", replyId: nil)   // another id's ack
+        #expect(prefs.pendingSetupClearAck() == "x4")
+        prefs.settleSetupClearAck(sentAck: "x4", replyId: nil)    // the beat that did
+        #expect(prefs.pendingSetupClearAck() == nil)
+        #expect(prefs.setupClear == SetupClearRecord(id: "x4", acked: true, notice: true))
+    }
 }

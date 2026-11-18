@@ -1,15 +1,17 @@
 import SwiftUI
 
 /// KioskGuard { KioskShell { NavigationStack { Home + routes behind SetupGate } } },
-/// the flash overlay over everything, the biometric Turn on sheet over the signed-in app, and
-/// the scene-phase hooks.
+/// the flash overlay over everything, the biometric Turn on sheet over the signed-in app, the
+/// Clear Setup redirect, and the scene-phase hooks.
 struct RootView: View {
     @Environment(\.container) private var container
     @Environment(KioskAuth.self) private var auth
+    @Environment(Heartbeat.self) private var heartbeat
     @Environment(EnrollOffer.self) private var enrollOffer
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var path: [Route] = []
+    @State private var setupClearedRedirect = SetupClearedRedirect()
 
     private var preferences: UiPreferences? {
         if case .authed(let s) = auth.state { return s.preferences }
@@ -45,6 +47,13 @@ struct RootView: View {
         .onChange(of: auth.state) { _, state in
             if state == .anon { path.removeAll() }
             container.authChanged()
+        }
+        // Clear Setup from the portal: whoever is signed in lands on Kiosk Setup, from any screen,
+        // once. Outside every route, so no screen's gate can drop it before it acts.
+        .onChange(of: heartbeat.setupClearSignal) { _, signal in
+            var signedIn = false
+            if case .authed = auth.state { signedIn = true }
+            if let next = setupClearedRedirect.next(signal: signal, path: path, signedIn: signedIn) { path = next }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             // Only .background stops things and only .active starts them; .inactive (Control Center,

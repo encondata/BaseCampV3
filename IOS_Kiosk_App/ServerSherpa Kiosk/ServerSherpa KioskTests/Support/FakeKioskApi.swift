@@ -39,6 +39,9 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var imageGate: (@Sendable (String) async -> Void)?
     var pollGate: (@Sendable () async -> Void)?
     var signOutGate: (@Sendable () async -> Void)?
+    /// When set, `heartbeat` awaits this after the server's answer is made and before handing it
+    /// back (an answer held on its way to the kiosk).
+    var heartbeatGate: (@Sendable () async -> Void)?
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
@@ -80,6 +83,9 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
 
     var calls: [String] { lock.lock(); defer { lock.unlock() }; return _calls }
     var heartbeats: [HeartbeatIn] { lock.lock(); defer { lock.unlock() }; return _heartbeats }
+    /// Heartbeat answers handed back to the caller (answered or thrown).
+    var heartbeatsAnswered: Int { lock.lock(); defer { lock.unlock() }; return _heartbeatsAnswered }
+    private var _heartbeatsAnswered = 0
     /// Every body `postScans` was called with, in order.
     var scanBatches: [KioskScanBatchIn] { lock.lock(); defer { lock.unlock() }; return _scanBatches }
 
@@ -113,7 +119,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func pollPair(code: String, pollToken: String) async throws -> PairPoll { record("poll"); await pollGate?(); return try pollResult() }
     func heartbeat(_ body: HeartbeatIn) async throws -> HeartbeatResult {
         lock.lock(); _calls.append("heartbeat"); _heartbeats.append(body); lock.unlock()
-        return try heartbeatResult(body)
+        let answer = Result { try heartbeatResult(body) }
+        await heartbeatGate?()
+        lock.withLock { _heartbeatsAnswered += 1 }
+        return try answer.get()
     }
     func signOut(serial: String, credentials: SignOutCredentials) async { record("signOut"); await signOutGate?() }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
@@ -225,10 +234,11 @@ final class FakeRefresher: SessionRefresher, @unchecked Sendable {
     func emitSessionEnded() { continuation.yield() }
 }
 
-func fakeSession(roles: [String] = ["worker"], maxRank: Int = 20, mustChange: Bool = false, kioskMove: KioskMove? = nil) -> SessionData {
+func fakeSession(roles: [String] = ["worker"], maxRank: Int = 20, mustChange: Bool = false, kioskMove: KioskMove? = nil,
+                 personId: String = "p1") -> SessionData {
     SessionData(
         accessToken: "tok", expiresIn: 900, sessionExpiresAt: "2026-09-16T00:00:00Z",
-        person: PersonOut(id: "p1", firstName: "Tina", lastName: "T", displayName: "Tina T"),
+        person: PersonOut(id: personId, firstName: "Tina", lastName: "T", displayName: "Tina T"),
         roles: roles, mustChangePassword: mustChange, perms: ["kiosk": ["view": true]], maxRank: maxRank, kioskMove: kioskMove
     )
 }

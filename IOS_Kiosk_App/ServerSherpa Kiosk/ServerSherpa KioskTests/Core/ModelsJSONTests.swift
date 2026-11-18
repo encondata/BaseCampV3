@@ -28,6 +28,20 @@ struct ModelsJSONTests {
         #expect(encoded.contains(#""sign_in":false"#))
     }
 
+    /// Clear Setup: `setup_cleared` is sent only with an id; `clear_setup` reads as nil when absent.
+    @Test func heartbeatClearSetupFieldsRoundTrip() throws {
+        let without = String(decoding: try KioskJSON.encoder.encode(HeartbeatIn(serial: "s", name: "n")), as: UTF8.self)
+        #expect(!without.contains("setup_cleared"))
+        let with = String(decoding: try KioskJSON.encoder.encode(HeartbeatIn(serial: "s", name: "n", setupCleared: "x1")), as: UTF8.self)
+        #expect(with.contains(#""setup_cleared":"x1""#))
+        let asked = try KioskJSON.decoder.decode(HeartbeatResult.self, from: Data(#"{"device_id":"d","name":"n","registration":"ok","clear_setup":"x1"}"#.utf8))
+        #expect(asked.clearSetup == "x1")
+        let none = try KioskJSON.decoder.decode(HeartbeatResult.self, from: Data(#"{"device_id":"d","name":"n","registration":"ok","clear_setup":null}"#.utf8))
+        #expect(none.clearSetup == nil)
+        let older = try KioskJSON.decoder.decode(HeartbeatResult.self, from: Data(#"{"device_id":"d","name":"n","registration":"ok"}"#.utf8))
+        #expect(older.clearSetup == nil)
+    }
+
     @Test func assetRowDefaultsLabelMap() throws {
         let row = try KioskJSON.decoder.decode(KioskAssetRow.self, from: Data(#"{"id":"a","asset_id":"A-1","make_model":"Dell R740","label":{"asset_id":"A-1"}}"#.utf8))
         #expect(row.label["asset_id"] == "A-1")
