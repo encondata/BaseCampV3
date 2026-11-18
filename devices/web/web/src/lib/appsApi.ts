@@ -1,6 +1,7 @@
-/** The devices API calls behind the Apps pages: the catalog, installing,
- *  adding an iPhone, the version actions and uploading. Shapes follow
- *  devices/api routes apps.py, install.py, enroll.py, uploads.py, apple.py. */
+/** The devices API calls behind the pages: the catalog, installing,
+ *  adding an iPhone, the version actions, uploading, the iPhone list and
+ *  the Apple settings. Shapes follow devices/api routes apps.py,
+ *  install.py, enroll.py, uploads.py, devices.py, apple.py. */
 import { ApiError } from '@portal/lib/api';
 
 import { devicesFetch } from './devicesApi';
@@ -41,11 +42,54 @@ export interface AppDetail extends AppOut {
   versions: VersionOut[];
 }
 
+/** The saved Apple settings, minus every secret (the API never returns the
+ *  .p8 key, the .p12 or its password). */
 export interface AppleOut {
   configured: boolean;
+  team_id: string | null;
+  key_id: string | null;
+  issuer_id: string | null;
   cert_name: string | null;
   cert_expires_at: string | null;
   profiles: { app_name: string; expires_at: string }[];
+  ios_owner_url: string | null;
+}
+
+export type DeviceStatus = 'pending' | 'registered' | 'failed' | 'disabled';
+
+/** An added iPhone (never its UDID). */
+export interface DeviceOut {
+  id: string;
+  name: string;
+  product: string;
+  os_version: string;
+  added_by_name: string;
+  added_at: string;
+  status: DeviceStatus;
+  error: string | null;
+}
+
+/** How many devices of one class (IPHONE, IPAD, …) the Apple team holds. */
+export interface DeviceCount {
+  device_class: string;
+  count: number;
+  synced_at: string;
+}
+
+export interface DevicesOut {
+  devices: DeviceOut[];
+  counts: DeviceCount[];
+}
+
+/** Apple settings to save. Team, issuer and key IDs are always sent; a file
+ *  or the password left out keeps the saved one. */
+export interface AppleSave {
+  team_id: string;
+  issuer_id: string;
+  key_id: string;
+  p8: File | null;
+  p12: File | null;
+  p12_password: string;
 }
 
 export interface UploadOut {
@@ -95,6 +139,30 @@ export function getApp(id: string): Promise<AppDetail> {
 
 export function getApple(): Promise<AppleOut> {
   return getJson('/api/apple');
+}
+
+export async function saveApple(save: AppleSave): Promise<AppleOut> {
+  const form = new FormData();
+  form.append('team_id', save.team_id);
+  form.append('issuer_id', save.issuer_id);
+  form.append('key_id', save.key_id);
+  if (save.p8) form.append('p8', save.p8);
+  if (save.p12) form.append('p12', save.p12);
+  if (save.p12_password) form.append('p12_password', save.p12_password);
+  // no Content-Type: the browser sets multipart/form-data with its boundary
+  return (await devicesFetch('/api/apple', { method: 'PUT', body: form })).json() as Promise<AppleOut>;
+}
+
+export async function clearApple(): Promise<void> {
+  await devicesFetch('/api/apple', { method: 'DELETE', headers: JSON_HEADERS, body: JSON.stringify({ confirm: 'clear' }) });
+}
+
+export function listDevices(): Promise<DevicesOut> {
+  return getJson('/api/devices');
+}
+
+export function disableDevice(deviceId: string): Promise<DeviceOut> {
+  return postJson(`/api/devices/${encodeURIComponent(deviceId)}/disable`, {});
 }
 
 export function installApp(appId: string, opts: { versionId?: string; deviceRef?: string | null }): Promise<InstallResult> {

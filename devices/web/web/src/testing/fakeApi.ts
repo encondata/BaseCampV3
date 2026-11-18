@@ -8,7 +8,8 @@ export function json(status: number, body: unknown): Response {
   });
 }
 
-export interface ApiCall { method: string; path: string; search: string; body: unknown }
+/** `body` is a JSON body parsed; `raw` is the body as sent (a FormData, say). */
+export interface ApiCall { method: string; path: string; search: string; body: unknown; raw: unknown }
 type Handler = (call: ApiCall) => Response | Promise<Response>;
 
 /** Stubs fetch: `routes` maps "METHOD /path" (no query) to a handler or to
@@ -20,7 +21,7 @@ export function stubApi(routes: Record<string, Handler | unknown>): ApiCall[] {
     const url = new URL(input, 'http://devices.test');
     const method = (init.method ?? 'GET').toUpperCase();
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
-    const call = { method, path: url.pathname, search: url.search, body };
+    const call = { method, path: url.pathname, search: url.search, body, raw: init.body };
     calls.push(call);
     const route = routes[`${method} ${url.pathname}`];
     if (route === undefined) return json(404, { detail: { code: 'not_found', message: 'Not found.' } });

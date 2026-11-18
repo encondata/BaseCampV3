@@ -186,3 +186,29 @@
   overflow: hidden;
 }
 .devices-progress span { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
+
+/* ---------- Devices: the Apple team's count per class, the iPhone list ---------- */
+.devices-counts { margin: 0 0 14px; }
+.devices-count { margin: 0; font-size: 13.5px; color: var(--text-dark); }
+.devices-counts .page-hint { margin: 4px 0 0; }
+/* a failed iPhone's reason sits under its chip */
+.devices-status-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+/* ---------- Apple settings ---------- */
+.devices-apple-saved, .devices-apple-form { max-width: 720px; }
+.devices-apple-form input[type='file'] { padding: 7px 10px; cursor: pointer; }
+/* the picker's button in the theme's colors, never the browser's grey one */
+.devices-apple-form input[type='file']::file-selector-button {
+  margin-inline-end: 10px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-dark);
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.devices-apple-form input[type='file']::file-selector-button:hover { border-color: var(--amber); }
+.devices-apple-form .page-hint, .devices-apple-form .pf-error { margin: 0; }
+@media (max-width: 600px) { .devices-apple-form { grid-template-columns: 1fr; } }

@@ -22,7 +22,7 @@ vi.mock('@portal/pages/Login', () => ({
   default: ({ eyebrow }: { eyebrow?: string }) => <p>portal sign-in ({eyebrow})</p>,
 }));
 
-// the Apps page loads its list: an empty catalog, no network
+// the pages load their lists: no network
 vi.mock('@portal/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@portal/lib/api')>()),
   accessTokenForService: vi.fn(async () => 'tok'),
@@ -74,7 +74,11 @@ const nav = () => screen.getByRole('navigation', { name: 'Primary' });
 beforeEach(() => {
   auth.value = signedIn();
   stubViewport(false);
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })));
+  // an empty catalog and device list
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => new Response(
+    path.startsWith('/api/devices') ? '{"devices":[],"counts":[]}' : '[]',
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )));
 });
 afterEach(() => {
   cleanup();
@@ -118,6 +122,12 @@ describe('App', () => {
     renderAt('/apple');
     expect(within(nav()).getByRole('link', { name: 'Apple settings' }).getAttribute('href')).toBe('/apple');
     expect(screen.getByRole('heading', { name: 'Apple settings' })).toBeTruthy();
+  });
+
+  it('a staff user who types /apple sees the no-permission notice', () => {
+    renderAt('/apple');
+    expect(screen.getByText("You don't have access to Apple settings")).toBeTruthy();
+    expect(screen.queryByLabelText('Team ID')).toBeNull();
   });
 
   it('tells a signed-in user without view permission they have no access', () => {

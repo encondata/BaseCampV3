@@ -6,18 +6,9 @@ import RequireAccess from './auth/RequireAccess';
 import DevicesShell from './layout/DevicesShell';
 import ThemedRoot from './layout/ThemedRoot';
 import AppDetailPage from './pages/AppDetailPage';
+import AppleSettingsPage from './pages/AppleSettingsPage';
 import AppsPage from './pages/AppsPage';
-
-/** A page's frame until its content lands (the Devices and Apple
- *  settings pages are built in later steps). */
-function Page({ title }: { title: string }) {
-  return (
-    <div className="portal-page">
-      <div className="eyebrow">Devices</div>
-      <h1 className="page-title">{title}</h1>
-    </div>
-  );
-}
+import DevicesPage from './pages/DevicesPage';
 
 export default function App() {
   return (
@@ -34,8 +25,9 @@ export default function App() {
       >
         <Route path="/" element={<AppsPage />} />
         <Route path="/apps/:id" element={<AppDetailPage />} />
-        <Route path="/devices" element={<Page title="Devices" />} />
-        <Route path="/apple" element={<Page title="Apple settings" />} />
+        <Route path="/devices" element={<DevicesPage />} />
+        {/* the page itself holds the `change` gate */}
+        <Route path="/apple" element={<AppleSettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

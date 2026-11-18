@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 
 from serversherpa_devices.api.body_limit import BodyLimitMiddleware
-from serversherpa_devices.api.routes import apple, apps, enroll, install, updates, uploads
+from serversherpa_devices.api.routes import apple, apps, devices, enroll, install, updates, uploads
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.db.engine import dispose_engine, get_sessionmaker
 
@@ -88,6 +88,7 @@ def create_app() -> FastAPI:
     api.include_router(apps.router)
     api.include_router(uploads.router)
     api.include_router(apple.router)
+    api.include_router(devices.router)
     api.include_router(enroll.router)
     api.include_router(install.router)
     api.include_router(updates.router)
