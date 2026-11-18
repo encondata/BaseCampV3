@@ -24,8 +24,7 @@ TOKEN_LIFETIME = dt.timedelta(minutes=15)
 DEVICE_ATTRIBUTES = ["UDID", "PRODUCT", "VERSION", "SERIAL", "DEVICE_NAME"]
 _UDID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _FIELD_MAX = 200
-# Statuses a new enrollment sends back to the worker; registered and pending stay.
-_RETRY = ("disabled", "failed")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class EnrollError(Exception):
@@ -36,13 +35,20 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def make_token(*, person_id: uuid.UUID, person_name: str,
-               device_name: str) -> tuple[str, EnrollToken]:
-    """A new token and its (unsaved) row."""
+def has_control_characters(value: str) -> bool:
+    """C0 controls (NUL included) and DEL: Postgres text refuses NUL."""
+    return _CONTROL.search(value) is not None
+
+
+def make_token(*, person_id: uuid.UUID, person_name: str, device_name: str,
+               can_reenable: bool, can_update_existing: bool) -> tuple[str, EnrollToken]:
+    """A new token and its (unsaved) row. The flags are what the creator may
+    do to an iPhone that's already listed (see record_device)."""
     token = secrets.token_urlsafe(32)
     row = EnrollToken(token_hash=hash_token(token), person_id=person_id,
                       person_name=person_name, device_name=device_name,
-                      expires_at=dt.datetime.now(dt.UTC) + TOKEN_LIFETIME)
+                      expires_at=dt.datetime.now(dt.UTC) + TOKEN_LIFETIME,
+                      can_reenable=can_reenable, can_update_existing=can_update_existing)
     return token, row
 
 
@@ -88,14 +94,21 @@ def _text(found: dict, key: str) -> str | None:
     value = found.get(key)
     if value is None:
         return None
-    if not isinstance(value, str) or len(value) > _FIELD_MAX:
+    if not isinstance(value, str) or len(value) > _FIELD_MAX or has_control_characters(value):
         raise EnrollError(f"{key} isn't readable")
     return value
 
 
 def read_answer(body: bytes) -> DeviceAnswer:
-    """The attributes iOS signed. The signature isn't verified: the token
-    (single use, tied to a signed-in person) is what's trusted."""
+    """The attributes iOS signed.
+
+    The CMS signature is deliberately not verified. iOS signs with a device
+    identity certificate whose chain this service has no reliable anchor for,
+    and a valid signature would only prove "some Apple device", not which
+    one or whose. What authenticates the answer is the token in the path:
+    256 random bits, single use, 15 minutes, issued to a signed-in person
+    holding `view`. Whoever holds it may enroll one iPhone in that person's
+    name, which is exactly what the link is for."""
     try:
         info = cms.ContentInfo.load(body)
         if info["content_type"].native != "signed_data":
@@ -118,12 +131,27 @@ def read_answer(body: bytes) -> DeviceAnswer:
                         challenge=_text(found, "CHALLENGE"))
 
 
+@dataclass(frozen=True)
+class Enrollment:
+    device: IosDevice
+    # Audit changes: name, product, os_version, status only (no UDID, no serial).
+    changes: dict
+    # A disabled iPhone the token's creator may not bring back: nothing changed.
+    refused: bool = False
+
+
 async def record_device(db: AsyncSession, token: EnrollToken,
-                        answer: DeviceAnswer) -> tuple[IosDevice, dict]:
-    """Add the device, or bring an existing one (same UDID) up to date: the
-    token's name, the new product and OS, and a disabled or failed device
-    goes back to pending. The row is locked until the caller commits.
-    Returns the device and the audit changes (no UDID, no serial)."""
+                        answer: DeviceAnswer) -> Enrollment:
+    """Add the device, or update an existing one (same UDID). The row is
+    locked until the caller commits.
+
+    For an existing device:
+    - disabled: back to pending only when the token's creator held `delete`
+      (`can_reenable`); otherwise the row is left exactly as it is (refused);
+    - failed: back to pending (a retry);
+    - registered or pending: status kept;
+    - name, product, OS and serial change only when the token's creator
+      added the device or held `change` (`can_update_existing`)."""
     fields = {"name": token.device_name, "product": answer.product,
               "os_version": answer.os_version, "serial": answer.serial}
     inserted = await db.scalar(
@@ -132,15 +160,20 @@ async def record_device(db: AsyncSession, token: EnrollToken,
         .on_conflict_do_nothing(index_elements=["udid"]).returning(IosDevice.id))
     device = await db.scalar(select(IosDevice).where(IosDevice.udid == answer.udid)
                              .with_for_update().execution_options(populate_existing=True))
-    assert device is not None
+    if device is None:   # can't happen: inserted, or the conflicting row exists
+        raise RuntimeError("enrolled device row not found")
     audited = ("name", "product", "os_version", "status")
     before = {k: None for k in audited} if inserted else {k: getattr(device, k) for k in audited}
     if not inserted:
-        for key, value in fields.items():
-            setattr(device, key, value)
-        if device.status in _RETRY:
+        if device.status == "disabled" and not token.can_reenable:
+            return Enrollment(device=device, changes={}, refused=True)
+        if token.person_id == device.added_by or token.can_update_existing:
+            for key, value in fields.items():
+                if value is not None or key != "serial":   # an absent serial keeps the known one
+                    setattr(device, key, value)
+        if device.status in ("disabled", "failed"):
             device.status = "pending"
             device.error = None
     changes = {k: {"from": before[k], "to": getattr(device, k)}
                for k in audited if before[k] != getattr(device, k)}
-    return device, changes
+    return Enrollment(device=device, changes=changes)

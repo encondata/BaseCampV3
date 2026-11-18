@@ -23,6 +23,8 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             settings.database_url.get_secret_value(),
             pool_pre_ping=True,
+            # Statement errors never log their parameters (a UDID, say).
+            hide_parameters=True,
             connect_args=connect_args,
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)

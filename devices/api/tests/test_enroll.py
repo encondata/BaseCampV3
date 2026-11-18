@@ -25,6 +25,8 @@ from serversherpa_devices.db.models import EnrollToken, IosDevice
 from .catalog_support import audits
 from .fake_main_api import PERSON_ID
 
+OTHER_ID = uuid.UUID("5d0c8a3e-2b71-4f6a-8e09-3c4b5a6d7e8f")
+
 UDID = "00008110-000A1B2C3D4E5F60"
 EXPIRED_COPY = "This link has expired. Go back to Devices and tap Add this iPhone again."
 _KEY = ec.generate_private_key(ec.SECP256R1())
@@ -109,6 +111,7 @@ async def test_mobileconfig_contents_and_headers(api, anonymous, db):
     assert row.person_name == "Pat Example"
     assert row.device_name == "Pat's iPhone"
     assert row.used_at is None
+    assert row.can_reenable and row.can_update_existing   # an admin: delete and change
     left = row.expires_at - dt.datetime.now(dt.UTC)
     assert dt.timedelta(minutes=14) < left <= dt.timedelta(minutes=15)
     # Only the hash is stored.
@@ -139,7 +142,7 @@ async def test_mobileconfig_contents_and_headers(api, anonymous, db):
 
 
 async def test_enroll_needs_view_and_a_name(api, main_fake, db):
-    for name in ("", "   ", "x" * 61):
+    for name in ("", "   ", "x" * 61, "Pat\x00s", "Pat\ns"):
         r = await api.post("/api/enroll", json={"device_name": name})
         assert r.status_code == 422, name
     assert (await api.post("/api/enroll", json={})).status_code == 422
@@ -170,7 +173,8 @@ async def test_mobileconfig_expired_token_410(api, anonymous, db, queued):
         assert EXPIRED_COPY in r.text
 
     # The expired link's callback is refused too.
-    r = await call_back(anonymous, expired, callback_body(expired, UDID="00008110-0000000000000001"))
+    r = await call_back(anonymous, expired,
+                        callback_body(expired, UDID="00008110-0000000000000001"))
     assert r.status_code == 410
     assert EXPIRED_COPY in r.text
     assert len(await devices(db)) == 1
@@ -221,7 +225,7 @@ async def test_callback_same_udid_reuses_device(api, anonymous, db, queued):
 
     second = await new_link(api, "Pat's work iPhone")
     r = await call_back(anonymous, second, callback_body(second, VERSION="22C152",
-                                                         PRODUCT="iPhone14,6"))
+                                                         PRODUCT="iPhone14,6", SERIAL=None))
     assert r.status_code == 301
     assert r.headers["location"] == f"https://devices.test/?added={device.id}"
     [again] = await devices(db)
@@ -231,16 +235,21 @@ async def test_callback_same_udid_reuses_device(api, anonymous, db, queued):
     assert again.name == "Pat's work iPhone"
     assert again.product == "iPhone14,6"
     assert again.os_version == "22C152"
+    assert again.serial == "F2LXK0Q1N7"   # an answer without SERIAL keeps the known one
     assert queued == [("register_device", {"device_id": str(device.id)})] * 2
 
 
-async def test_callback_reenables_disabled_device_as_pending(api, anonymous, db, queued):
-    first = await new_link(api)
-    assert (await call_back(anonymous, first, callback_body(first))).status_code == 301
-    [device] = await devices(db)
+async def disable(db, device: IosDevice) -> None:
     await db.execute(update(IosDevice).where(IosDevice.id == device.id)
                      .values(status="disabled", asc_device_id="ASC123"))
     await db.commit()
+
+
+async def test_admin_token_reenables_disabled_device(api, anonymous, db, queued):
+    first = await new_link(api)
+    assert (await call_back(anonymous, first, callback_body(first))).status_code == 301
+    [device] = await devices(db)
+    await disable(db, device)
 
     second = await new_link(api)
     assert (await call_back(anonymous, second, callback_body(second))).status_code == 301
@@ -248,6 +257,67 @@ async def test_callback_reenables_disabled_device_as_pending(api, anonymous, db,
     assert again.id == device.id
     assert again.status == "pending"
     assert queued[-1] == ("register_device", {"device_id": str(device.id)})
+
+
+async def test_staff_cannot_reenable_disabled_device(api, anonymous, db, queued, main_fake):
+    first = await new_link(api)
+    assert (await call_back(anonymous, first, callback_body(first))).status_code == 301
+    [device] = await devices(db)
+    await disable(db, device)
+    audited_before = len(audits(main_fake))
+
+    main_fake.as_staff()   # the same person, now holding only view
+    second = await new_link(api, "Renamed")
+    row = await db.get(EnrollToken, token_hash(second))
+    assert not row.can_reenable and not row.can_update_existing
+    r = await call_back(anonymous, second, callback_body(second, VERSION="22C152"))
+    assert r.status_code == 301
+    assert r.headers["location"] == f"https://devices.test/?added={device.id}"
+
+    [again] = await devices(db)
+    assert (again.status, again.name, again.os_version, again.asc_device_id) == (
+        "disabled", "Pat's iPhone", "22B83", "ASC123")
+    await db.refresh(row)
+    assert row.used_at is not None
+    assert len(queued) == 1   # only the first enrollment's
+    [audit] = audits(main_fake)[audited_before:]
+    assert audit["action"] == "add_refused_disabled"
+    assert audit["entity_id"] == str(device.id)
+    assert audit["changes"] == {}
+
+
+async def test_other_staff_cannot_rename_existing_device(api, anonymous, db, queued, main_fake):
+    first = await new_link(api)
+    assert (await call_back(anonymous, first, callback_body(first))).status_code == 301
+    [device] = await devices(db)
+
+    main_fake.as_staff(person_id=str(OTHER_ID), display_name="Sam Other")
+    second = await new_link(api, "Sam's iPhone")
+    r = await call_back(anonymous, second, callback_body(second, VERSION="22C152",
+                                                         PRODUCT="iPhone14,6"))
+    assert r.status_code == 301
+    [again] = await devices(db)
+    assert (again.name, again.product, again.os_version, again.added_by) == (
+        "Pat's iPhone", "iPhone14,5", "22B83", PERSON_ID)
+    assert again.status == "pending"
+    assert len(queued) == 2
+
+    # A failed device still goes back to pending for them (a retry), unrenamed.
+    await db.execute(update(IosDevice).where(IosDevice.id == device.id)
+                     .values(status="failed", error="Apple said no"))
+    await db.commit()
+    third = await new_link(api, "Sam's iPhone")
+    assert (await call_back(anonymous, third, callback_body(third))).status_code == 301
+    [again] = await devices(db)
+    assert (again.status, again.error, again.name) == ("pending", None, "Pat's iPhone")
+
+    # The person who added it may update it with only view.
+    main_fake.as_staff()
+    fourth = await new_link(api, "Pat's new name")
+    assert (await call_back(anonymous, fourth, callback_body(fourth, VERSION="22C152"))
+            ).status_code == 301
+    [again] = await devices(db)
+    assert (again.name, again.os_version) == ("Pat's new name", "22C152")
 
 
 async def test_callback_rejects_used_token(api, anonymous, db, queued):
@@ -332,3 +402,28 @@ async def test_redirect_has_no_udid(api, anonymous, db, queued, caplog):
     r = await call_back(anonymous, token, callback_body(token))
     assert UDID not in r.text and UDID not in str(r.headers)
     assert UDID not in caplog.text
+
+
+async def test_callback_control_characters_400_and_no_udid_in_logs(api, anonymous, db, queued,
+                                                                   caplog):
+    caplog.set_level(logging.DEBUG)
+    token = await new_link(api)
+    for field, value in (("PRODUCT", "iPhone\x00"), ("VERSION", "22B83\x7f"),
+                         ("SERIAL", "F2LX\x1bK0Q1N7")):
+        # A binary plist can carry NUL; Postgres text can't.
+        body = signed(plistlib.dumps(attributes(token, **{field: value}),
+                                     fmt=plistlib.FMT_BINARY))
+        r = await call_back(anonymous, token, body)
+        assert r.status_code == 400, field
+        assert r.headers["cache-control"] == "no-store"
+    assert await devices(db) == []
+    assert queued == []
+    row = await db.get(EnrollToken, token_hash(token))
+    assert row.used_at is None
+    assert UDID not in caplog.text
+
+
+async def test_challenge_with_non_ascii_is_400(api, anonymous, db, queued):
+    token = await new_link(api)
+    assert (await call_back(anonymous, token, callback_body("é" + token))).status_code == 400
+    assert await devices(db) == []

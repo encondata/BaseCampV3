@@ -193,7 +193,8 @@ class SignedBuild(Base):
 
 
 class EnrollToken(Base):
-    """One "add an iPhone" link; only the token's hash is stored."""
+    """One "add an iPhone" link; only the token's hash is stored. The two
+    flags record what its creator could do when it was made (migration 0002)."""
     __tablename__ = "enroll_tokens"
 
     token_hash: Mapped[str] = mapped_column(primary_key=True)
@@ -203,6 +204,10 @@ class EnrollToken(Base):
     created_at: Mapped[datetime] = _now()
     expires_at: Mapped[datetime]
     used_at: Mapped[datetime | None]
+    # The creator held `delete`: may bring a disabled iPhone back.
+    can_reenable: Mapped[bool] = mapped_column(server_default=text("false"))
+    # The creator held `change`: may rename an iPhone someone else added.
+    can_update_existing: Mapped[bool] = mapped_column(server_default=text("false"))
 
 
 class Upload(Base):

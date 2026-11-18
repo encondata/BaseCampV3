@@ -4,11 +4,12 @@ Safari and takes iOS's signed answer. Neither public route has a session:
 the single-use token in the path is the only credential."""
 
 import datetime as dt
+import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa_devices import catalog, enroll
@@ -42,6 +43,13 @@ class EnrollIn(BaseModel):
     device_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                                   max_length=60)]
 
+    @field_validator("device_name")
+    @classmethod
+    def _printable(cls, value: str) -> str:
+        if enroll.has_control_characters(value):
+            raise ValueError("must not contain control characters")
+        return value
+
 
 class EnrollOut(BaseModel):
     url: str
@@ -52,7 +60,8 @@ def _expired() -> HTMLResponse:
 
 
 def _unreadable() -> PlainTextResponse:
-    return PlainTextResponse("This iPhone's answer couldn't be read.", status_code=400)
+    return PlainTextResponse("This iPhone's answer couldn't be read.", status_code=400,
+                             headers={"Cache-Control": "no-store"})
 
 
 @router.post("/enroll", response_model=EnrollOut)
@@ -60,7 +69,9 @@ async def create_link(body: EnrollIn, db: Db,
                       principal: Annotated[Principal, Depends(require("view"))]):
     token, row = enroll.make_token(person_id=principal.person_id,
                                    person_name=principal.display_name,
-                                   device_name=body.device_name)
+                                   device_name=body.device_name,
+                                   can_reenable=principal.can("delete"),
+                                   can_update_existing=principal.can("change"))
     db.add(row)
     await db.commit()
     return {"url": f"/enroll/{token}.mobileconfig"}
@@ -79,11 +90,13 @@ async def get_mobileconfig(token: str, db: Db):
 
 @public_router.post("/{token}/callback")
 async def callback(token: str, request: Request, db: Db, main_api: MainApi):
+    # No read-only check: no session to ask with, and read-only mode can't make links.
     try:
         answer = enroll.read_answer(await request.body())
     except enroll.EnrollError:
         return _unreadable()
-    if answer.challenge is not None and answer.challenge != token:
+    if answer.challenge is not None and not secrets.compare_digest(
+            answer.challenge.encode(), token.encode()):
         return _unreadable()
 
     # Locked: a second callback with this token waits, then finds it used.
@@ -91,13 +104,17 @@ async def callback(token: str, request: Request, db: Db, main_api: MainApi):
     if row is None:
         await db.rollback()
         return _expired()
-    device, changes = await enroll.record_device(db, row, answer)
+    enrolled = await enroll.record_device(db, row, answer)
+    device = enrolled.device
     row.used_at = dt.datetime.now(dt.UTC)
-    await catalog.queue_job(db, "register_device", {"device_id": str(device.id)})
+    if not enrolled.refused:
+        await catalog.queue_job(db, "register_device", {"device_id": str(device.id)})
     await db.commit()
 
     await main_api.audit(actor=row.person_id, entity_type="appdist_device",
-                         entity_id=str(device.id), action="add", changes=changes,
-                         ip=client_ip(request))
+                         entity_id=str(device.id),
+                         action="add_refused_disabled" if enrolled.refused else "add",
+                         changes=enrolled.changes, ip=client_ip(request))
+    # Refused or not, Safari goes back to the Apps page, which shows the device's state.
     public_url = get_settings().public_url.rstrip("/")
     return RedirectResponse(f"{public_url}/?added={device.id}", status_code=301)
