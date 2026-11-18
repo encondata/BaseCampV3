@@ -97,10 +97,8 @@ final class TimeclockStation {
         return (base, key, serial())
     }
 
-    /// A freshly issued key, bound to the current API origin.
-    func storeKey(_ key: String) { storeKey(key, origin: apiOrigin(apiUrl())) }
-
-    /// A freshly issued key, bound to `origin`: the API origin it was issued by.
+    /// A freshly issued key, bound to `origin`: the API origin it was issued by, read before the
+    /// call that issued it (`issueKey`), never at store time.
     func storeKey(_ key: String, origin: String?) {
         keys.put(key, origin: origin)
         hasKey = keys.get() != nil

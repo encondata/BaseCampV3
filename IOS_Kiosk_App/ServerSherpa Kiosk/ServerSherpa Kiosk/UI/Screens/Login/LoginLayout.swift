@@ -28,4 +28,10 @@ enum LoginLayout: Equatable {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    /// What VoiceOver reads for the wide and medium layouts' art, which is one element: the
+    /// wordmark and the kiosk's name under it. Nil (nothing read) without a name.
+    static func sceneAccessibilityLabel(kioskName: String?) -> String? {
+        kioskName.map { "ServerSherpa, \($0)" }
+    }
 }

@@ -71,7 +71,10 @@ struct LoginScene: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
         .frame(width: metrics.size.width, height: metrics.size.height)
+        // One element for the art; with a kiosk name, VoiceOver reads it (the compact layout's
+        // logo reads it from the text itself).
         .accessibilityElement(children: .ignore)
+        .accessibilityLabel(LoginLayout.sceneAccessibilityLabel(kioskName: kioskName) ?? "")
     }
 }
 

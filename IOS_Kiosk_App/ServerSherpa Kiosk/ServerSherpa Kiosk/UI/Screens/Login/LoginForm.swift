@@ -94,7 +94,9 @@ struct LoginTextField: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(reveal.wrappedValue ? "Hide password" : "Show password")
-                .padding(.trailing, -6)
+                // Only the last button hangs into the field's padding: next to a trailing button
+                // the two 48 pt targets sit side by side, neither cut below 44 pt.
+                .padding(.trailing, trailing == nil ? -6 : 0)
             }
             if let trailing { trailing.padding(.trailing, -6) }
         }

@@ -38,7 +38,7 @@ struct AssetLookupViewModelTests {
                                syncedAt: "2026-11-10T00:00:00Z"),
                 payloads: [payload, payload2])
         }
-        let vm = AssetLookupViewModel(source: AssetLookupRepository(api: api, store: store), serial: { "K1" },
+        let vm = AssetLookupViewModel(source: AssetLookupRepository(api: api, store: store, setupMoveId: { "m1" }), serial: { "K1" },
                                       isAdmin: { admin }, canViewScans: { scans }, zone: TimeZone(identifier: "UTC")!)
         return Built(vm: vm, store: store)
     }

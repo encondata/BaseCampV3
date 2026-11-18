@@ -375,7 +375,7 @@ struct AppContainerTests {
 
         c.prefs.setupSelection = nil
         #expect(await c.biometric.enroll(prompt) == .failed(BiometricCopy.enrollWindow(w)))
-        c.station.storeKey("station-key-1")
+        c.station.storeKey("station-key-1", issuedBy: c.config.apiUrl)
         #expect(c.station.hasKey)
         #expect(await c.biometric.offerEnroll() == false)
         #expect(await c.biometric.enroll(prompt) == .unsupported)

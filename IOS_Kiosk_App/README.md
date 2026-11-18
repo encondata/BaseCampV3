@@ -50,8 +50,11 @@ Labels print as raw ZPL to a Zebra over the network or over Bluetooth. Both go t
 **Troubleshooting.** Settings › Troubleshooting works on the saved printer, network or Bluetooth.
 - Everyone signed in sees it, so a crew can troubleshoot on site. It isn't shown signed out.
 - It has the connection (type, address or serial, link state, chunk size, last drop and why), the printer's details from `~HI` (and Device Information over Bluetooth), buttons that ask the printer for status, the error report, DPI, peeler, serial and the font listing (each shows the reply and how long it took), a speed test (10, 25 or 50 KB labels that print END at the bottom, with seconds and KB/s), a Bluetooth scan with signal strength, and a Copy or Share report with a log that includes the Bluetooth link's own events.
-- Admins and developers also get a box to send a command, because a raw command can change printer settings.
+- Admins and developers also get a box to send a command, because a raw command can change printer settings. A label or format typed there (`^XA` … `^XZ` with no `^H` or `~H` query in it) goes out the way Print Labels sends one, under the same printer rules, and the card reads "Sent as a label or format; no reply is read." Anything else is asked as a query and shows the reply.
 - Developers also get the Cut-send test: it sends half a sample label, marks the failure, then sends a full label. Only the full label should print.
+- With no printer saved, the tab says so and shows a **Printer Setup** button that opens Printer Setup; Back returns to the tab. The button is hidden until Kiosk Setup is done.
+- The report and its log mask secrets: passwords, keys and tokens typed in the command box, sent back by the printer or in an error's words show as `[redacted]`, and the reply to a secret setting (`getvar "wlan.wpa.psk"`) is replaced whole, with its size left out. The printer's front-panel password in a `~HS` reply shows as `****`, on the tab too. Bluetooth devices that aren't Zebras appear as "Other device · -NN dBm" in the report and log; the tab still lists their names.
+- The report is built in the background ("Preparing the report…" if it takes a moment). Copy says "Report copied." and stays on this device: it isn't offered to the person's other Apple devices through Universal Clipboard.
 
 ## Time Clock station
 
@@ -59,9 +62,30 @@ Kiosk Setup › **Time Clock** makes this device a dedicated time clock. It sign
 - The station key is kept in the Keychain and bound to the API origin. Changing the API URL drops it, and you run Kiosk Setup again.
 - The gear on Welcome opens sign-in.
 - Signed in, Home shows Time Clock, Kiosk Setup and Settings.
+- Tapping Time Clock signs out to Welcome. If the station has no key yet (the API URL changed, or the key was refused), the tile first gets one from the portal under the person signed in, and every tile waits meanwhile. If the key can't be had, the person stays signed in and a red line above the tiles says why: no connection, a move password (sign in with your own account), or the portal's error code. The line goes on the next tap or when the kiosk is set up again.
 - Design and rulings: `../docs/superpowers/specs/2026-10-20-kiosk-timeclock-station-design.md` (Implementation notes, phases 2 and 3).
 
+## Clear Setup
+
+When an administrator presses Clear Setup for this kiosk in the portal, the next heartbeat applies it: the kiosk drops its setup (and a Time Clock station's key), and whoever is signed in lands on Kiosk Setup from any screen, with the banner "An administrator cleared this kiosk's setup. Run Kiosk Setup to continue." A setup wizard that was open starts over at step 1. Home hides every app but Kiosk Setup, the Rolodex (admins) and Settings until setup is done again, and the banner goes when it is.
+
+## Asset Lookup
+
+A Home app ("Scan an asset to see what it is and where it goes."), hidden until Kiosk Setup is done. It is read-only: nothing it does records a scan.
+- Search by asset tag, serial, RFID tag or name: type it, scan it with a keyboard scanner, or use the camera. One match opens its card; several show a list of up to 25 with what each matched on; none reads "No asset matches X."
+- Everyone sees what the asset is and its routes (source and destination, rack and RU). Admins also see its status, its current location and its moves. People who can view scans also see its latest 50 scans.
+- Offline, it searches the move this kiosk is set up for, as last synced, under "Offline — showing this move's devices only." Scan history then reads "Scan history needs a connection." With nothing synced for that move, it says "No move data on this kiosk. Sync from Kiosk Setup."
+
+## Rolodex
+
+- A worker's page has a **Previous jobs** card: each job the worker was added to, newest first (the latest 50), with its type, work type and site, the date they were added and the job's status. "No jobs yet." when there are none. It shows once the page has loaded.
+- Tapping the worker's photo (not its camera badge) shows it full screen, scaled to fit. Close, a tap or Back dismisses it. With initials only, a tap does nothing.
+- Offline, the Contact card reads "Phone and email need a connection."
+
 ## Sign-in
+
+- **Kiosk name.** The sign-in page shows the kiosk's own name (Settings › This Kiosk) under the ServerSherpa wordmark, in every layout, so someone pairing a phone can tell which kiosk this is. VoiceOver reads it too.
+- **Move password QR code.** On a device with a camera, the Move password field has a QR button. It opens the camera for QR codes only; the first code read fills the field and signs in, and a wrong one shows its error under the field.
 
 Besides email and password, pairing with a phone and the move password, the iPad or iPhone assigned to a person can sign them in with Face ID or Touch ID. It is the Android feature on the same server routes. Design and rulings: `../docs/superpowers/specs/2026-11-09-ios-biometric-sign-in-design.md`, which builds on `../docs/superpowers/specs/2026-10-23-kiosk-biometric-sign-in-design.md`.
 - **Who it's for.** Only the person assigned to the device in the portal (Scanning Hardware › Kiosks › the device › Personal device). A Time Clock station, or a device holding a station key, is shared, so it never qualifies. A device can be made someone's personal device only after it has checked in once, so the server knows its platform (iOS or Android).

@@ -342,7 +342,8 @@ final class KioskSetupViewModel {
     /// person out so the kiosk rests on its Welcome. There is no move data to download.
     ///
     /// A failed save keeps the wizard on Site (`saveError`). A key that could not be issued
-    /// keeps the saved setup and the session (`keyError`); picking the site again retries.
+    /// keeps the saved setup and the session (`keyError`); picking the site again retries. A
+    /// Clear Setup that lands while the key is on its way drops the key and signs nobody out.
     func finishTimeclock(siteId site: String?) async {
         guard !saving else { return }
         siteId = site ?? ""
@@ -368,13 +369,21 @@ final class KioskSetupViewModel {
             try await station.issueKey(api: api, signInBeat: { await heartbeat.signInNow() })
         } catch {
             saving = false
-            keyError = (error as? ApiError)?.code ?? "unknown_error"
+            if isTimeclockStation { keyError = (error as? ApiError)?.code ?? "unknown_error" }
             return
         }
         saving = false
+        // A Clear Setup landed while the key was on its way (the wizard has started over): the key
+        // belongs to a Time Clock station this kiosk no longer is, so it goes, and nobody is signed out.
+        guard isTimeclockStation else {
+            station.clearKey()
+            return
+        }
         step = .summary
         await auth.logout()
     }
+
+    private var isTimeclockStation: Bool { prefs.setupSelection?.isTimeclockStation == true }
 
     func syncAgain() {
         if let sel = selection { sync.run(initiativeId: sel.initiativeId, initiativeName: sel.initiativeName) }

@@ -11,8 +11,9 @@ let REDACTION_FAILED_TEXT = "[redacted: this line couldn't be checked for secret
 /// `text` (one line of the report) with secret-looking values masked by `mask` (`maskSecrets`). It
 /// fails closed: if masking throws, the whole line is `REDACTION_FAILED_TEXT`, never the line as it
 /// was, and never a crash. (Kotlin also catches a stack overflow or a bad index here; in Swift
-/// those would trap, so the masker never recurses, and a read or copy outside the line throws
-/// instead: see `Units`.)
+/// those would trap, so the masker never recurses, and a read outside the line returns 0 and a
+/// copy outside it returns nothing, each setting `Units.broken`; `maskSecrets` throws once all its
+/// passes are done if any of them broke.)
 ///
 /// A backstop, not the defense: the report is built from what the tab hears, which never includes
 /// the app's own secrets (session, cookies, keys, move passwords). This catches the free text that

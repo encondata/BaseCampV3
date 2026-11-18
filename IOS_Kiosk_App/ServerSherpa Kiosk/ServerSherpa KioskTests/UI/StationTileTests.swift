@@ -29,7 +29,7 @@ struct StationTileTests {
     }
 
     private func makeTile() -> StationTileModel {
-        StationTileModel(api: api, station: station, heartbeat: heartbeat, auth: auth)
+        StationTileModel(api: api, station: station, heartbeat: heartbeat, auth: auth, prefs: prefs)
     }
 
     private var keyStored: String? { StationKeyStore(secrets: secrets).get() }
@@ -106,6 +106,7 @@ struct StationTileTests {
             api.stationKeyResult = { _ in throw error }
             await tile.start()
             #expect(tile.error == text)
+            #expect(tile.shownError == text)
             #expect(!tile.starting)                          // the tile can be tapped again
             #expect(signedIn)
             #expect(keyStored == nil)
@@ -165,5 +166,79 @@ struct StationTileTests {
         guard case .authed(let s) = auth.state else { Issue.record("signed out by the earlier tap"); return }
         #expect(s.person.id == "p2")
         #expect(!tile.starting)
+    }
+
+    // MARK: the setup changes underneath the tile
+
+    /// The red message belongs to this Time Clock station's setup: it shows only while the kiosk
+    /// is one, and a re-setup or a Clear Setup clears it, so it never greets the next setup.
+    @Test func theErrorGoesWithTheTimeClockSetup() async {
+        api.stationKeyResult = { _ in throw ApiError.network() }
+        let tile = makeTile()
+        let text = "The station key hasn't arrived yet. Check the connection and try again in a minute."
+
+        // set up again as a Regular kiosk: hidden at once, then cleared
+        await tile.start()
+        #expect(tile.shownError == text)
+        prefs.setupSelection = testSelection(initiativeId: "i1")
+        #expect(tile.shownError == nil)
+        #expect(await waitUntil { tile.error == nil })
+        // back to a Time Clock station: nothing stale comes back
+        prefs.setupSelection = timeclockSelection()
+        #expect(await waitUntil { tile.shownError == nil && tile.error == nil })
+
+        // an administrator's Clear Setup
+        await tile.start()
+        #expect(tile.shownError == text)
+        prefs.applySetupClear("clear-1")
+        #expect(tile.shownError == nil)
+        #expect(await waitUntil { tile.error == nil })
+        prefs.setupSelection = timeclockSelection()
+        prefs.setupState = .complete
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(tile.shownError == nil)
+
+        // the same setup written again is no change: the message stays until the next tap
+        await tile.start()
+        prefs.setupSelection = timeclockSelection()
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(tile.shownError == text)
+        #expect(signedIn)
+    }
+
+    /// A Clear Setup that lands while the key is on its way: the key belongs to a Time Clock
+    /// station this kiosk no longer is, so it is dropped, and nobody is signed out.
+    @Test func aClearSetupDuringTheIssueDropsTheKeyAndKeepsTheSession() async {
+        let hold = HoldGate()
+        api.stationKeyResult = { _ in await hold.wait(); return "k3y" }
+        let tile = makeTile()
+        let first = Task { await tile.start() }
+        #expect(await waitUntil { issues == 1 })
+        prefs.applySetupClear("clear-1")
+        station.clearKey()                                   // what the container does as the clear lands
+        await hold.open()
+        await first.value
+        #expect(keyStored == nil)
+        #expect(!station.hasKey)
+        #expect(signedIn)                                    // the person lands on Kiosk Setup, still signed in
+        #expect(tile.error == nil)
+        #expect(!tile.starting)
+    }
+
+    /// A failed issue under a setup that went meanwhile leaves no message behind for later.
+    @Test func aFailureAfterAClearSetupLeavesNoMessage() async {
+        let hold = HoldGate()
+        api.stationKeyResult = { _ in await hold.wait(); throw ApiError.network() }
+        let tile = makeTile()
+        let first = Task { await tile.start() }
+        #expect(await waitUntil { issues == 1 })
+        prefs.applySetupClear("clear-1")
+        await hold.open()
+        await first.value
+        #expect(tile.error == nil)
+        prefs.setupSelection = timeclockSelection()          // set up as a Time Clock station again
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(tile.shownError == nil)
+        #expect(signedIn)
     }
 }

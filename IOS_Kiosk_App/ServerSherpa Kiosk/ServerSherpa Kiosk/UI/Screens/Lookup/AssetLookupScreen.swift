@@ -23,8 +23,10 @@ private struct AssetLookupLive: View {
         self.container = container
         let auth = container.auth
         let identity = container.identity
+        let prefs = container.prefs
         _vm = State(initialValue: AssetLookupViewModel(
-            source: AssetLookupRepository(api: container.api, store: container.store),
+            source: AssetLookupRepository(api: container.api, store: container.store,
+                                          setupMoveId: { @MainActor in prefs.setupSelection?.initiativeId }),
             serial: { identity.current.serial },
             isAdmin: { if case .authed(let s) = auth.state { s.isAdmin } else { false } },
             // The server refuses the scans route without it too.

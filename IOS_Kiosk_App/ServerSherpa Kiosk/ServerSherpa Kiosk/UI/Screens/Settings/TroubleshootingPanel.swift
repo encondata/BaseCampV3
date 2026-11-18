@@ -243,8 +243,8 @@ private struct TroubleshootingBody: View {
         Text("Copy or share everything above as text: this device and app, the printer, every reply and speed result, and the last \(TroubleshootingModel.LOG_CAP.formatted()) log lines (\(vm.logLines.count) so far) with the Bluetooth link's own events.")
             .font(KioskType.bodySmall).foregroundStyle(palette.textMute)
         HStack(spacing: 12) {
-            // Built off the main actor, then put on the pasteboard (at most SHARE_MAX_CHARS).
-            SecondaryButton("Copy") { vm.copyReport { UIPasteboard.general.string = $0 } }
+            // Built off the main actor, then put on this device's pasteboard (at most SHARE_MAX_CHARS).
+            SecondaryButton("Copy") { vm.copyReport { pasteLocalOnly($0) } }
             ShareLink(item: TroubleshootingReportFile(vm: vm), preview: SharePreview("Printer report")) {
                 Text("Share")
                     .font(KioskType.labelLarge)
@@ -431,4 +431,10 @@ private struct TroubleshootingReportFile: Transferable {
             SentTransferredFile(try await file.vm.reportFile())
         }
     }
+}
+
+/// `text` on `pasteboard` for this device only: `.localOnly` keeps Universal Clipboard from handing
+/// the report to the person's other Apple devices.
+func pasteLocalOnly(_ text: String, to pasteboard: UIPasteboard = .general) {
+    pasteboard.setItems([[UTType.utf8PlainText.identifier: text]], options: [.localOnly: true])
 }

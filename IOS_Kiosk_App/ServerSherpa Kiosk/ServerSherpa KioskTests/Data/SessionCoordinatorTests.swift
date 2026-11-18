@@ -64,7 +64,7 @@ struct SessionCoordinatorTests {
         let h = Harness()
         let hold = HoldGate()
         let answered = MutableBox(0)
-        // the portal asks the first person's beats to clear; by the next person's, it was cancelled
+        // the portal asks the first person's beats to clear; by the next person's, it was canceled
         h.api.heartbeatResult = { body in
             answered.value += 1
             return HeartbeatResult(deviceId: "d", name: body.name, registration: "ok", clearSetup: answered.value <= 2 ? "x1" : nil)

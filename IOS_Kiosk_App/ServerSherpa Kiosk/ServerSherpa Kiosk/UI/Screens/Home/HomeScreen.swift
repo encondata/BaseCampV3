@@ -53,7 +53,8 @@ struct HomeContent: View {
     init(container: AppContainer, path: Binding<[Route]>) {
         _path = path
         _stationTile = State(initialValue: StationTileModel(api: container.api, station: container.station,
-                                                            heartbeat: container.heartbeat, auth: container.auth))
+                                                            heartbeat: container.heartbeat, auth: container.auth,
+                                                            prefs: container.prefs))
     }
 
     private var isAdmin: Bool {
@@ -70,7 +71,7 @@ struct HomeContent: View {
         VStack(alignment: .leading, spacing: 0) {
             PageHeader(eyebrow: "Kiosk", title: "What would you like to do?")
             if let banner { KioskToast(text: banner.text, error: banner.error) }
-            if let error = stationTile.error { KioskToast(text: error, error: true) }
+            if let error = stationTile.shownError { KioskToast(text: error, error: true) }
             // A Grid, not a LazyVGrid: every tile in a row takes the row's height.
             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                 ForEach(rows.indices, id: \.self) { r in

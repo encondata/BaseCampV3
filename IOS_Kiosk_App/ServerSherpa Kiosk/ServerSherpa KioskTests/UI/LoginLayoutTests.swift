@@ -22,6 +22,13 @@ struct LoginLayoutTests {
         #expect(LoginLayout.kioskNameLine(" \t\n") == nil)
     }
 
+    /// The wide and medium layouts draw the logo inside the scene, one accessibility element:
+    /// VoiceOver reads the kiosk name from its label, as the compact layout reads the text.
+    @Test func voiceOverReadsTheKioskNameOnWideLayouts() {
+        #expect(LoginLayout.sceneAccessibilityLabel(kioskName: LoginLayout.kioskNameLine(" Dock door 3 ")) == "ServerSherpa, Dock door 3")
+        #expect(LoginLayout.sceneAccessibilityLabel(kioskName: LoginLayout.kioskNameLine("")) == nil)
+    }
+
     /// What the screen passes: this kiosk's identity, with its default name before one is set.
     @MainActor @Test func theLineIsTheIdentitysName() {
         let prefs = KioskPrefs(defaults: freshDefaults())

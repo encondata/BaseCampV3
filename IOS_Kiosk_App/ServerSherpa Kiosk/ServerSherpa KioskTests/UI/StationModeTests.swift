@@ -54,7 +54,7 @@ struct StationModeTests {
             let first = try container(defaults)
             first.prefs.setupSelection = timeclockSelection()
             first.prefs.setupState = .complete
-            first.station.storeKey("k3y")
+            first.station.storeKey("k3y", issuedBy: first.config.apiUrl)
         }
         // the app was killed: a new container over the same defaults and secret store
         let relaunched = try container(defaults)
@@ -265,7 +265,7 @@ struct StationModeTests {
         let c = try container(freshDefaults())
         c.prefs.setupSelection = timeclockSelection()
         c.prefs.setupState = .complete
-        c.station.storeKey("k3y")
+        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
         try await c.resetApp()
         #expect(!c.station.hasKey)
         #expect(c.stationKeys.get() == nil)
@@ -298,6 +298,30 @@ struct StationModeTests {
         #expect(api.bases == [TEST_API_URL, TEST_API_URL])
     }
 
+    /// The origin is read before the issue call, not when the key comes back: an API URL saved
+    /// while `POST /kiosk/station-key` is on its way never adopts the key. It is stored bound to
+    /// the old origin, so the first look under the new URL drops it, and nothing goes there.
+    @Test func aKeyIssuedWhileTheApiUrlChangesStaysWithTheOldOrigin() async throws {
+        let station = makeStation()
+        let kioskApi = FakeKioskApi()
+        let apiUrl = self.apiUrl
+        kioskApi.stationKeyResult = { _ in
+            apiUrl.value = "https://evil.example"           // Settings saved a new API URL meanwhile
+            return "k3y"
+        }
+        try await station.issueKey(api: kioskApi, signInBeat: {})
+        #expect(kioskApi.calls == ["issueStationKey"])
+        #expect(StationKeyStore(secrets: secrets).get() == "k3y")
+        #expect(StationKeyStore(secrets: secrets).origin() == "https://api.test:443")   // the URL it was asked of
+        #expect(station.credentials() == nil)
+        #expect(!station.hasKey)
+        #expect(StationKeyStore(secrets: secrets).get() == nil)                          // dropped, not re-bound
+        let backend = StationTcBackend(api: api, store: try makeStore(), station: station)
+        await #expect(throws: StationTcBackend.notReady) { try await backend.clockIn(personId: "p1") }
+        #expect(api.calls.isEmpty)
+        #expect(api.bases.isEmpty)                                                       // nothing reached the new origin
+    }
+
     @Test func aKeyWithNoOriginIsNeverSent() async throws {
         StationKeyStore(secrets: secrets).put("legacy")
         let station = makeStation()
@@ -312,7 +336,7 @@ struct StationModeTests {
         let c = try container(defaults)
         _ = c.config.setApiUrl("https://api.example.com")
         c.prefs.setupSelection = timeclockSelection()
-        c.station.storeKey("k3y")
+        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
         c.auth.endSession()
         #expect(await SettingsModel.saveUrls(api: "https://evil.example", portal: c.config.portalUrl, config: c.config,
                                              session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
@@ -324,7 +348,7 @@ struct StationModeTests {
     @Test func savingTheSameApiOriginKeepsTheKey() async throws {
         let c = try container(freshDefaults())
         _ = c.config.setApiUrl("https://api.example.com")
-        c.station.storeKey("k3y")
+        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
         c.auth.endSession()
         #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: c.config,
                                              session: FakeRefresher(), auth: c.auth, station: c.station) == nil)

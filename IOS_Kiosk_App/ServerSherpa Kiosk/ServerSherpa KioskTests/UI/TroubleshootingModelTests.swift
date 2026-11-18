@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
+import UIKit
 @testable import ServerSherpa_Kiosk
 
 /// The printer's port: every write or query that reached it, in the order they began, and how
@@ -977,6 +978,46 @@ final class TroubleshootingModelTests {
         #expect(text.contains("    [redacted: the reply to a secret setting]"))
         #expect(text.contains("Something went wrong (StrayError)."))
         #expect(text.contains("Can't reach the printer at 10.0.0.5."))
+    }
+
+    /// The reply to a secret setting is replaced whole in the report, and its size goes too, on
+    /// the ask's line and in the log: it would give away the secret's length. Other replies keep
+    /// their size.
+    @Test func aSecretReplysSizeIsNotShown() async throws {
+        settings.setPrinter(network)
+        let m = model(isAdmin: true)
+        let password = "Hunter2-Move-Pass-0123456789-abcdefgh"   // 37 characters, quoted: 39 bytes
+        zebra.replies = [
+            "! U1 getvar \"wlan.wpa.psk\"\r\n": "\"\(password)\"",
+            "! U1 getvar \"ip.addr\"\r\n": "\"10.0.0.5\"",
+        ]
+        for command in ["! U1 getvar \"wlan.wpa.psk\"", "! U1 getvar \"ip.addr\""] {
+            m.commandText = command
+            await m.sendCommand()?.value
+        }
+        let secret = try #require(m.asks.first { asksForASecret($0.command) })
+        let plain = try #require(m.asks.first { !asksForASecret($0.command) })
+        #expect(secret.bytes == 39)
+        let hidden = "\(secret.milliseconds ?? -1) ms (size hidden: a secret setting)"
+        #expect(askSizeText(command: secret.command, bytes: secret.bytes, milliseconds: secret.milliseconds) == hidden)
+
+        let text = try m.report().text
+        #expect(!text.contains(" 39 B"), "the report gives the secret's size:\n\(text)")
+        #expect(!text.contains(password))
+        #expect(text.contains("  \(hidden)\n  Reply:\n    [redacted: the reply to a secret setting]\n"))
+        #expect(text.contains("  \(plain.bytes) B in \(plain.milliseconds ?? -1) ms\n"))
+        // The log, which the report carries too.
+        #expect(!m.logLines.contains { $0.text.contains(" 39 B") })
+        #expect(m.logLines.contains { $0.text == "← Command: \(hidden)" })
+        #expect(m.logLines.contains { $0.text == "← Command: \(plain.bytes) B in \(plain.milliseconds ?? -1) ms" })
+    }
+
+    /// Copy puts the report on this device's pasteboard only (`.localOnly`: no Universal Clipboard).
+    @Test func copyWritesThePlainText() {
+        let board = UIPasteboard.withUniqueName()
+        defer { UIPasteboard.remove(withName: board.name) }
+        pasteLocalOnly("== Printer report ==", to: board)
+        #expect(board.string == "== Printer report ==")
     }
 
     /// A quoted secret is hidden whole, spaces and all, up to its matching closing quote: in SGD's

@@ -207,6 +207,49 @@ struct KioskSetupTimeclockTests {
         #expect(vm.keyError == "setup_clear_pending")
     }
 
+    /// A Clear Setup that lands while the new station's key is on its way: the wizard starts over,
+    /// the key is dropped (it belongs to a Time Clock station this kiosk no longer is) and the
+    /// person stays signed in to run Kiosk Setup again.
+    @Test func aClearSetupDuringTheKeyIssueDropsTheKeyAndKeepsTheSession() async {
+        let hold = HoldGate()
+        api.stationKeyResult = { _ in await hold.wait(); return "k3y" }
+        let vm = makeVM()
+        await vm.load()
+        vm.pickKind(.timeclock); vm.pickNoMove()
+        let finish = Task { await vm.finishTimeclock(siteId: nil) }
+        #expect(await waitUntil { api.calls.contains("issueStationKey") })
+        #expect(prefs.setupSelection?.isTimeclockStation == true)        // the setup saved first
+        prefs.applySetupClear("clear-1")
+        station.clearKey()                                               // what the container does as the clear lands
+        #expect(await waitUntil { vm.step == .type })                    // the wizard started over
+        await hold.open()
+        await finish.value
+        #expect(keyStored == nil)
+        #expect(!station.hasKey)
+        #expect(vm.step == .type)                                        // not the summary
+        #expect(vm.keyError == nil)
+        #expect(!vm.saving)
+        if case .authed = auth.state {} else { Issue.record("signed out by a setup that was cleared") }
+    }
+
+    /// The same Clear Setup, and the key then fails: no key error is left for the wizard that
+    /// started over.
+    @Test func aClearSetupDuringAFailedKeyIssueLeavesNoKeyError() async {
+        let hold = HoldGate()
+        api.stationKeyResult = { _ in await hold.wait(); throw ApiError(status: 403, code: "not_signed_in_here") }
+        let vm = makeVM()
+        await vm.load()
+        vm.pickKind(.timeclock); vm.pickNoMove()
+        let finish = Task { await vm.finishTimeclock(siteId: nil) }
+        #expect(await waitUntil { api.calls.contains("issueStationKey") })
+        prefs.applySetupClear("clear-1")
+        await hold.open()
+        await finish.value
+        #expect(vm.keyError == nil)
+        #expect(keyStored == nil)
+        if case .authed = auth.state {} else { Issue.record("signed out on a failed key") }
+    }
+
     @Test func aFailedSetupSaveIssuesNoKey() async {
         api.submitSetupResult = { _ in throw ApiError(status: 422, code: "bad_site") }
         let vm = makeVM()

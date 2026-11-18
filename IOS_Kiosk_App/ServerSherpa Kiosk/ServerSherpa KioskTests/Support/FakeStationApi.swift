@@ -55,6 +55,12 @@ final class FakeStationApi: StationApi, @unchecked Sendable {
 /// The API URL test stations are bound to.
 let TEST_API_URL = "https://api.test"
 
+extension TimeclockStation {
+    /// Test seeding only: `key` as if `url`'s origin had issued it. The app stores only what
+    /// `issueKey` got, bound to the origin read before the call.
+    func storeKey(_ key: String, issuedBy url: String = TEST_API_URL) { storeKey(key, origin: apiOrigin(url)) }
+}
+
 /// A Time Clock station selection with no move and no site.
 func timeclockSelection(initiativeId: String? = nil, siteId: String? = nil) -> KioskSetupSelection {
     .timeclock(initiativeId: initiativeId, initiativeName: initiativeId == nil ? nil : "Move A",

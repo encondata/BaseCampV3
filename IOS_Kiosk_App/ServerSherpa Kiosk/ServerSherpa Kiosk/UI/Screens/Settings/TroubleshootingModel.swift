@@ -504,7 +504,7 @@ final class TroubleshootingModel {
                 result.reply = reply
                 result.meaning = meaning(reply)
                 result.milliseconds = stopwatch.milliseconds
-                log("← \(label): \(result.bytes) B in \(msText(result.milliseconds)) ms")
+                log("← \(label): \(askSizeText(command: command, bytes: result.bytes, milliseconds: result.milliseconds))")
                 noteReach(nil, from: action)
             } catch is PrinterNoReply where action == .command {
                 // A setvar and most raw commands reply nothing by design: it went out.
@@ -918,7 +918,7 @@ struct TroubleshootingReportDraft: Sendable {
         out.append("== Ask the printer (\(asks.count)) ==")
         for ask in asks {
             out.append("[\(clockText(ask.at))] \(ask.label) · command \(visibleCommand(ask.command))")
-            out.append("  \(ask.bytes) B in \(msText(ask.milliseconds)) ms")
+            out.append("  \(askSizeText(command: ask.command, bytes: ask.bytes, milliseconds: ask.milliseconds))")
             if let meaning = ask.meaning { out.append("  Meaning: \(meaning)") }
             if let error = ask.error { out.append("  Error: \(error)") }
             if !ask.reply.isEmpty {
@@ -1104,6 +1104,12 @@ private func clockText(_ date: Date, millis: Bool = false) -> String {
 }
 
 private func msText(_ ms: Int?) -> String { ms.map(String.init) ?? "?" }
+
+/// An ask's size and time, for the report and the log: "12 B in 30 ms". The reply to a secret
+/// setting (`asksForASecret`) gives its time only, since its size would give away the secret's length.
+func askSizeText(command: String, bytes: Int, milliseconds: Int?) -> String {
+    asksForASecret(command) ? "\(msText(milliseconds)) ms (size hidden: a secret setting)" : "\(bytes) B in \(msText(milliseconds)) ms"
+}
 
 /// "3.90", or "-" when there's no value.
 private func decimal(_ value: Double?) -> String { value.map { String(format: "%.2f", $0) } ?? "-" }

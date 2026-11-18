@@ -36,7 +36,7 @@ struct AssetLookupRepositoryTests {
         let store = try await seeded()
         let api = FakeKioskApi()
         api.lookupAssetsResult = { _, _ in KioskLookupResult(matches: [KioskLookupMatch(id: "x9", name: "Remote", assetTag: "R-9")]) }
-        let found = try await AssetLookupRepository(api: api, store: store).find(serial: "K1", value: "SN-100")
+        let found = try await AssetLookupRepository(api: api, store: store, setupMoveId: { "m1" }).find(serial: "K1", value: "SN-100")
         #expect(!found.offline)
         #expect(!found.noMoveData)
         #expect(found.result.matches.map(\.id) == ["x9"])
@@ -46,7 +46,7 @@ struct AssetLookupRepositoryTests {
 
     @Test func networkErrorFallsBackToSyncedAssets() async throws {
         let store = try await seeded()
-        let found = try await AssetLookupRepository(api: offlineApi(), store: store).find(serial: "K1", value: "SN-100")
+        let found = try await AssetLookupRepository(api: offlineApi(), store: store, setupMoveId: { "m1" }).find(serial: "K1", value: "SN-100")
         #expect(found.offline)
         #expect(!found.noMoveData)
         #expect(found.result.matches.map(\.id) == ["a1"])
@@ -56,13 +56,13 @@ struct AssetLookupRepositoryTests {
     @Test func edgeOfflineCodeFallsBack() async throws {
         let api = FakeKioskApi()
         api.lookupAssetsResult = { _, _ in throw ApiError(status: 502, code: "edge_offline") }
-        #expect(try await AssetLookupRepository(api: api, store: try await seeded()).find(serial: "K1", value: "SN-100").offline)
+        #expect(try await AssetLookupRepository(api: api, store: try await seeded(), setupMoveId: { "m1" }).find(serial: "K1", value: "SN-100").offline)
     }
 
     @Test func detailFallsBackWhenNetworkDropsAfterLookup() async throws {
         let api = offlineApi()
         api.lookupAssetsResult = { _, _ in KioskLookupResult(matches: [KioskLookupMatch(id: "a1", name: "Core switch", assetTag: "A-1")]) }
-        let repo = AssetLookupRepository(api: api, store: try await seeded())
+        let repo = AssetLookupRepository(api: api, store: try await seeded(), setupMoveId: { "m1" })
         #expect(try await !repo.find(serial: "K1", value: "A-1").offline)
         let opened = try await repo.open(serial: "K1", id: "a1", offline: false, admin: true)
         #expect(opened.offline)
@@ -72,7 +72,7 @@ struct AssetLookupRepositoryTests {
 
     @Test func offlineSkipsTheApiAndNonAdminHasNoFullCard() async throws {
         let api = FakeKioskApi()
-        let opened = try await AssetLookupRepository(api: api, store: try await seeded()).open(serial: "K1", id: "a1", offline: true, admin: false)
+        let opened = try await AssetLookupRepository(api: api, store: try await seeded(), setupMoveId: { "m1" }).open(serial: "K1", id: "a1", offline: true, admin: false)
         #expect(opened.offline)
         #expect(opened.detail != nil)
         #expect(opened.detail?.full == nil)
@@ -82,7 +82,7 @@ struct AssetLookupRepositoryTests {
     @Test func onlineDetailPassesThrough() async throws {
         let api = FakeKioskApi()
         api.assetDetailResult = { _, id in KioskAssetDetail(id: id) }
-        let opened = try await AssetLookupRepository(api: api, store: try await seeded()).open(serial: "K1", id: "zz", offline: false, admin: true)
+        let opened = try await AssetLookupRepository(api: api, store: try await seeded(), setupMoveId: { "m1" }).open(serial: "K1", id: "zz", offline: false, admin: true)
         #expect(!opened.offline)
         #expect(opened.detail?.id == "zz")
         #expect(api.calls == ["assetDetail:zz"])
@@ -93,13 +93,13 @@ struct AssetLookupRepositoryTests {
         let api = FakeKioskApi()
         api.lookupAssetsResult = { _, _ in throw ApiError(status: status, code: "nope") }
         api.assetDetailResult = { _, _ in throw ApiError(status: status, code: "nope") }
-        let repo = AssetLookupRepository(api: api, store: try await seeded())
+        let repo = AssetLookupRepository(api: api, store: try await seeded(), setupMoveId: { "m1" })
         await #expect(throws: ApiError(status: status, code: "nope")) { try await repo.find(serial: "K1", value: "SN-100") }
         await #expect(throws: ApiError(status: status, code: "nope")) { try await repo.open(serial: "K1", id: "a1", offline: false, admin: true) }
     }
 
     @Test func offlineDetailCarriesSitesFromLabelContext() async throws {
-        let d = try #require(try await AssetLookupRepository(api: offlineApi(), store: try await seeded())
+        let d = try #require(try await AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { "m1" })
             .open(serial: "K1", id: "a1", offline: false, admin: false).detail)
         #expect(d.routes.count == 1)
         let route = try #require(d.routes.first)
@@ -113,19 +113,19 @@ struct AssetLookupRepositoryTests {
 
     @Test(arguments: ["null", "{not json", #"{"source_site":"","destination_site":5}"#])
     func blankOrUnreadableLabelContextGivesNoSites(context: String) async throws {
-        let data = try await AssetLookupRepository(api: offlineApi(), store: try await seeded(labelContext: context)).loadLocal()
+        let data = try await AssetLookupRepository(api: offlineApi(), store: try await seeded(labelContext: context), setupMoveId: { "m1" }).loadLocal()
         #expect(data.sourceSite == nil)
         #expect(data.destinationSite == nil)
     }
 
     @Test func unknownIdOfflineIsNull() async throws {
-        let opened = try await AssetLookupRepository(api: offlineApi(), store: try await seeded()).open(serial: "K1", id: "nope", offline: true, admin: true)
+        let opened = try await AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { "m1" }).open(serial: "K1", id: "nope", offline: true, admin: true)
         #expect(opened.offline)
         #expect(opened.detail == nil)
     }
 
     @Test func loadLocalSkipsUndecodableRows() async throws {
-        let data = try await AssetLookupRepository(api: offlineApi(), store: try await seeded()).loadLocal()
+        let data = try await AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { "m1" }).loadLocal()
         #expect(data.assets.map(\.id) == ["a1"])
         #expect(data.containerNames["c1"] == "Crate 7")
         #expect(data.moveId == "m1" && data.moveName == "Move One")
@@ -137,10 +137,10 @@ struct AssetLookupRepositoryTests {
             #expect(limit == 50)
             return []
         }
-        #expect(try await AssetLookupRepository(api: api, store: try await seeded()).scans(serial: "K1", id: "a1").isEmpty)
+        #expect(try await AssetLookupRepository(api: api, store: try await seeded(), setupMoveId: { "m1" }).scans(serial: "K1", id: "a1").isEmpty)
         #expect(api.calls == ["assetScans:a1"])
         await #expect(throws: ApiError.network()) {
-            try await AssetLookupRepository(api: self.offlineApi(), store: try await self.seeded()).scans(serial: "K1", id: "a1")
+            try await AssetLookupRepository(api: self.offlineApi(), store: try await self.seeded(), setupMoveId: { "m1" }).scans(serial: "K1", id: "a1")
         }
     }
 
@@ -150,13 +150,13 @@ struct AssetLookupRepositoryTests {
     @Test func offlineDecodeRunsOffTheCallersThread() async throws {
         let online = FakeKioskApi()
         online.lookupAssetsResult = { _, _ in KioskLookupResult() }
-        let onlineRepo = AssetLookupRepository(api: online, store: try await seeded())
+        let onlineRepo = AssetLookupRepository(api: online, store: try await seeded(), setupMoveId: { "m1" })
         _ = try await onlineRepo.find(serial: "K1", value: "SN-100")
         #expect(await onlineRepo.localLoads == 0, "an online answer decodes nothing")
         #expect(online.mainThreadCalls.isEmpty)
 
         let offline = offlineApi()
-        let repo = AssetLookupRepository(api: offline, store: try await seeded())
+        let repo = AssetLookupRepository(api: offline, store: try await seeded(), setupMoveId: { "m1" })
         let found = try await repo.find(serial: "K1", value: "SN-100")
         #expect(found.result.matches.map(\.id) == ["a1"])
         #expect(await repo.localLoads == 1, "the fallback reads the synced move")
@@ -165,7 +165,7 @@ struct AssetLookupRepositoryTests {
 
     /// One offline lookup decodes once: the single match's open reuses what find loaded.
     @Test func anOfflineOpenReusesTheFindsData() async throws {
-        let repo = AssetLookupRepository(api: offlineApi(), store: try await seeded())
+        let repo = AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { "m1" })
         _ = try await repo.find(serial: "K1", value: "SN-100")
         let afterFind = await repo.localLoads
         let opened = try await repo.open(serial: "K1", id: "a1", offline: true, admin: false)
@@ -177,7 +177,7 @@ struct AssetLookupRepositoryTests {
 
     @Test func nothingIsWrittenToTheOutbox() async throws {
         let store = try await seeded()
-        let repo = AssetLookupRepository(api: offlineApi(), store: store)
+        let repo = AssetLookupRepository(api: offlineApi(), store: store, setupMoveId: { "m1" })
         _ = try await repo.find(serial: "K1", value: "A-1")
         _ = try await repo.open(serial: "K1", id: "a1", offline: false, admin: true)
         _ = try await repo.loadLocal()
@@ -191,7 +191,7 @@ struct AssetLookupRepositoryTests {
     /// Scanning words), never "No asset matches".
     @Test func offlineWithNoSyncedMoveSaysSo() async throws {
         let empty = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
-        let found = try await AssetLookupRepository(api: offlineApi(), store: empty).find(serial: "K1", value: "102466")
+        let found = try await AssetLookupRepository(api: offlineApi(), store: empty, setupMoveId: { "m1" }).find(serial: "K1", value: "102466")
         #expect(found.offline)
         #expect(found.noMoveData)
         #expect(found.result.matches.isEmpty)
@@ -200,20 +200,20 @@ struct AssetLookupRepositoryTests {
         // Clear local data leaves nothing synced either.
         let store = try await seeded()
         try await store.clearLocalData()
-        let cleared = try await AssetLookupRepository(api: offlineApi(), store: store).find(serial: "K1", value: "SN-100")
+        let cleared = try await AssetLookupRepository(api: offlineApi(), store: store, setupMoveId: { "m1" }).find(serial: "K1", value: "SN-100")
         #expect(lookupOutcome(cleared, shown: "SN-100") == .miss("No move data on this kiosk. Sync from Kiosk Setup."))
     }
 
     /// With a synced move, an offline miss is still a miss; online, an empty store never matters.
     @Test func aSyncedMoveOrAnOnlineAnswerMissesAsUsual() async throws {
-        let found = try await AssetLookupRepository(api: offlineApi(), store: try await seeded()).find(serial: "K1", value: "nothing-like-it")
+        let found = try await AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { "m1" }).find(serial: "K1", value: "nothing-like-it")
         #expect(found.offline && !found.noMoveData)
         #expect(lookupOutcome(found, shown: "nothing-like-it") == .miss("No asset matches nothing-like-it."))
 
         let api = FakeKioskApi()
         api.lookupAssetsResult = { _, _ in KioskLookupResult() }
         let empty = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
-        let online = try await AssetLookupRepository(api: api, store: empty).find(serial: "K1", value: "102466")
+        let online = try await AssetLookupRepository(api: api, store: empty, setupMoveId: { "m1" }).find(serial: "K1", value: "102466")
         #expect(!online.offline && !online.noMoveData)
         #expect(lookupOutcome(online, shown: "102466") == .miss("No asset matches 102466."))
     }
@@ -224,7 +224,39 @@ struct AssetLookupRepositoryTests {
         let store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         try await store.replaceRoster(assets: [KioskAssetRow(id: "old", assetId: "1")], people: [], containers: [], trucks: [],
                                       meta: SyncMeta(initiativeId: "m1", initiativeName: "Move", assets: 1, people: 0, containers: 0, trucks: 0, syncedAt: "x"))
-        let found = try await AssetLookupRepository(api: offlineApi(), store: store).find(serial: "K1", value: "1")
+        let found = try await AssetLookupRepository(api: offlineApi(), store: store, setupMoveId: { "m1" }).find(serial: "K1", value: "1")
         #expect(found.noMoveData)
+    }
+
+    // MARK: only the set-up move is searched offline
+
+    /// The store still holds another move's assets (set up for a new move, not synced yet), or
+    /// the kiosk has no setup: offline that is nothing synced, with the existing words, and no
+    /// asset of the old move is found or opened. The set-up move is still searched.
+    @Test(arguments: [String?.some("m2"), nil, ""])
+    func offlineSearchesOnlyTheSetUpMove(setup: String?) async throws {
+        let repo = AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { setup })
+        let found = try await repo.find(serial: "K1", value: "SN-100")
+        #expect(found.offline)
+        #expect(found.noMoveData)
+        #expect(found.result.matches.isEmpty)
+        #expect(lookupOutcome(found, shown: "SN-100") == .miss("No move data on this kiosk. Sync from Kiosk Setup."))
+        let opened = try await repo.open(serial: "K1", id: "a1", offline: true, admin: true)
+        #expect(opened.offline)
+        #expect(opened.detail == nil)
+        let data = try await repo.loadLocal()
+        #expect(data.assets.isEmpty && data.containerNames.isEmpty)
+        #expect(data.moveId.isEmpty && data.moveName.isEmpty)
+    }
+
+    /// The setup is read at each offline look, not when the screen opened.
+    @Test func theSetupIsReadAtEachLook() async throws {
+        let setup = MutableBox<String?>("m2")
+        let repo = AssetLookupRepository(api: offlineApi(), store: try await seeded(), setupMoveId: { setup.value })
+        #expect(try await repo.find(serial: "K1", value: "SN-100").noMoveData)
+        setup.value = "m1"                                   // Kiosk Setup set up for the synced move
+        let found = try await repo.find(serial: "K1", value: "SN-100")
+        #expect(!found.noMoveData)
+        #expect(found.result.matches.map(\.id) == ["a1"])
     }
 }
