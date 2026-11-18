@@ -196,16 +196,18 @@ async def run_push(maker, state: dict) -> int:
     logged once per outage, never raised."""
     try:
         # one client for the life of the config: its access-token cache lives
-        # on the instance. Rebuilt when the key path changes or a build failed.
-        path = get_settings().fcm_service_account_file
+        # on the instance. Rebuilt when either key setting changes or a build failed.
+        cfg = get_settings()
+        config = (cfg.fcm_service_account_file,
+                  cfg.fcm_service_account_b64.get_secret_value())
         client = state.get("client")
-        if client is None or state.get("path") != path:
+        if client is None or state.get("config") != config:
             state.pop("client", None)
             client = FcmClient.from_settings()
             if client is None:
                 state["failed"] = False
                 return 0
-            state["client"], state["path"] = client, path
+            state["client"], state["config"] = client, config
         async with maker() as db:
             handled = await drain_push(db, client, now=datetime.now(UTC))
         state["failed"] = False

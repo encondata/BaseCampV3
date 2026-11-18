@@ -42,6 +42,7 @@ def test_classification():
     assert is_secret("SS_PASSWORD_PEPPER")
     assert is_secret("SS_GOD_MODE_WORDS")
     assert is_secret("SS_SENTRY_DSN")          # name heuristic (DSN)
+    assert is_secret("SS_FCM_SERVICE_ACCOUNT_B64")  # SecretStr: the Firebase key
     assert not is_secret("SS_LOG_LEVEL")
 
 
@@ -58,9 +59,18 @@ def test_read_entries_masks_and_hides(env_path):
                     "description": "Signs  session JWTs", "section": "auth"}
     assert "supersecret123" not in str(entries)
     assert entries["SS_SMTP_HOST"]["value"] == ""
+
     # file order preserved
     keys = [e["key"] for e in read_entries(env_path)]
     assert keys.index("SS_ENV") < keys.index("SS_JWT_SECRET")
+
+
+def test_read_entries_masks_the_firebase_key(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("SS_FCM_SERVICE_ACCOUNT_B64=abc123keymaterial\n")
+    [entry] = read_entries(path)
+    assert entry["secret"] is True and entry["set"] is True
+    assert "abc123keymaterial" not in str(entry)
 
 
 def test_read_entries_includes_descriptions(env_path):

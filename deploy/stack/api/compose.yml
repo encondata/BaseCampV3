@@ -22,6 +22,8 @@ x-ss-env: &ss-env
   SS_DATABASE_SSL: ${SS_DATABASE_SSL:-disable}
   # the managed database's own CA (base64 PEM): verify-full when set
   SS_DATABASE_CA_B64: ${SS_DATABASE_CA_B64:-}
+  # the Firebase service-account key as one base64 line: turns push on
+  SS_FCM_SERVICE_ACCOUNT_B64: ${SS_FCM_SERVICE_ACCOUNT_B64:-}
   SS_JWT_SECRET: ${SS_JWT_SECRET:?set SS_JWT_SECRET}
   SS_TOTP_ENCRYPTION_KEY: ${SS_TOTP_ENCRYPTION_KEY:?set SS_TOTP_ENCRYPTION_KEY}
   SS_PASSWORD_PEPPER: ${SS_PASSWORD_PEPPER:?set SS_PASSWORD_PEPPER}

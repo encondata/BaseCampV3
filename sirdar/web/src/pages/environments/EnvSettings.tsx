@@ -6,11 +6,13 @@ import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
 
 import { AppToggles, DigestsField, MailFields } from '../../components/AppsMail';
+import FcmKeyField from '../../components/FcmKeyField';
 import SecretField, { type SecretAction } from '../../components/SecretField';
 import {
   appsOn, appsProblem, formOfEnv, mailBody, mailProblem, parseDigests, type AppsMailForm,
 } from '../../lib/appRules';
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
+import { FCM_KEY, FCM_REFUSED } from '../../lib/fcmKey';
 import {
   INTEGRATION_LABEL, deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
   type DeployTarget, type Deployment, type Environment, type EnvironmentPatch, type VmDefaults,
@@ -29,8 +31,9 @@ const SMTP_PORT = 587;   // apps.DEFAULT_SMTP_PORT
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
-  SS_SMTP_PASSWORD: 'SMTP password',
+  SS_SMTP_PASSWORD: 'SMTP password', [FCM_KEY]: 'Firebase push key',
 };
+const FCM_HINT = "The Firebase service-account JSON. Turns on push notifications to admins' phones.";
 const BUCKET_RE = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const SECRET_RE = /^[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}$/;
 /** API error code → field key. Secret errors use `secret:<KEY>` from the error's `key`. */
@@ -192,7 +195,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     // Hidden while the kiosk is off: it can't block Save, and the stored digests stay.
     if (form.apps.kiosk) put('digests', parseDigests(form.digests).problem);
     for (const key of secretKeys) {
-      if (!optional.includes(key) || secretAction[key] !== 'set') continue;
+      // The Firebase key is checked as its file is chosen: only a valid one is ever 'set'.
+      if (!optional.includes(key) || secretAction[key] !== 'set' || key === FCM_KEY) continue;
       const v = secretValue[key] ?? '';
       put(`secret:${key}`, !v ? 'Enter a value, or choose Keep.'
         : SECRET_RE.test(v) ? '' : 'Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.');
@@ -268,7 +272,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       const code = (err as { code?: string }).code ?? '';
       const key = errorDetail<{ key?: string }>(err)?.key;
       const field = code.startsWith('secret_') && key ? `secret:${key}` : CODE_FIELD[code] ?? 'form';
-      setErrors({ [field]: deployErrorText(err, "Couldn't save the settings.") });
+      setErrors({ [field]: code === 'secret_invalid' && key === FCM_KEY
+        ? FCM_REFUSED : deployErrorText(err, "Couldn't save the settings.") });
     } finally {
       setSaving(false);
     }
@@ -394,11 +399,19 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       <div className="pf-form">
         {secretKeys.map((key) => (
           <div key={key}>
-            <SecretField id={`env-secret-${key}`} label={SECRET_LABELS[key] ?? key}
-                         isSet={env.secrets_set[key]} adding={false} action={secretAction[key] ?? 'keep'}
-                         value={secretValue[key] ?? ''} error={errors[`secret:${key}`]} disabled={off || !optional.includes(key)}
-                         onAction={(a) => { setSecretAction((m) => ({ ...m, [key]: a })); setNotice(''); }}
-                         onValue={(v) => setSecretValue((m) => ({ ...m, [key]: v }))} />
+            {key === FCM_KEY ? (
+              <FcmKeyField id={`env-secret-${key}`} label={SECRET_LABELS[key]} hint={FCM_HINT}
+                           isSet={env.secrets_set[key]} action={secretAction[key] ?? 'keep'}
+                           error={errors[`secret:${key}`]} disabled={off || !optional.includes(key)}
+                           onAction={(a) => { setSecretAction((m) => ({ ...m, [key]: a })); setNotice(''); }}
+                           onValue={(v) => setSecretValue((m) => ({ ...m, [key]: v }))} />
+            ) : (
+              <SecretField id={`env-secret-${key}`} label={SECRET_LABELS[key] ?? key}
+                           isSet={env.secrets_set[key]} adding={false} action={secretAction[key] ?? 'keep'}
+                           value={secretValue[key] ?? ''} error={errors[`secret:${key}`]} disabled={off || !optional.includes(key)}
+                           onAction={(a) => { setSecretAction((m) => ({ ...m, [key]: a })); setNotice(''); }}
+                           onValue={(v) => setSecretValue((m) => ({ ...m, [key]: v }))} />
+            )}
             {key === 'SS_SMTP_PASSWORD' && smtpPasswordDropped && (
               <p className="page-hint">Changing the server or user clears the saved password; enter it again.</p>
             )}

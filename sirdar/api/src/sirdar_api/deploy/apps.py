@@ -92,8 +92,7 @@ def check_mail(value, apps_on: list[str]) -> dict:
     if username is not None and (not isinstance(username, str) or not _USER_RE.fullmatch(username)):
         raise AppsError("smtp_username_invalid")
     password = value.get("password") or None
-    if password is not None and (not isinstance(password, str)
-                                 or not envfile.SECRET_VALUE_RE.fullmatch(password)):
+    if password is not None and not envfile.valid_secret("SS_SMTP_PASSWORD", password):
         raise AppsError("smtp_password_invalid")
     sender = value.get("from_address")
     if not isinstance(sender, str) or not _EMAIL_RE.fullmatch(sender.strip()):
