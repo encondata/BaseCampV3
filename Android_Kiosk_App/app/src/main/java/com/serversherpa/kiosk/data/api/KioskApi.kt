@@ -33,6 +33,7 @@ import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
+import com.serversherpa.kiosk.core.model.KioskNotificationsPage
 import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.core.model.PushRegistration
 import com.serversherpa.kiosk.core.model.PushSnooze
@@ -101,6 +102,19 @@ interface KioskApi {
     /** POST /kiosk/push/notifications/{id}/snooze with only the push key: the alert's Snooze button.
      *  401 push_key_invalid, 404 notification_not_found, 409 not_live (read or hidden), 423. */
     suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze
+
+    // ── the app's notifications (the portal inbox under /kiosk; admins only, else 403 not_admin) ──
+
+    /** GET /kiosk/notifications[?cursor=] under the session: one page, newest first. */
+    suspend fun listNotifications(cursor: String? = null): KioskNotificationsPage
+    /** POST /kiosk/notifications/{id}/read (204). 404 notification_not_found, 423. */
+    suspend fun markRead(notificationId: String)
+    /** POST /kiosk/notifications/{id}/unread (204). 404 notification_not_found, 423. */
+    suspend fun markUnread(notificationId: String)
+    /** POST /kiosk/notifications/{id}/snooze: pushed again in 5 minutes. 404, 409 not_live (read or hidden), 423. */
+    suspend fun snooze(notificationId: String): PushSnooze
+    /** DELETE /kiosk/notifications/{id}: hides it from the inbox (204). 404, 423. */
+    suspend fun hide(notificationId: String)
 
     // ── setup & sync ────────────────────────────────────────────────
 

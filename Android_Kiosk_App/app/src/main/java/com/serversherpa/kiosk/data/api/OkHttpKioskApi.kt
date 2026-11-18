@@ -48,6 +48,7 @@ import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
+import com.serversherpa.kiosk.core.model.KioskNotificationsPage
 import com.serversherpa.kiosk.core.model.PersonalIn
 import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.core.model.PushRegistration
@@ -292,6 +293,26 @@ class OkHttpKioskApi(
 
     override suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze =
         parse(pushKeyCall(key, "/kiosk/push/notifications/${q(notificationId)}/snooze") { post(emptyBody) }, PushSnooze.serializer())
+
+    // ── the app's notifications ─────────────────────────────────────
+
+    override suspend fun listNotifications(cursor: String?): KioskNotificationsPage =
+        parse(authed { url(apiUrl("/kiosk/notifications" + (cursor?.let { "?cursor=${q(it)}" } ?: ""))).get() }, KioskNotificationsPage.serializer())
+
+    override suspend fun markRead(notificationId: String) {
+        authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}/read")).post(emptyBody) }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun markUnread(notificationId: String) {
+        authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}/unread")).post(emptyBody) }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun snooze(notificationId: String): PushSnooze =
+        parse(authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}/snooze")).post(emptyBody) }, PushSnooze.serializer())
+
+    override suspend fun hide(notificationId: String) {
+        authed { url(apiUrl("/kiosk/notifications/${q(notificationId)}")).delete() }.use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
 
     /** Never through [authed]: the push key is the only credential, sent to [key]'s own base URL
      *  on a client with no cookie jar (no bearer, no refresh cookie, no refresh). */

@@ -63,6 +63,7 @@ import com.serversherpa.kiosk.data.printer.send
 import com.serversherpa.kiosk.data.printer.transportFor
 import com.serversherpa.kiosk.data.push.FcmTokens
 import com.serversherpa.kiosk.data.push.FirebaseFcmTokens
+import com.serversherpa.kiosk.data.push.PendingOpen
 import com.serversherpa.kiosk.data.push.PushActions
 import com.serversherpa.kiosk.data.push.PushKeyStore
 import com.serversherpa.kiosk.data.push.PushRegistrar
@@ -162,6 +163,8 @@ class AppContainer(
     }
     /** A push alert's Snooze and Mark read buttons (data/push/PushActionReceiver.kt). */
     val pushActions by lazy { PushActions(api, pushKeys, apiBase = { config.apiUrlNow() }) }
+    /** A tapped alert waiting to open Notifications (MainActivity offers it, the shell takes it). */
+    val pendingOpen = PendingOpen()
     val auth = KioskAuth(api, session, identity, scope)
     /** Fingerprint or face sign-in on a personal phone: the offer, Turn on, the card, Forget. */
     val biometric = BiometricSignIn(

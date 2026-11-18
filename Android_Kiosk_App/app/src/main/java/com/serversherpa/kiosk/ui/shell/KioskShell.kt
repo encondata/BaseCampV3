@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +51,7 @@ import com.serversherpa.kiosk.core.devices.RegistrationState
 import com.serversherpa.kiosk.core.features.featureForRoute
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.identity.KioskIdentity
+import com.serversherpa.kiosk.data.push.PendingOpen
 import com.serversherpa.kiosk.nettest.NetTestChip // INTERNET-TEST
 import com.serversherpa.kiosk.nettest.netTestFootValue // INTERNET-TEST
 import com.serversherpa.kiosk.ui.Routes
@@ -58,6 +60,7 @@ import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import com.serversherpa.kiosk.ui.theme.StatusBarIcons
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 private val REG_TONE = mapOf(RegistrationState.OK to ChipTone.GREEN, RegistrationState.SOON to ChipTone.AMBER, RegistrationState.EXPIRED to ChipTone.RED, RegistrationState.NONE to ChipTone.SLATE)
@@ -194,6 +197,28 @@ fun KioskShell(nav: NavHostController, scroll: Boolean = true, content: @Composa
             },
             dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/**
+ * A tapped push alert's one-shot pending open ([PendingOpen], offered by MainActivity): taken
+ * once someone is signed in and past the sign-in page, then Notifications opens on that item
+ * above Home, so Back lands on Home. Signed out it waits, untouched, through sign-in (biometric
+ * offered as always); the Notifications route itself decides whether the person signed in is the
+ * alert's owner. Lives beside the NavHost, outside every route, like SetupClearedRedirect.
+ */
+@Composable
+fun PendingNotificationRedirect(nav: NavHostController, pending: PendingOpen, auth: StateFlow<AuthState>) {
+    val open by pending.pending.collectAsStateWithLifecycle()
+    val state by auth.collectAsStateWithLifecycle()
+    val entry by nav.currentBackStackEntryAsState()
+    val route = entry?.destination?.route
+    val signedIn = (state as? AuthState.Authed)?.mustChangePassword == false
+    val ready = open != null && signedIn && route != null && route != Routes.LOGIN
+    LaunchedEffect(ready) {
+        if (!ready) return@LaunchedEffect
+        val o = pending.take() ?: return@LaunchedEffect
+        nav.navigate(Routes.notifications(o.notificationId, o.ownerPersonId)) { popUpTo(Routes.HOME) }
     }
 }
 

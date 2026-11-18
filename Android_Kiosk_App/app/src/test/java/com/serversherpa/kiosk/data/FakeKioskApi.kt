@@ -106,6 +106,23 @@ open class FakeKioskApi : KioskApi {
         calls += "pushSnooze"; pushActions += notificationId to key; return pushSnoozeResult(notificationId, key)
     }
 
+    // ── the app's notifications (GET/POST/DELETE /kiosk/notifications…) ──
+    // Suspending, so a test can hold a call open. Each call is recorded in `calls` first.
+    var listNotificationsResult: suspend (String?) -> KioskNotificationsPage = { KioskNotificationsPage() }
+    /** The cursor of each list call (null: the first page). */
+    val notificationCursors = ArrayList<String?>()
+    var markReadResult: suspend (String) -> Unit = { }
+    var markUnreadResult: suspend (String) -> Unit = { }
+    var snoozeResult: suspend (String) -> PushSnooze = { PushSnooze(java.time.Instant.now().plusSeconds(300).toString()) }
+    var hideResult: suspend (String) -> Unit = { }
+    override suspend fun listNotifications(cursor: String?): KioskNotificationsPage {
+        calls += "listNotifications"; notificationCursors += cursor; return listNotificationsResult(cursor)
+    }
+    override suspend fun markRead(notificationId: String) { calls += "markRead:$notificationId"; markReadResult(notificationId) }
+    override suspend fun markUnread(notificationId: String) { calls += "markUnread:$notificationId"; markUnreadResult(notificationId) }
+    override suspend fun snooze(notificationId: String): PushSnooze { calls += "snooze:$notificationId"; return snoozeResult(notificationId) }
+    override suspend fun hide(notificationId: String) { calls += "hide:$notificationId"; hideResult(notificationId) }
+
 
     // ── rolodex ─────────────────────────────────────────────────────
     // Suspending, so a test can hold a call open (a double tap while saving). Each call is

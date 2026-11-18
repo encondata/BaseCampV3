@@ -74,8 +74,9 @@ class FeaturesTest {
     @Test fun anAdminsFullHomeHasTheRolodexBeforeSettings() {
         val ids = homeFeatures(null, isAdmin = true).map { it.id }
         assertTrue(FeatureId.ROLODEX in ids)
-        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 1, ids.indexOf(FeatureId.ROLODEX))
-        assertEquals(FEATURES.size + 1, ids.size)
+        // Rolodex, then Notifications, then Settings.
+        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 2, ids.indexOf(FeatureId.ROLODEX))
+        assertEquals(FEATURES.size + 2, ids.size)
         assertEquals("rolodex", ROLODEX_FEATURE.route)
         assertEquals("Rolodex", ROLODEX_FEATURE.title)
         // Ruling S16: the same words as the iOS tile.
@@ -96,5 +97,31 @@ class FeaturesTest {
     /** The parity lists stay as they were: the Rolodex is a tile outside FEATURES. */
     @Test fun theRolodexStaysOutOfFeatures() {
         assertFalse(FEATURES.any { it.id == FeatureId.ROLODEX })
+    }
+
+    // ── Notifications: admins only, after the Rolodex and before Settings (spec decision 11) ──
+
+    @Test fun admin_home_has_notifications_before_settings() {
+        val ids = homeFeatures(null, isAdmin = true).map { it.id }
+        assertTrue(FeatureId.NOTIFICATIONS in ids)
+        assertEquals(ids.indexOf(FeatureId.ROLODEX) + 1, ids.indexOf(FeatureId.NOTIFICATIONS))
+        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 1, ids.indexOf(FeatureId.NOTIFICATIONS))
+        assertEquals("notifications", NOTIFICATIONS_FEATURE.route)
+        assertEquals("Notifications", NOTIFICATIONS_FEATURE.title)
+        // It is just the inbox: no move or setup step.
+        assertTrue(featureAvailable(NOTIFICATIONS_FEATURE, SetupState.INCOMPLETE))
+        assertFalse(NOTIFICATIONS_FEATURE.placeholder)
+        assertFalse(FEATURES.any { it.id == FeatureId.NOTIFICATIONS })
+    }
+
+    @Test fun non_admin_home_has_no_notifications() {
+        assertFalse(FeatureId.NOTIFICATIONS in homeFeatures(null, isAdmin = false).map { it.id })
+        assertFalse(FeatureId.NOTIFICATIONS in homeFeatures(null).map { it.id })
+    }
+
+    @Test fun timeclock_station_home_unchanged() {
+        val station = listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.SETTINGS)
+        assertEquals(station, homeFeatures("timeclock", isAdmin = true).map { it.id })
+        assertEquals(station, homeFeatures("timeclock", isAdmin = false).map { it.id })
     }
 }

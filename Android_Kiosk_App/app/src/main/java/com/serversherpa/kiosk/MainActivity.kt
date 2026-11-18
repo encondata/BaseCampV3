@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk
 
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
@@ -28,11 +29,22 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A push alert's tap (cold start). A recreated activity gets its old intent back: that
+        // tap was already handled.
+        if (savedInstanceState == null) container.pendingOpen.offer(intent)
         enableEdgeToEdge()
         uiMode = resources.configuration.uiMode
         setContent {
             CompositionLocalProvider(LocalAppContainer provides container, LocalSledScanGuard provides container.sledScanGuard) { KioskApp() }
         }
+    }
+
+    /** singleTask: a push alert's tap while the app is running arrives here. The shell opens
+     *  Notifications from the pending open once someone is signed in. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        container.pendingOpen.offer(intent)
     }
 
     override fun onStart() { super.onStart(); if (container.hasDataWedge) container.dataWedgeReceiver.register(this) }
