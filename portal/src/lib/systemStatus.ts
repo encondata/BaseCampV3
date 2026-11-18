@@ -13,7 +13,7 @@ export interface SystemStatus {
   password_reset_ttl_minutes: number;
   password_min_length: number;
   /** Which optional apps this environment runs (SS_APPS). Absent from an older API. */
-  apps?: { wiki: boolean; kiosk: boolean; learn: boolean };
+  apps?: { wiki: boolean; kiosk: boolean; learn: boolean; devices?: boolean };
 }
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {
@@ -21,7 +21,7 @@ export const DEFAULT_SYSTEM_STATUS: SystemStatus = {
   email_enabled: false, password_reset_ttl_minutes: 15, password_min_length: 8,
 };
 
-export type PortalApp = 'wiki' | 'kiosk' | 'learn';
+export type PortalApp = 'wiki' | 'kiosk' | 'learn' | 'devices';
 
 /** Whether an optional app runs. Only an explicit false is off: until the
  *  status loads (or from an older API) every app counts as on, so links

@@ -115,7 +115,7 @@ def _status_from(cfg: dict, background: BackgroundStatusOut | None = None) -> Sy
         password_reset_ttl_minutes=settings.password_reset_ttl_minutes,
         password_min_length=settings.password_min_length,
         background=background,
-        apps=AppsStatusOut(**{app: settings.app_on(app) for app in ("wiki", "kiosk", "learn")}))
+        apps=AppsStatusOut(**{app: settings.app_on(app) for app in ("wiki", "kiosk", "learn", "devices")}))
 
 
 async def _background(db) -> BackgroundStatusOut | None:

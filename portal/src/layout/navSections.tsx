@@ -12,12 +12,12 @@
 import { type ReactNode } from 'react';
 
 import { ADMIN_RANK } from '../lib/access';
-import { kioskUrl, wikiUrl } from '../lib/appLinks';
+import { devicesUrl, kioskUrl, wikiUrl } from '../lib/appLinks';
 
 /** `href` marks a link to another app (the kiosk, the wiki): it opens in a
  *  new tab instead of routing; `to` then only serves as the item key. An
  *  empty `resource` means every signed-in user sees the item. */
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; learningManager?: boolean; end?: boolean; href?: string; app?: 'wiki' | 'kiosk' }
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; learningManager?: boolean; end?: boolean; href?: string; app?: 'wiki' | 'kiosk' | 'devices' }
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -856,6 +856,20 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" />
             <path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20" />
+          </svg>
+        ),
+      },
+      {
+        to: 'app:devices',
+        href: devicesUrl(),
+        label: 'Devices',
+        resource: 'app_distribution',
+        app: 'devices',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="7" y="2.5" width="10" height="19" rx="2" />
+            <path d="M11 18.5h2" />
           </svg>
         ),
       },

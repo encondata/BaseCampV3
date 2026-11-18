@@ -2736,6 +2736,7 @@ class AppsStatusOut(BaseModel):
     wiki: bool = True
     kiosk: bool = True
     learn: bool = True
+    devices: bool = True
 
 
 class SystemStatusOut(BaseModel):

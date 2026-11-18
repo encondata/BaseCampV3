@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { appOrigin, KIOSK_DEV_PORT, WIKI_DEV_PORT } from './appLinks';
+import { appOrigin, devicesUrl, DEVICES_DEV_PORT, KIOSK_DEV_PORT, WIKI_DEV_PORT } from './appLinks';
 
 describe('appOrigin', () => {
   it('swaps the first hostname label on a real host', () => {
@@ -20,5 +20,14 @@ describe('appOrigin', () => {
     const loc = { hostname: 'portal.dev.serversherpa.com', protocol: 'https:' };
     expect(appOrigin('wiki', WIKI_DEV_PORT, loc, 'https://docs.example.com/')).toBe('https://docs.example.com');
     expect(appOrigin('wiki', WIKI_DEV_PORT, loc, '   ')).toBe('https://wiki.dev.serversherpa.com');
+  });
+});
+
+describe('devicesUrl', () => {
+  it('uses the sibling devices host, or port 5180 on localhost', () => {
+    expect(DEVICES_DEV_PORT).toBe(5180);
+    expect(devicesUrl({ hostname: 'portal.dev.serversherpa.com', protocol: 'https:' }))
+      .toBe('https://devices.dev.serversherpa.com');
+    expect(devicesUrl({ hostname: 'localhost', protocol: 'http:' })).toBe('http://localhost:5180');
   });
 });
