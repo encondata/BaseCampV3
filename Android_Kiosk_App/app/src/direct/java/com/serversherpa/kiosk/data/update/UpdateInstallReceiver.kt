@@ -4,7 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
-import android.os.Build
+import androidx.core.content.IntentCompat
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -39,14 +39,17 @@ object InstallEvents {
         if (!intent.hasExtra(PackageInstaller.EXTRA_STATUS)) return
         when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                val confirm = confirmIntent(intent) ?: return
+                val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java) ?: return
                 pendingConfirm = confirm
                 if (foreground) {
                     val now = takePendingConfirm() ?: return
                     try {
                         context.startActivity(now.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     } catch (e: RuntimeException) {
-                        pendingConfirm = now   // a background start was refused: open it on return
+                        // Nothing could open it: keep it for the return to the front. (A background start the
+                        // system refuses doesn't throw; it's dropped silently, and the return-to-front path
+                        // recovers by ending the install with a notice instead of staying in Installing.)
+                        pendingConfirm = now
                     }
                 }
             }
@@ -58,14 +61,6 @@ object InstallEvents {
             }
         }
     }
-
-    private fun confirmIntent(intent: Intent): Intent? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(Intent.EXTRA_INTENT)
-        }
 
     internal fun resetForTest() {
         foreground = false

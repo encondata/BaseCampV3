@@ -103,6 +103,16 @@ class ApkDownloaderTest {
         assertTrue(dir.list().orEmpty().isEmpty())
     }
 
+    @Test fun aRedirectIsRefusedNotFollowed() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "http://evil.test:${server.port}/d/abc"))
+        server.enqueue(MockResponse().setBody("not ours"))
+        try { downloader.download(offer(), base) {}; fail() } catch (e: UpdateError) {
+            assertEquals("The download failed (HTTP 302).", e.message)
+        }
+        assertEquals(1, server.requestCount)
+        assertTrue(dir.list().orEmpty().isEmpty())
+    }
+
     @Test fun cancelingDeletesThePartFile() = runBlocking {
         server.enqueue(MockResponse().setBody(Buffer().write(bytes(64 * 1024))).throttleBody(1024, 50, TimeUnit.MILLISECONDS))
         val started = CompletableDeferred<Unit>()

@@ -25,7 +25,12 @@ class UpdateError(message: String) : Exception(message)
  * Authorization header and no cookies go with it, and it must point at the Devices site itself.
  */
 class ApkDownloader(client: OkHttpClient, private val dir: File) {
-    private val http = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+    // No redirects: a 3xx could lead off the Devices site, so it fails like any other non-2xx.
+    private val http = client.newBuilder()
+        .cookieJar(CookieJar.NO_COOKIES)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
     /** Streams offer.installUrl to dir/<build>.apk (via a .part file). Refuses a URL whose scheme/host/port differ from devicesBase. */
     suspend fun download(offer: UpdateOffer, devicesBase: String, onProgress: (Float?) -> Unit): File {

@@ -71,6 +71,15 @@ class UpdateCheckTest {
         )
     }
 
+    @Test fun aRefusedSignInMatchesTheIosCopy() {
+        for (status in listOf(401, 403)) {
+            assertEquals(
+                "The Devices site couldn't confirm this sign-in. Try again later.",
+                checkFailureMessage(ApiError(status, "x"), "devices.dev.serversherpa.com"),
+            )
+        }
+    }
+
     @Test fun recheckAfterAnHour() {
         assertTrue(shouldRecheck(null, 5L))
         assertFalse(shouldRecheck(1_000L, 1_000L + 3_599_999L))

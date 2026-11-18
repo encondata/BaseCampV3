@@ -57,7 +57,9 @@ fun devicesUrlFor(apiUrl: String): String? {
 fun shouldRecheck(lastCheckMillis: Long?, nowMillis: Long, intervalMillis: Long = RECHECK_INTERVAL_MS): Boolean =
     lastCheckMillis == null || nowMillis - lastCheckMillis >= intervalMillis
 
-/** The Settings line for a failed check. */
-fun checkFailureMessage(e: ApiError, devicesHost: String): String =
-    if (e.isNetwork) "Couldn't reach $devicesHost. Try again later."
-    else "The Devices site answered ${e.status}. Try again later."
+/** The Settings line for a failed check; a refused sign-in reads as in the iOS app. */
+fun checkFailureMessage(e: ApiError, devicesHost: String): String = when {
+    e.isNetwork -> "Couldn't reach $devicesHost. Try again later."
+    e.status == 401 || e.status == 403 -> "The Devices site couldn't confirm this sign-in. Try again later."
+    else -> "The Devices site answered ${e.status}. Try again later."
+}
