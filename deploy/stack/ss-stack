@@ -97,6 +97,20 @@ check_apps() {
   fi
 }
 
+# The devices app needs its two secrets, but only when it runs: an
+# environment with it off (every Sirdar-written .env today) has none.
+check_devices() {
+  local key value missing=()
+  app_on devices || return 0
+  for key in SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY; do
+    value=$(env_value "$key")
+    if [[ -z $value || $value == CHANGEME ]]; then missing+=("$key"); fi
+  done
+  if (( ${#missing[@]} )); then
+    die "The devices app is on (STACK_APPS lists it, or is unset): set ${missing[*]} in $env_file, or leave devices out of STACK_APPS."
+  fi
+}
+
 # Mail goes to Mailpit unless the .env names an SMTP server.
 check_mail() {
   if ! app_on mailpit && [[ -z $(env_value SS_SMTP_HOST) ]]; then
@@ -353,6 +367,7 @@ case $cmd in
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
     check_apps
+    check_devices
     check_mail
     if lan_db; then write_hba; fi
     ensure_network

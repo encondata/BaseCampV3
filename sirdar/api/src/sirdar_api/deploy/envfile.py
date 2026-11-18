@@ -11,10 +11,14 @@ from dataclasses import dataclass, field
 
 ENV_ROOT = "/opt/serversherpa"
 
-SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "mailpit")
-PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")
+# devices (deploy/stack's devices app) is known here so its port reaches the
+# .env, but Sirdar never turns it on yet (apps.NOT_RUN): its secrets
+# (SS_DEVICES_SERVICE_TOKEN, DEVICES_SECRET_KEY) stay out of the .env.
+SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "devices",
+            "mailpit")
+PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "devices")
 DEFAULT_PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "learn": 8092,
-                 "spaces": 9000, "status": 8095, "mailpit": 8025}
+                 "spaces": 9000, "status": 8095, "devices": 8093, "mailpit": 8025}
 PORT_KEYS = {s: f"STACK_{s.upper()}_PORT" for s in SERVICES}
 
 REQUIRED_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",

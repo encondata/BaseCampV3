@@ -14,8 +14,10 @@ x-devices-env: &devices-env
   DEVICES_DATABASE_URL: ${DEVICES_DATABASE_URL:-postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa_devices}
   DEVICES_DATABASE_SSL: ${SS_DATABASE_SSL:-disable}
   DEVICES_MAIN_API_URL: http://api:8000
-  DEVICES_SERVICE_TOKEN: ${SS_DEVICES_SERVICE_TOKEN:?set SS_DEVICES_SERVICE_TOKEN}
-  DEVICES_SECRET_KEY: ${DEVICES_SECRET_KEY:?set DEVICES_SECRET_KEY}
+  # Optional here so the stack can be stopped and listed with the app off;
+  # ss-stack up refuses to start it without them (and so does the service).
+  DEVICES_SERVICE_TOKEN: ${SS_DEVICES_SERVICE_TOKEN:-}
+  DEVICES_SECRET_KEY: ${DEVICES_SECRET_KEY:-}
   DEVICES_PUBLIC_URL: https://devices.${STACK_DOMAIN:?set STACK_DOMAIN}
   # the stack that owns iPhone installs, when this one has no Apple settings
   DEVICES_IOS_OWNER_URL: ${DEVICES_IOS_OWNER_URL:-}

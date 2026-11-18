@@ -149,7 +149,9 @@ async def test_an_environment_with_nothing_chosen_keeps_every_app_and_mailpit(
     body = (await client.post(URL, headers=h, json=NEW)).json()
     assert body["apps"] == ["wiki", "kiosk", "learn", "status", "mailpit"]
     assert body["mail"]["mode"] == "mailpit" and body["mail"]["password_set"] is False
-    assert all(s["hostname"] for s in body["services"] if s["service"] != "mailpit")
+    # devices (deploy/stack's, never run by Sirdar yet) has no name either
+    assert all(s["hostname"] for s in body["services"]
+               if s["service"] not in ("mailpit", "devices"))
     audit = (await db.scalars(select(AuditLog.changes).where(
         AuditLog.action == "deploy.environment_create"))).one()
     assert (audit["apps"], audit["mail"], audit["secrets"]) == (
@@ -200,7 +202,8 @@ async def test_a_new_base_domain_names_only_the_running_apps(client, db, target)
     assert names == {"api": "api.qa2.serversherpa.com", "portal": "portal.qa2.serversherpa.com",
                      "home": "qa2.serversherpa.com",
                      "kiosk": "kiosk.qa2.serversherpa.com", "wiki": None, "learn": None,
-                     "spaces": "spaces.qa2.serversherpa.com", "status": None, "mailpit": None}
+                     "spaces": "spaces.qa2.serversherpa.com", "status": None, "devices": None,
+                     "mailpit": None}
 
 
 async def test_production_with_a_first_admin_needs_smtp(client, db, target):
@@ -454,4 +457,5 @@ async def test_adopt_without_a_learn_port_skips_another_environments(client, db,
     await make_environment(db, name="other", host=target.host)     # its learn is on 8092
     resp = await _adopt(client, db, target, STACK_LEARN_PORT=None)
     assert resp.status_code == 201, resp.text
-    assert _ports(resp.json())["learn"] == 8093
+    # 8093 is the other environment's devices port
+    assert _ports(resp.json())["learn"] == 8094

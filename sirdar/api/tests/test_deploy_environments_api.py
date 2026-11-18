@@ -71,6 +71,7 @@ async def test_environment_defaults(client, db):
                      {"service": "learn", "port": 8092, "public": True},
                      {"service": "spaces", "port": 9000, "public": True},
                      {"service": "status", "port": 8095, "public": True},
+                     {"service": "devices", "port": 8093, "public": True},
                      {"service": "mailpit", "port": 8025, "public": False}],
         "domain_suffix": "serversherpa.com", "env_root": "/opt/serversherpa", "git_ref": "main",
         "bind_ip": "0.0.0.0", "keep_dumps": 5, "spaces_bucket": "serversherpa",

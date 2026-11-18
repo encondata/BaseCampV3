@@ -40,11 +40,16 @@ exit 0
 """
 
 
+DEVICES_SECRETS = "SS_DEVICES_SERVICE_TOKEN=0123abcd\nDEVICES_SECRET_KEY=0123abcd\n"
+
+
 @pytest.fixture
 def env_dir(tmp_path: Path) -> Path:
     d = tmp_path / "uat"
     d.mkdir()
     text = ENV_EXAMPLE.read_text().replace("=CHANGEME", "=0123abcd")
+    # every app runs (no STACK_APPS), so the devices app's secrets too
+    text += DEVICES_SECRETS
     (d / ".env").write_text(text)
     return d.resolve()   # ss-stack logs the physical path (macOS /private/var)
 
@@ -834,3 +839,45 @@ def test_the_devices_database_with_a_ca_leaves_no_ca_file(env_dir: Path, fake: d
     assert "-e PGSSLMODE=verify-full" in create
     assert Path(fake["DOCKER_LOG"] + ".sql").read_text() == DEVICES_SQL
     assert list(tmp.iterdir()) == []
+
+
+def _without_devices_secrets(env_dir: Path, extra: str = "") -> None:
+    env_file = env_dir / ".env"
+    env_file.write_text(env_file.read_text().replace(DEVICES_SECRETS, "") + extra)
+
+
+@pytest.mark.parametrize("extra, missing", [
+    ("", "SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY"),
+    ("SS_DEVICES_SERVICE_TOKEN=0123abcd\n", "DEVICES_SECRET_KEY"),
+    ("DEVICES_SECRET_KEY=0123abcd\nSS_DEVICES_SERVICE_TOKEN=\n", "SS_DEVICES_SERVICE_TOKEN"),
+    ("STACK_APPS=wiki,devices,mailpit\nDEVICES_SECRET_KEY=0123abcd\n", "SS_DEVICES_SERVICE_TOKEN"),
+])
+def test_devices_on_needs_its_secrets(env_dir: Path, fake: dict[str, str], extra: str,
+                                      missing: str) -> None:
+    _without_devices_secrets(env_dir, extra)
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode != 0
+    assert (f"The devices app is on (STACK_APPS lists it, or is unset): set {missing} in "
+            f"{env_dir}/.env, or leave devices out of STACK_APPS.") in out.stderr
+    assert calls(fake) == []
+
+
+def test_devices_secrets_left_at_changeme_are_refused(env_dir: Path, fake: dict[str, str]) -> None:
+    _without_devices_secrets(env_dir, "SS_DEVICES_SERVICE_TOKEN=CHANGEME\nDEVICES_SECRET_KEY=x\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode != 0 and "SS_DEVICES_SERVICE_TOKEN" in out.stderr
+    assert calls(fake) == []
+
+
+@pytest.mark.parametrize("command", ["up", "down", "ps"])
+def test_devices_off_needs_no_devices_secrets(env_dir: Path, fake: dict[str, str],
+                                              command: str) -> None:
+    """An environment without the devices app (every Sirdar-written .env
+    today) carries no devices secrets: up stops the devices stack, and down
+    and ps walk it, all without them."""
+    _without_devices_secrets(env_dir, SMTP + "STACK_APPS=wiki,kiosk,learn,status,mailpit\n")
+    out = run(fake, command, str(env_dir))
+    assert out.returncode == 0, out.stderr
+    verb = {"up": "down", "down": "down", "ps": "ps"}[command]
+    assert dc(env_dir, "devices", verb) in calls(fake)
+    assert dc(env_dir, "devices", WAIT) not in calls(fake)

@@ -195,3 +195,24 @@ async def test_startup_survives_a_bucket_failure(monkeypatch, caplog):
         pass
     assert "ensure_bucket failed: ValueError" in caplog.text
     assert "secret-host" not in caplog.text
+
+
+async def test_startup_never_waits_long_for_the_bucket(monkeypatch, caplog):
+    """A blackholed storage endpoint mustn't hold startup past the
+    healthcheck's window: the API starts, and says so."""
+    import asyncio
+    import time
+
+    from serversherpa_devices.api import app as app_module
+    from serversherpa_devices.services import storage
+
+    async def hangs() -> None:
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(storage, "ensure_bucket", hangs)
+    monkeypatch.setattr(app_module, "ENSURE_BUCKET_SECONDS", 0.05)
+    app = app_module.create_app()
+    started = time.monotonic()
+    async with app.router.lifespan_context(app):
+        assert time.monotonic() - started < 5
+    assert "ensure_bucket failed: TimeoutError" in caplog.text

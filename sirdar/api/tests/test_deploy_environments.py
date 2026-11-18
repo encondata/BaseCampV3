@@ -58,6 +58,8 @@ async def test_create_new_generates_everything(db, target):
         ("learn", "127.0.0.1", 8092, "learn.qa.serversherpa.com", False),
         ("spaces", "127.0.0.1", 9000, "spaces.qa.serversherpa.com", False),
         ("status", "127.0.0.1", 8095, "status.qa.serversherpa.com", False),
+        # deploy/stack's devices app: a port, and no public name while off
+        ("devices", "127.0.0.1", 8093, None, False),
         ("mailpit", "127.0.0.1", 8025, None, False)]
     stored = await _secrets(db, env.id)
     assert set(stored) == set(envfile.REQUIRED_SECRETS)
@@ -160,10 +162,12 @@ async def test_adopted_record_renders_the_same_env(db, target):
         keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket, log_level=env.log_level,
         secrets=await _secrets(db, env.id))))
     # SS_SMTP_PASSWORD (phase 8c) and SS_KIOSK_SIGNING_DIGESTS postdate this
-    # .env: unset, they render empty
+    # .env: unset, they render empty; so does the devices port (a late
+    # service: its default, free on this host)
     remote = envfile.parse_env(remote_env_text(SS_ANTHROPIC_API_KEY="sk-ant-api03-x",
                                                STACK_API_PORT="8100", SS_SMTP_PASSWORD="",
-                                               SS_KIOSK_SIGNING_DIGESTS=""))
+                                               SS_KIOSK_SIGNING_DIGESTS="",
+                                               STACK_DEVICES_PORT="8093"))
     assert rendered == {k: v for k, v in remote.items() if k in envfile.KNOWN_KEYS}
 
 

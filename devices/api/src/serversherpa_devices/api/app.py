@@ -2,6 +2,7 @@
 downloads get their own top-level prefixes (/enroll, /ota, /dl). The built
 SPA (when DEVICES_STATIC_DIR is set) is served from / — see _mount_spa."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,6 +21,11 @@ from serversherpa_devices.services import storage
 
 log = logging.getLogger(__name__)
 
+# How long startup waits for the bucket check: well inside the stack's
+# healthcheck window (a blackholed endpoint would otherwise hold it for
+# botocore's connect timeouts and retries).
+ENSURE_BUCKET_SECONDS = 15
+
 # Paths the SPA never answers: a miss under these is a 404, not index.html.
 _NOT_SPA = ("api", "enroll", "ota", "dl")
 
@@ -31,8 +37,8 @@ async def _lifespan(app: FastAPI):
     # ensure_bucket logs its own storage errors; anything else is logged by
     # class only (messages can carry the endpoint URL).
     try:
-        await storage.ensure_bucket()
-    except Exception as exc:  # noqa: BLE001
+        await asyncio.wait_for(storage.ensure_bucket(), ENSURE_BUCKET_SECONDS)
+    except Exception as exc:  # noqa: BLE001  (TimeoutError included)
         log.error("storage: ensure_bucket failed: %s", type(exc).__name__)
     yield
     await dispose_engine()

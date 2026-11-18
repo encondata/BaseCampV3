@@ -21,12 +21,17 @@ The `devices` stack (crew app installs, `devices/`) has its own database,
 creates it when it is missing (before starting the stack), and the service
 migrates it on start. Its bucket, `serversherpa-devices`, sits beside the
 main one in SeaweedFS or Spaces; the service creates it on start. Its keys
-in the `.env`: `SS_DEVICES_SERVICE_TOKEN` (hex, shared with the API),
-`DEVICES_SECRET_KEY` (Fernet: encrypts the saved Apple settings and signs
-install links; a new key makes saved Apple settings unreadable),
-`STACK_DEVICES_PORT` (8093), and optionally `DEVICES_IOS_OWNER_URL` (the
-devices site of the stack that owns iPhone installs, for a stack with no
-Apple settings).
+in the `.env` (commented out in `env.example`): `SS_DEVICES_SERVICE_TOKEN`
+(hex, shared with the API), `DEVICES_SECRET_KEY` (Fernet: encrypts the saved
+Apple settings and signs install links; a new key makes saved Apple settings
+unreadable), and optionally `DEVICES_IOS_OWNER_URL` (the devices site of the
+stack that owns iPhone installs, for a stack with no Apple settings);
+`STACK_DEVICES_PORT` (8093) is its port. The two secrets are needed only
+while the app runs: `ss-stack up` refuses to start it without them, and with
+it off (`STACK_APPS` without `devices`, as Sirdar writes it today) a `.env`
+can leave them out; the API's internal devices endpoints then stay off.
+The devices database isn't in `ss-stack dump` / `restore` (they cover the
+main database only).
 
 ## DigitalOcean droplets (Sirdar phase 7)
 
@@ -40,7 +45,10 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
   and objects live in DigitalOcean Spaces (mailpit still runs from the
   `storage` stack). The devices database is created on the same cluster
   through a one-off client, and the `.env` needs `DEVICES_DATABASE_URL`
-  (`serversherpa_devices` there, `postgresql+asyncpg://`);
+  (`serversherpa_devices` there, `postgresql+asyncpg://`; a LAN Blue/Green
+  app VM too, on its data VM). The devices service encrypts that connection
+  when `SS_DATABASE_SSL=require` but doesn't check the server against
+  `SS_DATABASE_CA_B64` (the main API does);
 - dumps and restores through a one-off `postgres:16-alpine` container
   against the managed database (`PGSSLMODE=require`, the password from
   `POSTGRES_PASSWORD`, passed through the environment and never on a
@@ -122,8 +130,11 @@ LAN environment is `uat`.
    - `STACK_IMAGE_TAG` = `git -C /opt/serversherpa/uat/repo rev-parse --short HEAD`
    - `STACK_PROXY_IP` = NPM's LAN IP
    - every `CHANGEME`: hex values from `openssl rand -hex 32`; the
-     Fernet keys (go in `SS_TOTP_ENCRYPTION_KEY` and `DEVICES_SECRET_KEY`) from
+     Fernet key (goes in `SS_TOTP_ENCRYPTION_KEY`) from
      `python3 -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'`.
+     With the devices app on (no `STACK_APPS`, or one that lists it),
+     uncomment and set `SS_DEVICES_SERVICE_TOKEN` (hex) and
+     `DEVICES_SECRET_KEY` (a Fernet key) the same way.
      To sign in with existing accounts later, `SS_PASSWORD_PEPPER` and
      `SS_TOTP_ENCRYPTION_KEY` must instead equal the values of the
      database you seed from.

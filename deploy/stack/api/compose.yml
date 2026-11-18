@@ -46,8 +46,9 @@ x-ss-env: &ss-env
   SS_PASSWORD_RESET_CONFIRM_RATE_LIMIT: ${SS_PASSWORD_RESET_CONFIRM_RATE_LIMIT:-20}
   SS_WIKI_SERVICE_TOKEN: ${SS_WIKI_SERVICE_TOKEN:?set SS_WIKI_SERVICE_TOKEN}
   SS_WIKI_RENDER_URL: http://wiki:8080
-  # the devices service sends it as X-Devices-Service-Token (its DEVICES_SERVICE_TOKEN)
-  SS_DEVICES_SERVICE_TOKEN: ${SS_DEVICES_SERVICE_TOKEN:?set SS_DEVICES_SERVICE_TOKEN}
+  # the devices service sends it as X-Devices-Service-Token (its DEVICES_SERVICE_TOKEN);
+  # empty (the devices app off): the API's internal devices endpoints answer 503
+  SS_DEVICES_SERVICE_TOKEN: ${SS_DEVICES_SERVICE_TOKEN:-}
   SS_ANTHROPIC_API_KEY: ${SS_ANTHROPIC_API_KEY:-}
   SS_DB_TESTING_PASSWORD: ${SS_DB_TESTING_PASSWORD:-}
   # the optional apps that run (the portal hides links to the others); empty: every app

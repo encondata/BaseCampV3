@@ -223,9 +223,17 @@ def test_env_example_secrets_are_placeholders() -> None:
     lines = dict(line.split("=", 1) for line in ENV_EXAMPLE.read_text().splitlines()
                  if line and not line.startswith("#"))
     for key in ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
-                "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN",
-                "SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY"):
+                "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN"):
         assert lines[key] == "CHANGEME", key
+
+
+def test_env_example_leaves_the_devices_secrets_commented() -> None:
+    """Needed only when the devices app runs (ss-stack checks); a .env
+    without them (Sirdar's, an existing one) keeps working with it off."""
+    text = ENV_EXAMPLE.read_text().splitlines()
+    for key in ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY", "DEVICES_IOS_OWNER_URL"):
+        assert f"# {key}=" in text, key
+        assert not any(line.startswith(f"{key}=") for line in text), key
 
 
 def test_storage_runs_seaweedfs_and_mailpit_pinned() -> None:
@@ -385,12 +393,24 @@ def test_devices_environment_points_at_the_stack() -> None:
     assert env["FORWARDED_ALLOW_IPS"] == PROXY_IP
 
 
-def test_devices_and_the_api_share_the_service_token_and_storage() -> None:
-    dev = rendered("devices")["services"]["devices"]["environment"]
-    api = rendered("api")["services"]["api"]["environment"]
+def _render_with(tmp_path, stack: str, extra: str) -> dict[str, Any]:
+    env_file = tmp_path / f"{stack}.env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + extra)
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f",
+         str(STACK_DIR / stack / "compose.yml"), "config", "--format", "json"],
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_devices_and_the_api_share_the_service_token_and_storage(tmp_path) -> None:
+    extra = "SS_DEVICES_SERVICE_TOKEN=0123token\nDEVICES_SECRET_KEY=fernet-key\n"
+    dev = _render_with(tmp_path, "devices", extra)["services"]["devices"]["environment"]
+    api = _render_with(tmp_path, "api", extra)["services"]["api"]["environment"]
     sw = rendered("storage")["services"]["seaweedfs"]["environment"]
-    assert dev["DEVICES_SERVICE_TOKEN"] == api["SS_DEVICES_SERVICE_TOKEN"] == "CHANGEME"
-    assert dev["DEVICES_SECRET_KEY"] == "CHANGEME"
+    assert dev["DEVICES_SERVICE_TOKEN"] == api["SS_DEVICES_SERVICE_TOKEN"] == "0123token"
+    assert dev["DEVICES_SECRET_KEY"] == "fernet-key"
     assert dev["DEVICES_SPACES_ACCESS_KEY"] == sw["AWS_ACCESS_KEY_ID"] == "serversherpa"
     assert dev["DEVICES_SPACES_SECRET_KEY"] == sw["AWS_SECRET_ACCESS_KEY"] == "CHANGEME"
 
@@ -417,13 +437,18 @@ def test_devices_ios_owner_comes_from_the_env_file(tmp_path) -> None:
     assert env["DEVICES_IOS_OWNER_URL"] == "https://devices.serversherpa.com"
 
 
-@pytest.mark.parametrize("stack, key", [
-    ("devices", "SS_DEVICES_SERVICE_TOKEN"),
-    ("devices", "DEVICES_SECRET_KEY"),
-    ("devices", "STACK_PROXY_IP"),
-    ("api", "SS_DEVICES_SERVICE_TOKEN"),
-])
-def test_devices_secrets_are_required(tmp_path, stack: str, key: str) -> None:
+def test_the_devices_secrets_may_be_absent() -> None:
+    """ss-stack requires them only when the devices app runs; without them
+    the main API's internal devices endpoints stay off (an empty token) and
+    the devices stack still renders (to stop it)."""
+    api = rendered("api")["services"]["api"]["environment"]
+    dev = rendered("devices")["services"]["devices"]["environment"]
+    assert api["SS_DEVICES_SERVICE_TOKEN"] == ""
+    assert (dev["DEVICES_SERVICE_TOKEN"], dev["DEVICES_SECRET_KEY"]) == ("", "")
+
+
+@pytest.mark.parametrize("stack, key", [("devices", "STACK_PROXY_IP")])
+def test_devices_settings_are_required(tmp_path, stack: str, key: str) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("\n".join(line for line in ENV_EXAMPLE.read_text().splitlines()
                                   if not line.startswith(f"{key}=")) + "\n")
