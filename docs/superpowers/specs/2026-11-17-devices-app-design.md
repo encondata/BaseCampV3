@@ -226,7 +226,16 @@ added once before it can install or update from the site.
 **Missing App IDs** *(my call)*: when the first IPA for a new bundle ID is
 uploaded, the worker registers that bundle ID with Apple if it is missing (no
 extra capabilities). An IPA whose entitlements need a capability the App ID
-lacks is rejected at upload with the capability named.
+lacks is caught at signing, not at upload (ruling R19: checking at upload
+would need rcodesign in the API process). The worker compares the binary's
+entitlement keys with the Ad Hoc profile's and fails that version's
+re-signing for good, and the iPhone card says "This app needs
+&lt;entitlement&gt;, which its App ID doesn't have in Apple's developer site.
+Turn it on there, then upload the app again." Keys the worker sets itself
+(application-identifier, team-identifier, get-task-allow) and the App Store
+`beta-reports-active` marker never fail it. The failure isn't retried; the
+next upload of that app makes a fresh profile first, so a capability turned
+on meanwhile is in it.
 
 ### Android
 
