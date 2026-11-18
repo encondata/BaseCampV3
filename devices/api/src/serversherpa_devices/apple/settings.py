@@ -4,7 +4,7 @@ distribution certificate, and the unsealed credentials the worker uses."""
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from cryptography import x509
@@ -69,9 +69,10 @@ class AppleCredentials:
     team_id: str
     issuer_id: str
     key_id: str
-    p8: bytes
-    p12: bytes
-    p12_password: str
+    # Never in a repr, so a log line or an assertion diff can't print them.
+    p8: bytes = field(repr=False)
+    p12: bytes = field(repr=False)
+    p12_password: str = field(repr=False)
     asc_certificate_id: str
 
     def client(self, *, http: httpx.AsyncClient | None = None) -> AscClient:

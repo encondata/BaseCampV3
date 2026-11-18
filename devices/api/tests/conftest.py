@@ -94,6 +94,7 @@ def _prepare_environment() -> None:
     os.environ["DEVICES_STATIC_DIR"] = ""
     os.environ["DEVICES_RCODESIGN_PATH"] = "rcodesign"
     os.environ["DEVICES_AUTHORIZE_CACHE_SECONDS"] = "60"
+    os.environ["DEVICES_MAX_REQUEST_BODY_BYTES"] = "1048576"
 
     from serversherpa_devices.config import get_settings
     get_settings.cache_clear()

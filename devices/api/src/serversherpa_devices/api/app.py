@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 
+from serversherpa_devices.api.body_limit import BodyLimitMiddleware
 from serversherpa_devices.api.routes import apple, apps, uploads
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.db.engine import dispose_engine, get_sessionmaker
@@ -75,6 +76,8 @@ def create_app() -> FastAPI:
     )
 
     app.add_exception_handler(RequestValidationError, _validation_error)
+    # Before routing, so before sign-in: form bodies are read before route deps run.
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_request_body_bytes)
 
     api = APIRouter(prefix="/api")
 

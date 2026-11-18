@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     rcodesign_path: str = "rcodesign"
     # How long an authorize answer from the main API may be reused.
     authorize_cache_seconds: int = 60
+    # Every request body, on every path (packages go to the bucket directly).
+    max_request_body_bytes: int = 1_048_576
 
     @field_validator("service_token")
     @classmethod
