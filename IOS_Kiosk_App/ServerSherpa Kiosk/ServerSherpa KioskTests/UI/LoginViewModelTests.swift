@@ -148,6 +148,65 @@ struct LoginViewModelTests {
         #expect(h.vm.movePassword == "")
     }
 
+    // MARK: move password QR (Android `submitScannedMove`)
+
+    /// The first code the camera reads fills the field and signs in at once.
+    @Test func aScannedMoveCodeSignsIn() async {
+        let h = Harness()
+        h.api.moveLoginResult = { pw in
+            #expect(pw == "MOVE-QR-7F2A")
+            return fakeSession(kioskMove: KioskMove(initiativeId: "i1", name: "Move"))
+        }
+        h.vm.view = .move
+        h.vm.openMoveScan()
+        #expect(h.vm.scanningMove)
+        await h.vm.submitScannedMove("MOVE-QR-7F2A")
+        #expect(isAuthed(h.auth))
+        #expect(h.vm.moveError == nil)
+        #expect(h.vm.movePassword == "")
+        #expect(h.api.calls.filter { $0 == "moveLogin" }.count == 1)
+    }
+
+    /// A refused code lands on the move field's error line, and the field is cleared.
+    @Test func aScannedMoveCodeErrorLandsOnTheField() async {
+        let h = Harness()
+        h.api.moveLoginResult = { _ in throw ApiError(status: 401, code: "invalid_move_password") }
+        h.vm.view = .move
+        h.vm.movePassword = "typed"
+        await h.vm.submitScannedMove("WRONG-CODE")
+        #expect(h.vm.moveError == "That move password isn't right.")
+        #expect(h.vm.movePassword == "")
+        #expect(!h.vm.busy)
+        #expect(!isAuthed(h.auth))
+        h.api.moveLoginResult = { _ in throw ApiError(status: 0, code: "network") }
+        await h.vm.submitScannedMove("MOVE-QR-7F2A")
+        #expect(h.vm.moveError == "Can't reach the server. Check the kiosk's network connection.")
+    }
+
+    /// A blank read says what an empty field says, without a round trip.
+    @Test func aBlankScannedCodeIsRejectedLocally() async {
+        let h = Harness()
+        h.vm.view = .move
+        await h.vm.submitScannedMove("  ")
+        #expect(h.vm.moveError == "Enter the move password.")
+        #expect(h.api.calls.isEmpty)
+    }
+
+    /// The camera opens only over the Move password view, and closes when that view is left, so
+    /// coming back never reopens it (its error line is the move field's).
+    @Test func theMoveCameraBelongsToTheMoveView() {
+        let h = Harness()
+        h.vm.openMoveScan()
+        #expect(!h.vm.scanningMove)                                // not from the password view
+        h.vm.view = .move
+        h.vm.openMoveScan()
+        #expect(h.vm.scanningMove)
+        h.vm.view = .password
+        #expect(!h.vm.scanningMove)
+        h.vm.view = .move
+        #expect(!h.vm.scanningMove)
+    }
+
     @Test func loadStatusIsBestEffort() async {
         let h = Harness()
         h.api.systemStatusResult = { SystemStatus(readOnly: true, banner: "Hi") }

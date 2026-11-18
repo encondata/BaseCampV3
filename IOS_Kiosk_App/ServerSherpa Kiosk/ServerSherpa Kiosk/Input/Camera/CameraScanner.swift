@@ -44,6 +44,20 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @un
         .itf14, .interleaved2of5, .codabar, .pdf417, .dataMatrix, .aztec,
     ]
 
+    /// QR codes only (the sign-in screen's move password); otherwise every symbology above.
+    let qrOnly: Bool
+
+    init(qrOnly: Bool = false) {
+        self.qrOnly = qrOnly
+        super.init()
+    }
+
+    /// What the metadata output is asked to read.
+    static func readTypes(qrOnly: Bool) -> [AVMetadataObject.ObjectType] { qrOnly ? [.qr] : symbologies }
+
+    /// Whether a code the output delivered is passed on: in QR-only mode nothing but a QR code is.
+    static func accepts(_ type: AVMetadataObject.ObjectType, qrOnly: Bool) -> Bool { !qrOnly || type == .qr }
+
     func start(position: CameraPosition) {
         let wanted: AVCaptureDevice.Position = position == .front ? .front : .back
         queue.async { [self] in
@@ -103,7 +117,7 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @un
         session.addOutput(output)
         // Only types the output offers: setting an unavailable one throws an ObjC exception.
         let available = Set(output.availableMetadataObjectTypes)
-        output.metadataObjectTypes = Self.symbologies.filter(available.contains)
+        output.metadataObjectTypes = Self.readTypes(qrOnly: qrOnly).filter(available.contains)
         output.setMetadataObjectsDelegate(self, queue: .main)
         session.commitConfiguration()
         device = cam
@@ -120,6 +134,7 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @un
         // Delivered on the main queue (see configure).
         for object in metadataObjects {
             guard let code = object as? AVMetadataMachineReadableCodeObject,
+                  Self.accepts(code.type, qrOnly: qrOnly),
                   let value = code.stringValue else { continue }
             let symbology = Self.name(code.type)
             MainActor.assumeIsolated { onCode?(value, symbology) }

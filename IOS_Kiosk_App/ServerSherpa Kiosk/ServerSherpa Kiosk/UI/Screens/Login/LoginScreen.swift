@@ -51,7 +51,7 @@ private struct LoginScreenBody: View {
                                       height: geo.size.height + insets.top + insets.bottom)
                     let metrics = LoginMetrics(size: full)
                     Group {
-                        if metrics.layout == .compact { LoginBackdrop(metrics: metrics) } else { LoginScene(metrics: metrics) }
+                        if metrics.layout == .compact { LoginBackdrop(metrics: metrics) } else { LoginScene(metrics: metrics, kioskName: kioskName) }
                     }
                     .frame(width: full.width, height: full.height)
                     .position(x: full.width / 2 - insets.leading, y: full.height / 2 - insets.top)
@@ -105,7 +105,18 @@ private struct LoginScreenBody: View {
                     .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
             }
             .onChange(of: container.station.loginRequested) { _, requested in if !requested { kioskSheet = false } }
+            // The Move password field's QR button: the kiosk's own camera, QR only. The first code
+            // read is the move password and is submitted at once; an error lands on the field. Out
+            // here, past the sign-in page's forced light look, so the camera follows the theme.
+            .fullScreenCover(isPresented: $vm.scanningMove) {
+                CameraScanSheet(prefs: container.prefs, qrOnly: true,
+                                onScan: { event in Task { await vm.submitScannedMove(event.value) } },
+                                onClose: { vm.scanningMove = false })
+            }
     }
+
+    /// This kiosk's own name under the wordmark (Settings › This Kiosk); nil shows no line.
+    private var kioskName: String? { LoginLayout.kioskNameLine(container.identity.current.name) }
 
     /// The Settings sheet, closed on a Time Clock station once its sign-in request ends.
     private var settingsSheet: Binding<Bool> {
@@ -115,7 +126,8 @@ private struct LoginScreenBody: View {
     }
 
     private func form(_ metrics: LoginMetrics) -> some View {
-        LoginForm(vm: vm, f: metrics.f, pair: pair, onBackToTimeclock: backToTimeclock)
+        LoginForm(vm: vm, f: metrics.f, pair: pair, onBackToTimeclock: backToTimeclock,
+                  onScanMove: CameraSupport.hasCamera ? { vm.openMoveScan() } : nil)
         .frame(width: metrics.formWidth)
     }
 
@@ -153,7 +165,7 @@ private struct LoginScreenBody: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
-                    LoginLogo(scale: 0.62)
+                    LoginLogo(scale: 0.62, kioskName: kioskName)
                     Spacer(minLength: 8)
                     gear
                 }

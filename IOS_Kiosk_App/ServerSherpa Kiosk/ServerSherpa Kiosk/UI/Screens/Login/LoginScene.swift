@@ -49,13 +49,15 @@ struct LoginMetrics {
 /// headline and status line. Everything but the form.
 struct LoginScene: View {
     let metrics: LoginMetrics
+    /// The kiosk's own name under the logo's tag line; nil shows none.
+    var kioskName: String? = nil
 
     var body: some View {
         let s = metrics.s
         ZStack(alignment: .topLeading) {
             LoginBackdrop(metrics: metrics)
             FormWash(metrics: metrics)
-            LoginLogo(scale: s)
+            LoginLogo(scale: s, kioskName: kioskName)
                 .offset(x: 77 * s, y: 50 * s)
             LoginMap(scale: metrics.mapScale, details: metrics.layout == .wide, states: metrics.showsStates)
                 .offset(x: metrics.mapOrigin.x, y: metrics.mapOrigin.y)
@@ -167,28 +169,54 @@ struct LoginContours: View {
 }
 
 /// The mark, "Server" + orange "Sherpa", and the tag line. Mockup sizes × `scale`.
+/// With `kioskName`, the kiosk's own name sits under the tag line (Android
+/// `LoginBrand(kioskName)`); the mark stays centered on the wordmark and tag line,
+/// so the logo sits where the mockup puts it, and the name hangs below.
 struct LoginLogo: View {
     let scale: CGFloat
+    var kioskName: String? = nil
 
     var body: some View {
-        HStack(spacing: 17 * scale) {
+        HStack(alignment: .logoMiddle, spacing: 17 * scale) {
             Image("Logo")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 86 * scale, height: 86 * scale)
                 .accessibilityLabel("ServerSherpa logo")
-            VStack(alignment: .leading, spacing: 9 * scale) {
-                (Text("Server").foregroundColor(LoginTokens.ink) + Text("Sherpa").foregroundColor(LoginTokens.orange))
-                    .font(KioskType.sans(37 * scale, .heavy))
-                    .tracking(-0.01 * 37 * scale)
-                Text("DATACENTER RELOCATION TOOLS")
-                    .font(KioskType.mono(max(9, 13.5 * scale)))
-                    .tracking(0.3 * max(9, 13.5 * scale))
-                    .foregroundStyle(LoginTokens.slate)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 9 * scale) {
+                    (Text("Server").foregroundColor(LoginTokens.ink) + Text("Sherpa").foregroundColor(LoginTokens.orange))
+                        .font(KioskType.sans(37 * scale, .heavy))
+                        .tracking(-0.01 * 37 * scale)
+                    Text("DATACENTER RELOCATION TOOLS")
+                        .font(KioskType.mono(max(9, 13.5 * scale)))
+                        .tracking(0.3 * max(9, 13.5 * scale))
+                        .foregroundStyle(LoginTokens.slate)
+                }
+                .fixedSize()
+                .alignmentGuide(.logoMiddle) { $0[VerticalAlignment.center] }
+                if let kioskName {
+                    // The tag line's mono, a touch larger, in ink; one line, clear of the map.
+                    Text(kioskName)
+                        .font(KioskType.mono(max(10, 15 * scale)))
+                        .foregroundStyle(LoginTokens.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 300 * scale, alignment: .leading)
+                        .padding(.top, 6 * scale)
+                        .accessibilityIdentifier("login-kiosk-name")
+                }
             }
-            .fixedSize()
         }
     }
+}
+
+private extension VerticalAlignment {
+    /// The logo's middle: the mark's center, on the wordmark and tag line's center.
+    enum LogoMiddle: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    static let logoMiddle = VerticalAlignment(LogoMiddle.self)
 }
 
 /// "Migration Control." / "From First Scan to Final Rack." and the mockup's subline.

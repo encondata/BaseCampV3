@@ -13,6 +13,25 @@ struct LoginLayoutTests {
         #expect(LoginLayout.forWidth(CGFloat(width)) == expected)
     }
 
+    /// Android `LoginBrand(kioskName)`: the kiosk's own name under the wordmark, in every layout;
+    /// nothing when the name is blank.
+    @Test func theSignInPageShowsTheKioskName() {
+        #expect(LoginLayout.kioskNameLine("Dock door 3") == "Dock door 3")
+        #expect(LoginLayout.kioskNameLine("  Kiosk 7F2A \n") == "Kiosk 7F2A")
+        #expect(LoginLayout.kioskNameLine("") == nil)
+        #expect(LoginLayout.kioskNameLine(" \t\n") == nil)
+    }
+
+    /// What the screen passes: this kiosk's identity, with its default name before one is set.
+    @MainActor @Test func theLineIsTheIdentitysName() {
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        let identity = Identity(prefs: prefs, secrets: MemorySecretStore())
+        let line = LoginLayout.kioskNameLine(identity.current.name)
+        #expect(line == defaultName(identity.current.serial))
+        #expect(identity.setName("Receiving iPad"))
+        #expect(LoginLayout.kioskNameLine(identity.current.name) == "Receiving iPad")
+    }
+
     @Test func statesHideOnShortScreens() {
         #expect(LoginLayout.showsStates(height: 1024))
         #expect(LoginLayout.showsStates(height: 780))

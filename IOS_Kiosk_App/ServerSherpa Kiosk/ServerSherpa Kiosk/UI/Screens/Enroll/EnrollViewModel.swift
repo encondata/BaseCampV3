@@ -214,6 +214,14 @@ final class EnrollViewModel {
 
     func submitTag(_ raw: String) async {
         guard let target = asset, !saving, !awaitingUpdate else { return }
+        // The web's first check, on the raw value before padding: an asset ID or
+        // serial scanned here is a barcode, not a tag (ruling 13).
+        if let verdict = checkEnrollRaw(index: index, target: target, raw: raw) {
+            flashBad()
+            tagValue = ""
+            showError(enrollTagText(verdict))
+            return
+        }
         let padded = padRfid(raw)
         guard let tag = padded.tag else {
             tagValue = ""

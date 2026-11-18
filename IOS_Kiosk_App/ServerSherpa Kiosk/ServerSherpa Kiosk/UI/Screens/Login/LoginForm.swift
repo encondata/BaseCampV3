@@ -16,6 +16,11 @@ enum LoginIcons {
         svgCircle(17, 7, 3.5), svgCircle(7, 17, 3.5), "M9.5 14.5l5-5",
     ])
     static let arrow = VectorIcon(viewport: 24, lineWidth: 2.2, strokes: ["M5 12h14M13 6l6 6-6 6"])
+    /// The Android kiosk's move-password QR glyph (`LoginControls.kt` `QrCodeIcon`).
+    static let qrCode = VectorIcon(viewport: 24, lineWidth: 1.8, strokes: [
+        "M4 4h6v6H4z", "M14 4h6v6h-6z", "M4 14h6v6H4z",
+        "M14 14h2v2h-2z", "M18 14h2", "M14 18h2", "M18 18h2v2h-2z",
+    ])
 }
 
 /// Colors the form uses beyond `LoginTokens`.
@@ -51,7 +56,8 @@ extension LoginFieldLabel where Trailing == EmptyView {
 }
 
 /// A 60-unit field: white, slate border, 8 pt corners; red outline when invalid.
-/// With `reveal` it is a password field with the eye toggle.
+/// With `reveal` it is a password field with the eye toggle; `trailing` sits inside
+/// the field after it (the move password's QR button).
 struct LoginTextField: View {
     let placeholder: String
     @Binding var text: String
@@ -59,6 +65,7 @@ struct LoginTextField: View {
     var invalid = false
     let f: CGFloat
     var focus: FocusState<Bool>.Binding
+    var trailing: AnyView? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -89,6 +96,7 @@ struct LoginTextField: View {
                 .accessibilityLabel(reveal.wrappedValue ? "Hide password" : "Show password")
                 .padding(.trailing, -6)
             }
+            if let trailing { trailing.padding(.trailing, -6) }
         }
         .padding(.horizontal, 20 * f)
         .frame(height: max(44, 60 * f))
@@ -265,6 +273,8 @@ struct LoginForm: View {
     let pair: PairViewModel
     /// A Time Clock station's "Back to the time clock"; nil hides it.
     var onBackToTimeclock: (() -> Void)? = nil
+    /// The move password's QR button (the camera, QR only); nil hides it (no camera).
+    var onScanMove: (() -> Void)? = nil
     @FocusState private var emailFocused: Bool
     @FocusState private var passwordFocused: Bool
 
@@ -296,7 +306,7 @@ struct LoginForm: View {
                     passwordBody.padding(.top, 30 * f)
                 }
             case .pair: pairBody.padding(.top, 28 * f)
-            case .move: MovePasswordForm(vm: vm, f: f, onBack: back).padding(.top, 40 * f)
+            case .move: MovePasswordForm(vm: vm, f: f, onScan: onScanMove, onBack: back).padding(.top, 40 * f)
             case .biometric:
                 if let card = vm.card, let words = vm.cardWords {
                     BiometricCardView(vm: vm, card: card, words: words, kind: vm.cardKind, f: f).padding(.top, 30 * f)
