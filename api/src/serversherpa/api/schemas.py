@@ -68,7 +68,7 @@ _CLOCK = re.compile(r"(?P<hm>(?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d)?")
 
 
 class SwitchOverride(BaseModel):
-    """A person's own Inbox and Email values for one category. A value left
+    """A person's own Inbox, Email and Push values for one category. A value left
     None follows the company default, and is left out of what is stored and
     returned: the saved blob holds only what the person chose."""
 
@@ -76,6 +76,7 @@ class SwitchOverride(BaseModel):
 
     inbox: bool | None = None
     email: bool | None = None
+    push: bool | None = None
 
     @model_serializer(mode="wrap")
     def _only_own_values(self, handler: SerializerFunctionWrapHandler):
@@ -134,7 +135,7 @@ class NotifPrefs(BaseModel):
 
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
-    # The person's own Inbox and Email values per category (notifications/kinds.py
+    # The person's own Inbox, Email and Push values per category (notifications/kinds.py
     # CATEGORIES): only what they changed. A category with no entry, or a value left
     # unset, follows the company default (notifications/company.py). Account security
     # is always on, so it is never stored.
@@ -149,7 +150,8 @@ class NotifPrefs(BaseModel):
         """Drop unknown categories, account security and entries that hold no
         value; the rest in the registry's order."""
         return {k: v[k] for k in _SWITCH_CATEGORIES
-                if k in v and (v[k].inbox is not None or v[k].email is not None)}
+                if k in v and (v[k].inbox is not None or v[k].email is not None
+                       or v[k].push is not None)}
 
 
 NAMED_ACCENTS = {"amber", "aqua", "blue", "violet", "pink", "green"}
@@ -3228,11 +3230,12 @@ class DeliveryCheckSwitchOut(BaseModel):
 
 
 class DeliveryCheckSwitchesOut(BaseModel):
-    """The person's Inbox and Email switches for the category. Email needs
-    Inbox: it is off whenever Inbox is."""
+    """The person's Inbox, Email and Push switches for the category. Email
+    and Push need Inbox: each is off whenever Inbox is."""
 
     inbox: DeliveryCheckSwitchOut
     email: DeliveryCheckSwitchOut
+    push: DeliveryCheckSwitchOut
 
 
 class DeliveryCheckScheduleOut(BaseModel):
@@ -3331,10 +3334,11 @@ class NotificationKindOut(BaseModel):
 
 
 class SwitchPair(BaseModel):
-    """One category's two switches: written to the inbox, and emailed."""
+    """One category's switches: written to the inbox, emailed, and pushed."""
 
     inbox: bool
     email: bool
+    push: bool = False
 
 
 class NotificationKindSettingOut(BaseModel):

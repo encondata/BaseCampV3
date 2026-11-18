@@ -855,7 +855,8 @@ def _stored_settings(company: CompanySettings) -> dict:
     """The settings in the shape the `notifications` section stores and the
     audit records: every configurable category, the marked kinds in registry
     order."""
-    return {"defaults": {category: {"inbox": switches.inbox, "email": switches.email}
+    return {"defaults": {category: {"inbox": switches.inbox, "email": switches.email,
+                                      "push": switches.push}
                          for category, switches in company.defaults.items()},
             "critical_kinds": [kind for kind in KINDS if kind in company.critical_kinds]}
 
@@ -910,7 +911,7 @@ async def put_notification_settings(
     before = await load_company_settings(db)
     defaults = dict(before.defaults)
     if body.defaults is not None:
-        defaults.update({category: Switches(pair.inbox, pair.email)
+        defaults.update({category: Switches(pair.inbox, pair.email, pair.push)
                          for category, pair in body.defaults.items()})
     after = CompanySettings(
         defaults=defaults,

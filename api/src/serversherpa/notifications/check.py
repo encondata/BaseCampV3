@@ -107,6 +107,7 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
         "switches": {
             "inbox": {"on": switches.inbox, "source": switches.inbox_source},
             "email": {"on": switches.email, "source": switches.email_source},
+            "push": {"on": switches.push, "source": switches.push_source},
         },
         "schedule": {
             "timezone": schedule.zone.key,

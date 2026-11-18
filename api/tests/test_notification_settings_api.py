@@ -20,7 +20,7 @@ from tests.test_status_values_write import _make
 SETTINGS = "/notifications/settings"
 CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "assets", "plans",
                 "trucks", "devices", "status_rules", "bulk_actions")
-ON_ON = {"inbox": True, "email": True}
+ON_ON = {"inbox": True, "email": True, "push": False}
 
 
 def _code(resp):
@@ -107,7 +107,7 @@ async def test_settings_need_a_signed_in_user(client):
 
 async def test_put_requires_global_admin(client, db, seeded_user):
     staff = await login(client)
-    body = {"defaults": {"wiki": {"inbox": True, "email": False}}}
+    body = {"defaults": {"wiki": {"inbox": True, "email": False, "push": False}}}
 
     # staff (rank 40) holds no notifications permission at all
     assert (await client.put(SETTINGS, headers=staff, json=body)).status_code == 403
@@ -160,7 +160,7 @@ async def test_put_blocked_in_read_only_mode(client, db, seeded_user):
     assert (await client.put("/system/admin", headers=super_admin,
                              json={"read_only": True})).status_code == 200
 
-    resp = await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False}})
+    resp = await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False, "push": False}})
     assert resp.status_code == 423, resp.text
     assert _code(resp) == "read_only_mode"
     # nothing was saved; reading is not frozen
@@ -173,9 +173,9 @@ async def test_put_blocked_in_read_only_mode(client, db, seeded_user):
 async def test_put_merges_defaults_per_category(client, db, seeded_user):
     admin = await _admin(db, client)
 
-    resp = await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False}})
+    resp = await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False, "push": False}})
     assert resp.status_code == 200, resp.text
-    expected = {**{c: ON_ON for c in CONFIGURABLE}, "wiki": {"inbox": True, "email": False}}
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "wiki": {"inbox": True, "email": False, "push": False}}
     assert resp.json()["defaults"] == expected         # the PUT answers with the whole settings
     assert (await _get(client, admin))["defaults"] == expected
 
@@ -188,14 +188,14 @@ async def test_put_merges_defaults_per_category(client, db, seeded_user):
                                         "to": expected}}
 
     # a later PUT for another category keeps the first change
-    resp = await _put(client, admin, defaults={"approvals": {"inbox": False, "email": False}})
+    resp = await _put(client, admin, defaults={"approvals": {"inbox": False, "email": False, "push": False}})
     assert resp.status_code == 200, resp.text
     assert (await _get(client, admin))["defaults"] == {
-        **expected, "approvals": {"inbox": False, "email": False}}
+        **expected, "approvals": {"inbox": False, "email": False, "push": False}}
     assert len(await _audits(db)) == 2
 
     # saving what is already stored changes nothing and is not audited
-    assert (await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False}})
+    assert (await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False, "push": False}})
             ).status_code == 200
     assert len(await _audits(db)) == 2
 
@@ -203,13 +203,13 @@ async def test_put_merges_defaults_per_category(client, db, seeded_user):
 async def test_put_sets_defaults_for_initiatives_trucks_and_devices(client, db, seeded_user):
     """The two status categories and Devices are configurable like the rest."""
     admin = await _admin(db, client)
-    resp = await _put(client, admin, defaults={"initiatives": {"inbox": True, "email": False},
-                                               "trucks": {"inbox": False, "email": False},
-                                               "devices": {"inbox": True, "email": False}})
+    resp = await _put(client, admin, defaults={"initiatives": {"inbox": True, "email": False, "push": False},
+                                               "trucks": {"inbox": False, "email": False, "push": False},
+                                               "devices": {"inbox": True, "email": False, "push": False}})
     assert resp.status_code == 200, resp.text
-    expected = {**{c: ON_ON for c in CONFIGURABLE}, "initiatives": {"inbox": True, "email": False},
-                "trucks": {"inbox": False, "email": False},
-                "devices": {"inbox": True, "email": False}}
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "initiatives": {"inbox": True, "email": False, "push": False},
+                "trucks": {"inbox": False, "email": False, "push": False},
+                "devices": {"inbox": True, "email": False, "push": False}}
     assert resp.json()["defaults"] == expected
     assert (await _get(client, admin))["defaults"] == expected
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
@@ -219,9 +219,9 @@ async def test_put_sets_the_bulk_actions_default(client, db, seeded_user):
     """Bulk actions is configurable like the rest: on and on until an admin says otherwise."""
     admin = await _admin(db, client)
     assert (await _get(client, admin))["defaults"]["bulk_actions"] == ON_ON
-    resp = await _put(client, admin, defaults={"bulk_actions": {"inbox": True, "email": False}})
+    resp = await _put(client, admin, defaults={"bulk_actions": {"inbox": True, "email": False, "push": False}})
     assert resp.status_code == 200, resp.text
-    expected = {**{c: ON_ON for c in CONFIGURABLE}, "bulk_actions": {"inbox": True, "email": False}}
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "bulk_actions": {"inbox": True, "email": False, "push": False}}
     assert resp.json()["defaults"] == expected
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
 
@@ -230,9 +230,9 @@ async def test_put_sets_the_status_rules_default(client, db, seeded_user):
     """Status rules is configurable like the rest: on and on until an admin says otherwise."""
     admin = await _admin(db, client)
     assert (await _get(client, admin))["defaults"]["status_rules"] == ON_ON
-    resp = await _put(client, admin, defaults={"status_rules": {"inbox": True, "email": False}})
+    resp = await _put(client, admin, defaults={"status_rules": {"inbox": True, "email": False, "push": False}})
     assert resp.status_code == 200, resp.text
-    expected = {**{c: ON_ON for c in CONFIGURABLE}, "status_rules": {"inbox": True, "email": False}}
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "status_rules": {"inbox": True, "email": False, "push": False}}
     assert resp.json()["defaults"] == expected
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
 
@@ -241,9 +241,9 @@ async def test_put_sets_the_assets_default(client, db, seeded_user):
     """Assets is configurable like the rest: on and on until an admin says otherwise."""
     admin = await _admin(db, client)
     assert (await _get(client, admin))["defaults"]["assets"] == ON_ON
-    resp = await _put(client, admin, defaults={"assets": {"inbox": True, "email": False}})
+    resp = await _put(client, admin, defaults={"assets": {"inbox": True, "email": False, "push": False}})
     assert resp.status_code == 200, resp.text
-    expected = {**{c: ON_ON for c in CONFIGURABLE}, "assets": {"inbox": True, "email": False}}
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "assets": {"inbox": True, "email": False, "push": False}}
     assert resp.json()["defaults"] == expected
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
 
@@ -258,18 +258,18 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
     row = await db.get(SystemConfig, "notifications", with_for_update=True,
                        populate_existing=True)                  # the other save, mid-flight
     task = asyncio.create_task(
-        _put(client, admin, defaults={"reports": {"inbox": False, "email": False}}))
+        _put(client, admin, defaults={"reports": {"inbox": False, "email": False, "push": False}}))
     await asyncio.sleep(0.5)
     assert not task.done()                                      # waiting on the row lock
     row.data = {**row.data, "defaults": {**row.data["defaults"],
-                                         "wiki": {"inbox": True, "email": False}}}
+                                         "wiki": {"inbox": True, "email": False, "push": False}}}
     await db.commit()                                           # the other save lands
     resp = await asyncio.wait_for(task, 10)
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["defaults"] == {
-        "approvals": ON_ON, "reports": {"inbox": False, "email": False},
-        "wiki": {"inbox": True, "email": False}, "learning": ON_ON,
+        "approvals": ON_ON, "reports": {"inbox": False, "email": False, "push": False},
+        "wiki": {"inbox": True, "email": False, "push": False}, "learning": ON_ON,
         "initiatives": ON_ON, "assets": ON_ON, "plans": ON_ON, "trucks": ON_ON,
         "devices": ON_ON, "status_rules": ON_ON, "bulk_actions": ON_ON}
 
@@ -277,11 +277,11 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
 async def test_put_rejects_bad_categories(client, db, seeded_user):
     admin = await _admin(db, client)
     for category in ("security", "nope"):
-        resp = await _put(client, admin, defaults={category: {"inbox": False, "email": False}})
+        resp = await _put(client, admin, defaults={category: {"inbox": False, "email": False, "push": False}})
         assert (resp.status_code, _code(resp)) == (422, "invalid_category"), category
 
     # one bad key sinks the whole request: the good one beside it is not applied
-    resp = await _put(client, admin, defaults={"wiki": {"inbox": False, "email": False},
+    resp = await _put(client, admin, defaults={"wiki": {"inbox": False, "email": False, "push": False},
                                                "nope": ON_ON})
     assert (resp.status_code, _code(resp)) == (422, "invalid_category")
     assert (await _get(client, admin))["defaults"]["wiki"] == ON_ON
@@ -311,11 +311,11 @@ async def test_put_critical_kinds(client, db, seeded_user):
     assert row.changes == {"critical_kinds": {"from": [], "to": ["report_failed"]}}
 
     # the list is replaced, kept in registry order, and the defaults are untouched
-    await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False}})
+    await _put(client, admin, defaults={"wiki": {"inbox": True, "email": False, "push": False}})
     resp = await _put(client, admin, critical_kinds=["wiki_comment", "report_ready",
                                                      "report_failed"])
     assert resp.json()["critical_kinds"] == ["report_ready", "report_failed", "wiki_comment"]
-    assert resp.json()["defaults"]["wiki"] == {"inbox": True, "email": False}
+    assert resp.json()["defaults"]["wiki"] == {"inbox": True, "email": False, "push": False}
     resp = await _put(client, admin, critical_kinds=[])
     assert resp.json()["critical_kinds"] == []
     assert _by_kind(await _get(client, admin))["wiki_comment"]["critical"] is False
@@ -392,11 +392,11 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
 
     db.add(SystemConfig(section="notifications", data={
         "defaults": {
-            "approvals": {"inbox": False, "email": False},   # a real choice
+            "approvals": {"inbox": False, "email": False, "push": False},   # a real choice
             "reports": "garbage",                            # not a pair
             "wiki": {"inbox": False},                        # half a pair
-            "security": {"inbox": False, "email": False},    # not configurable
-            "bogus": {"inbox": False, "email": False},       # unknown
+            "security": {"inbox": False, "email": False, "push": False},    # not configurable
+            "bogus": {"inbox": False, "email": False, "push": False},       # unknown
             # learning: missing
         },
         "critical_kinds": ["report_failed", "nope", "password_reset_request",
@@ -421,7 +421,7 @@ async def test_stored_defaults_without_assets_read_on(client, db, seeded_user):
     beside it are kept."""
     from serversherpa.notifications.company import Switches, load_company_settings
 
-    off = {"inbox": False, "email": False}
+    off = {"inbox": False, "email": False, "push": False}
     before_assets = [c for c in CONFIGURABLE if c != "assets"]
     db.add(SystemConfig(section="notifications", data={
         "defaults": {category: off for category in before_assets}, "critical_kinds": []}))
@@ -444,3 +444,19 @@ async def test_load_company_settings_survives_a_wrong_shaped_section(db):
     company = await load_company_settings(db)
     assert dict(company.defaults) == {c: Switches(True, True) for c in CONFIGURABLE}
     assert company.critical_kinds == frozenset()
+
+
+async def test_put_defaults_saves_push(client, db, seeded_user):
+    admin = await _admin(db, client)
+    resp = await _put(client, admin, defaults={
+        "wiki": {"inbox": True, "email": False, "push": True},
+        "reports": {"inbox": True, "email": True}})            # push omitted: off
+    assert resp.status_code == 200, resp.text
+    defaults = resp.json()["defaults"]
+    assert defaults["wiki"] == {"inbox": True, "email": False, "push": True}
+    assert defaults["reports"] == ON_ON
+    assert (await _get(client, admin))["defaults"]["wiki"]["push"] is True
+    from serversherpa.notifications.company import load_company_settings
+    company = await load_company_settings(db)
+    assert company.defaults["wiki"].push is True
+    assert company.defaults["reports"].push is False
