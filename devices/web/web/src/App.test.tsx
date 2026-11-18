@@ -22,6 +22,13 @@ vi.mock('@portal/pages/Login', () => ({
   default: ({ eyebrow }: { eyebrow?: string }) => <p>portal sign-in ({eyebrow})</p>,
 }));
 
+// the Apps page loads its list: an empty catalog, no network
+vi.mock('@portal/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@portal/lib/api')>()),
+  accessTokenForService: vi.fn(async () => 'tok'),
+  refreshSession: vi.fn(async () => null),
+}));
+
 import App from './App';
 
 /** `can` for a role holding exactly these app_distribution actions. */
@@ -67,6 +74,7 @@ const nav = () => screen.getByRole('navigation', { name: 'Primary' });
 beforeEach(() => {
   auth.value = signedIn();
   stubViewport(false);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })));
 });
 afterEach(() => {
   cleanup();
@@ -125,6 +133,20 @@ describe('App', () => {
     renderAt('/');
     expect(screen.getByText('Set a new password first')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open the portal' })).toBeTruthy();
+  });
+
+  it("the no-access notice follows the user's theme", () => {
+    auth.value = signedIn({ can: () => false, preferences: { ...DEFAULT_PREFERENCES, theme: 'dark' } });
+    const { container } = renderAt('/');
+    expect(screen.getByText("You don't have access to Devices")).toBeTruthy();
+    expect(container.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('dark');
+  });
+
+  it("the set-a-new-password notice follows the user's theme", () => {
+    auth.value = signedIn({ mustChangePassword: true, preferences: { ...DEFAULT_PREFERENCES, theme: 'dark' } });
+    const { container } = renderAt('/');
+    expect(screen.getByText('Set a new password first')).toBeTruthy();
+    expect(container.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('dark');
   });
 
   it("follows the user's theme and nav mode preferences", () => {

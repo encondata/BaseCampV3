@@ -1,23 +1,14 @@
-import { useEffect, type ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
-import { useAuth } from '@portal/auth/AuthContext';
-import { applyPreferences } from '@portal/lib/settings';
 import Login from '@portal/pages/Login';
 
 import RequireAccess from './auth/RequireAccess';
 import DevicesShell from './layout/DevicesShell';
+import ThemedRoot from './layout/ThemedRoot';
+import AppDetailPage from './pages/AppDetailPage';
+import AppsPage from './pages/AppsPage';
 
-/** Carries the portal's design tokens and the signed-in user's theme,
- *  accent, density, list-size and nav preferences (applyPreferences sets
- *  them on this `.portal-shell`, the shell's grid). */
-function ThemedRoot({ children }: { children: ReactNode }) {
-  const { preferences } = useAuth();
-  useEffect(() => { applyPreferences(preferences); }, [preferences]);
-  return <div className="portal-shell devices-shell">{children}</div>;
-}
-
-/** A page's frame until its content lands (the Apps, Devices and Apple
+/** A page's frame until its content lands (the Devices and Apple
  *  settings pages are built in later steps). */
 function Page({ title }: { title: string }) {
   return (
@@ -35,14 +26,14 @@ export default function App() {
       <Route
         element={(
           <RequireAccess>
-            <ThemedRoot>
+            <ThemedRoot className="devices-shell">
               <DevicesShell />
             </ThemedRoot>
           </RequireAccess>
         )}
       >
-        <Route path="/" element={<Page title="Apps" />} />
-        <Route path="/apps/:id" element={<Page title="Apps" />} />
+        <Route path="/" element={<AppsPage />} />
+        <Route path="/apps/:id" element={<AppDetailPage />} />
         <Route path="/devices" element={<Page title="Devices" />} />
         <Route path="/apple" element={<Page title="Apple settings" />} />
         <Route path="*" element={<Navigate to="/" replace />} />

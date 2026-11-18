@@ -5,18 +5,19 @@ import { Navigate, useLocation } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import ThemedRoot from '../layout/ThemedRoot';
 import { portalOrigin } from '../lib/origins';
 
 function Notice({ title, hint, link }: { title: string; hint: string; link: string }) {
   return (
-    <div className="portal-shell devices-notice">
+    <ThemedRoot className="devices-notice">
       <div className="portal-page">
         <div className="eyebrow">ServerSherpa Devices</div>
         <h1 className="page-title">{title}</h1>
         <p className="page-hint">{hint}</p>
         <p className="page-hint"><a href={portalOrigin()}>{link}</a></p>
       </div>
-    </div>
+    </ThemedRoot>
   );
 }
 

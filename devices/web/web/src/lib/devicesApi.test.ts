@@ -107,4 +107,23 @@ describe('devicesFetch', () => {
     await devicesFetch('/api/apps');
     expect(authOf(fetchMock.mock.calls[0][1])).toBeNull();
   });
+
+  it.each([
+    'https://evil.example/api/apps',
+    '//evil.example/api/apps',
+    'api/apps',
+    '/enroll/x.mobileconfig',
+    '/apix',
+    'javascript:alert(1)',
+  ])('refuses %s: the bearer only goes to same-origin /api paths', async (path) => {
+    stubFetch(json(200, {}));
+    await expect(devicesFetch(path)).rejects.toThrow(/same-origin \/api path/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts /api with a query string', async () => {
+    stubFetch(json(200, []));
+    await devicesFetch('/api/apps?device_ref=x');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/apps?device_ref=x');
+  });
 });
