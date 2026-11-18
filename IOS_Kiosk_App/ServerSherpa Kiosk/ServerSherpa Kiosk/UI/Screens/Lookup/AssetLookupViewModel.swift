@@ -122,7 +122,8 @@ final class AssetLookupViewModel {
                     self.ui.offline = found.offline
                     try await self.openAsset(id, offline: found.offline, mine: mine)
                 case .list(let result):
-                    self.ui = LookupUi(offline: found.offline, list: result)
+                    // Whatever was typed while it was out stays in the box (Android's copy).
+                    self.ui = LookupUi(value: self.ui.value, offline: found.offline, list: result)
                 case .miss(let text):
                     self.ui = LookupUi(value: q, offline: found.offline, miss: text)
                     self.restoreCount += 1

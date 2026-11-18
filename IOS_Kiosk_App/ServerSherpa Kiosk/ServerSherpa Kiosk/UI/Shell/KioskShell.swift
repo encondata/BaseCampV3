@@ -100,6 +100,7 @@ struct KioskShell<Content: View>: View {
     @Environment(Outbox.self) private var outbox
     @Environment(\.kioskPalette) private var palette
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var confirmSignOut = false
 
     private var session: SessionData? {
@@ -130,17 +131,16 @@ struct KioskShell<Content: View>: View {
 
     private var topBar: some View {
         Group {
-            if sizeClass == .compact {
-                VStack(alignment: .leading, spacing: 8) {
-                    // A phone is too narrow for the chip and a long screen title beside "‹ Home"
-                    // (Asset Lookup pushed the bar off both edges): they give way, chip first.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 10) { brand(showChip: true, showTitle: true); backButton }
-                        HStack(spacing: 10) { brand(showChip: false, showTitle: true); backButton }
-                        HStack(spacing: 10) { brand(showChip: false, showTitle: false); backButton }
-                    }
-                    HStack(spacing: 10) { kioskName; Spacer(minLength: 0); userItems }
+            if sizeClass == .compact && verticalSizeClass == .compact {
+                // A phone on its side has the width for one row, as on an iPad, and none of the
+                // height to spare once the on-screen keyboard is up: one row when it fits.
+                ViewThatFits(in: .horizontal) {
+                    regularRow(showChip: true, showTitle: true)
+                    regularRow(showChip: false, showTitle: true)
+                    compactRows
                 }
+            } else if sizeClass == .compact {
+                compactRows
             } else {
                 // Drops the mode chip, then the screen title, before anything else gives way;
                 // the last fallback lets the person's name truncate.
@@ -154,6 +154,20 @@ struct KioskShell<Content: View>: View {
         .padding(.horizontal, 14).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.ink.ignoresSafeArea(edges: .top))
+    }
+
+    /// A phone's two rows: the brand and "‹ Home", then the kiosk's name and the person.
+    private var compactRows: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // A phone is too narrow for the chip and a long screen title beside "‹ Home"
+            // (Asset Lookup pushed the bar off both edges): they give way, chip first.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { brand(showChip: true, showTitle: true); backButton }
+                HStack(spacing: 10) { brand(showChip: false, showTitle: true); backButton }
+                HStack(spacing: 10) { brand(showChip: false, showTitle: false); backButton }
+            }
+            HStack(spacing: 10) { kioskName; Spacer(minLength: 0); userItems }
+        }
     }
 
     private func regularRow(showChip: Bool, showTitle: Bool) -> some View {

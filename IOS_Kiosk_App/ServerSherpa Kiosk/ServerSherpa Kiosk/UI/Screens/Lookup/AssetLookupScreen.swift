@@ -39,11 +39,18 @@ private struct AssetLookupLive: View {
     }
 }
 
-/// The screen itself. The header and the box stay above the results on an iPad and an upright
-/// phone, so Search and Clear never scroll away; a phone on its side has no height to spare, so
-/// there everything scrolls (the buttons still open at the top). From 700 pt wide (Scanning's
-/// table width) the list and the scan history are tables and the box shares a row with its
-/// buttons; narrower, they stack.
+/// Whether a new answer's first line (`top`, in the scroll view's own coordinates) is out of
+/// sight: above the visible area, or less than a line from its bottom (a phone on its side, or the
+/// on-screen keyboard up).
+func lookupNeedsReveal(top: CGFloat, viewport: CGFloat, line: CGFloat = 44) -> Bool {
+    top < 0 || top + line > viewport
+}
+
+/// The screen itself. Only the box, Search and Clear are pinned, above the scrolling page, on every
+/// size and orientation, so the buttons never scroll away; the header scrolls with the results.
+/// When an answer lands out of sight, the page scrolls to it (the pinned row stays). From 700 pt
+/// wide (Scanning's table width) the box shares a row with its buttons and the list and the scan
+/// history are tables; narrower, the buttons sit right under the box and the rows stack.
 struct AssetLookupBody: View {
     let vm: AssetLookupViewModel
     let ready: Bool
@@ -53,38 +60,42 @@ struct AssetLookupBody: View {
     @State private var camera = false
     /// The page's width inside its padding; nil until measured.
     @State private var contentWidth: CGFloat?
+    /// The scroll view's visible height, and where the results and the card start in it.
+    @State private var viewport: CGFloat = 0
+    @State private var resultsTop: CGFloat = 0
+    @State private var cardTop: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.kioskPalette) private var palette
 
     private static let wideWidth: CGFloat = 700
     private static let cardId = "lookup-card"
+    private static let resultsId = "lookup-results"
+    private static let scrollSpace = "lookup-scroll"
 
     /// Until the first measurement, regular-width devices (iPad) start wide so there is no stacked first frame.
     private var wide: Bool { contentWidth.map { $0 >= Self.wideWidth } ?? (sizeClass == .regular) }
-    private var pinned: Bool { verticalSizeClass != .compact }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            VStack(alignment: .leading, spacing: 0) {
-                if pinned {
-                    top.padding([.horizontal, .top], 16).padding(.bottom, 12)
-                    Rectangle().fill(palette.paperLine).frame(height: 1)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            bar.padding(.horizontal, 16).padding(.vertical, 10)
+            Rectangle().fill(palette.paperLine).frame(height: 1)
+            ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        if !pinned { top.padding(.bottom, 12) }
+                        PageHeader(eyebrow: "Kiosk · Asset Lookup", title: "Asset Lookup", subtitle: subtitle)
+                        Color.clear.frame(height: 0).id(Self.resultsId)
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { resultsTop = $0 }
                         results
                     }
                     .padding(16)
                 }
+                .coordinateSpace(.named(Self.scrollSpace))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
                 .scrollDismissesKeyboard(.never)
-            }
-            // On a picked row the list stays (as on the web) and the card opens below it: bring it
-            // into view rather than leave it under 25 rows.
-            .onChange(of: vm.ui.detail?.id) { _, id in
-                guard id != nil, vm.ui.list != nil else { return }
-                withAnimation { proxy.scrollTo(Self.cardId, anchor: .top) }
+                // A lookup or a pick just answered.
+                .onChange(of: vm.ui.searching) { was, now in
+                    if was && !now { reveal(proxy) }
+                }
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width - 32 } action: { contentWidth = $0 }
@@ -98,18 +109,31 @@ struct AssetLookupBody: View {
         }
     }
 
-    // MARK: header and box
+    /// Brings the answer's first line into view when it landed out of sight: a picked row's card
+    /// (the list stays above it, as on the web), else the results. Read once the new answer is laid out.
+    private func reveal(_ proxy: ScrollViewProxy) {
+        let pick = vm.ui.list != nil && vm.ui.detail != nil
+        DispatchQueue.main.async {
+            guard lookupNeedsReveal(top: pick ? cardTop : resultsTop, viewport: viewport) else { return }
+            withAnimation { proxy.scrollTo(pick ? Self.cardId : Self.resultsId, anchor: .top) }
+        }
+    }
 
-    @ViewBuilder private var top: some View {
-        PageHeader(eyebrow: "Kiosk · Asset Lookup", title: "Asset Lookup", subtitle: subtitle)
-        if wide {
-            HStack(spacing: 8) {
-                box
-                buttons.fixedSize()
+    // MARK: the pinned row
+
+    private var bar: some View {
+        Group {
+            if wide {
+                HStack(spacing: 8) {
+                    box
+                    buttons.fixedSize()
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    box
+                    buttons
+                }
             }
-        } else {
-            box
-            buttons.padding(.top, 8)
         }
     }
 
@@ -150,6 +174,7 @@ struct AssetLookupBody: View {
         }
         if let detail = ui.detail {
             DetailCard(detail: detail, scans: ui.scans, wide: wide).id(Self.cardId)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { cardTop = $0 }
         }
     }
 }
@@ -239,6 +264,15 @@ private struct StatusChip: View {
 
 // MARK: - The list
 
+/// A tapped row darkens while it's held, so a pick shows it registered.
+private struct RowPressStyle: ButtonStyle {
+    let pressed: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.background(configuration.isPressed ? pressed : Color.clear)
+    }
+}
+
 /// The matches; tap one to open it. "Matched on" only when a match isn't by name.
 private struct MatchList: View {
     let list: KioskLookupResult
@@ -261,7 +295,7 @@ private struct MatchList: View {
                         .padding(.vertical, 8)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RowPressStyle(pressed: palette.paperLine))
                 .accessibilityIdentifier("lookup-match-\(m.id)")
                 Rectangle().fill(palette.paperLine).frame(height: 1)
             }

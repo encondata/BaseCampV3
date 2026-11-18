@@ -16,6 +16,10 @@ final class AssetLookupUITests: XCTestCase {
         super.tearDown()
     }
 
+    /// Every state, in both orientations: Search, Clear and "‹ Home" are on screen and hittable
+    /// with no scroll. In the list, a pick opens the card below it and scrolls it into view, and
+    /// the pinned Search and Clear stay put. With TEST_RUNNER_EXPECT_SOFT_KEYBOARD=1 (the simulator's
+    /// hardware keyboard disconnected) the on-screen keyboard must be up too, and the shots say so.
     @MainActor func testSearchAndClearShowInEveryState() throws {
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
             for mode in ["empty", "detail", "list", "offline"] {
@@ -31,16 +35,43 @@ final class AssetLookupUITests: XCTestCase {
                 }
                 if mode == "offline" { XCTAssertTrue(app.descendants(matching: .any)["lookup-offline"].exists, "offline: no notice") }
                 settle(search)
-                try keepScreenshot(mode, orientation)
-                let window = app.windows.firstMatch.frame
-                for (name, button) in [("Search", search), ("Clear", app.buttons["lookup-clear"])] {
-                    XCTAssertTrue(window.insetBy(dx: -0.5, dy: -0.5).contains(button.frame),
-                                  "\(mode), \(orientation.isLandscape ? "landscape" : "portrait"): \(name) \(button.frame) is off screen")
-                    XCTAssertTrue(button.isHittable, "\(mode): \(name) is not hittable without a scroll")
+                let context = "\(mode), \(orientation.isLandscape ? "landscape" : "portrait")"
+                let keyboard = softKeyboard(app, context)
+                try keepScreenshot(mode + (keyboard ? "-keyboard" : ""), orientation)
+                assertReachable(app, context)
+                if mode == "list" {
+                    app.buttons["lookup-match-a2"].tap()
+                    let card = app.descendants(matching: .any)["lookup-card"].firstMatch
+                    XCTAssertTrue(card.waitForExistence(timeout: 5), "\(context): the pick opened no card")
+                    settle(card)
+                    try keepScreenshot("picked" + (keyboard ? "-keyboard" : ""), orientation)
+                    assertReachable(app, context + ", after a pick")
                 }
                 app.terminate()
             }
         }
+    }
+
+    /// Search, Clear and the shell's "‹ Home" lie inside the window and are hittable, with no gesture.
+    @MainActor
+    private func assertReachable(_ app: XCUIApplication, _ context: String) {
+        let window = app.windows.firstMatch.frame
+        let home = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Home'")).firstMatch
+        for (name, button) in [("Search", app.buttons["lookup-search"]), ("Clear", app.buttons["lookup-clear"]), ("Home", home)] {
+            XCTAssertTrue(button.exists, "\(context): no \(name)")
+            XCTAssertTrue(window.insetBy(dx: -0.5, dy: -0.5).contains(button.frame),
+                          "\(context): \(name) \(button.frame) is outside the window \(window)")
+            XCTAssertTrue(button.isHittable, "\(context): \(name) is not hittable without a scroll")
+        }
+    }
+
+    /// Whether the on-screen keyboard is up; required when TEST_RUNNER_EXPECT_SOFT_KEYBOARD=1.
+    @MainActor
+    private func softKeyboard(_ app: XCUIApplication, _ context: String) -> Bool {
+        let expected = ProcessInfo.processInfo.environment["EXPECT_SOFT_KEYBOARD"] == "1"
+        let up = app.keyboards.firstMatch.waitForExistence(timeout: expected ? 5 : 1)
+        if expected { XCTAssertTrue(up, "\(context): the on-screen keyboard is not up") }
+        return up
     }
 
     /// A miss keeps the value in the box, selected: the next scan replaces it rather than being

@@ -169,6 +169,30 @@ struct AssetLookupViewModelTests {
         #expect(b.vm.restoreCount == restores + 1, "the value goes back selected, so the next scan replaces it")
     }
 
+    /// Text typed while a lookup is out stays in the box when the list (or the card) lands.
+    @Test func aListAnswerKeepsWhatWasTypedMeanwhile() async throws {
+        let api = FakeKioskApi()
+        api.lookupAssetsResult = { _, v in
+            v == "core" ? KioskLookupResult(matches: [KioskLookupMatch(id: "x1"), KioskLookupMatch(id: "x2")]) : one("x9")
+        }
+        api.assetDetailResult = { _, id in detail(id) }
+        let gate = hold(api, ["lookupAssets:core", "lookupAssets:A-9"])
+        let b = try await build(api)
+        b.vm.onScan("core")
+        #expect(await waitUntil { api.calls.contains("lookupAssets:core") })
+        b.vm.onValueChange("A-1")
+        await gate.open()
+        await b.vm.settle()
+        #expect(b.vm.ui.list?.matches.count == 2)
+        #expect(b.vm.ui.value == "A-1")
+
+        b.vm.onScan("A-9")
+        b.vm.onValueChange("B-2")
+        await b.vm.settle()
+        #expect(b.vm.ui.detail?.id == "x9")
+        #expect(b.vm.ui.value == "B-2")
+    }
+
     @Test func lookupTrimsTheBox() async throws {
         let api = FakeKioskApi()
         api.lookupAssetsResult = { _, _ in KioskLookupResult() }
