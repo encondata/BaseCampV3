@@ -149,7 +149,7 @@ class RemovalGuardTest {
          */
         val TOUCH_POINTS = mapOf(
             "$APP/AppContainer.kt" to 7,
-            "$APP/data/api/OkHttpKioskApi.kt" to 2,
+            "$APP/data/api/OkHttpKioskApi.kt" to 3,
             "$APP/data/auth/MoveSetupGuard.kt" to 2,
             "$APP/data/printer/NetworkZebra.kt" to 2,
             "$APP/ui/screens/timeclock/TimeclockScreen.kt" to 2,

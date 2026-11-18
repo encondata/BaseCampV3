@@ -9,7 +9,8 @@ watches of the person that would hear it.
 
 A project plan notice (category `plans`) is answered with the plans' own rule
 instead (plans/notices.py `delivery`): plans email the person directly, so
-notify() and decide_email() play no part in it.
+decide_email() plays no part in it. Its push answer is decide_push() like any
+other kind: the plan writes its inbox row with notify(), which pushes.
 
 Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9) and
 docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (section 7)"""
@@ -36,6 +37,7 @@ from serversherpa.notifications.email import (
     load_contact,
 )
 from serversherpa.notifications.kinds import KINDS, KindInfo
+from serversherpa.notifications.push import decide_push, live_registrations, push_enabled
 from serversherpa.notifications.schedule import DAYS, state_at
 from serversherpa.notifications.watches import WatchView, watches_hearing
 from serversherpa.plans.notices import delivery as plan_delivery
@@ -89,6 +91,7 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     else:
         answer = await _notify_answer(db, person_id, info, switches, owner_notice=owner_notice,
                                       contact=contact, company=company, now=now)
+    push = await _push_answer(db, person_id, info, contact=contact, company=company, now=now)
     schedule = contact_schedule(contact)
     watches = ([_watch_entry(view) for view in await watches_hearing(db, person_id, kind)]
                if info.watchable else None)
@@ -103,10 +106,12 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
         "has_account": has_account,
         "inbox_source": switches.inbox_source,
         "email_enabled": email_enabled(),
+        "push_enabled": push_enabled(),
         "critical": is_critical(kind, company),
         "switches": {
             "inbox": {"on": switches.inbox, "source": switches.inbox_source},
             "email": {"on": switches.email, "source": switches.email_source},
+            "push": {"on": switches.push, "source": switches.push_source},
         },
         "schedule": {
             "timezone": schedule.zone.key,
@@ -116,8 +121,24 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
             "state": state_at(schedule, now),
         },
         **answer,
+        "push": push,
         "watches": watches,
     }
+
+
+async def _push_answer(db: AsyncSession, person_id: uuid.UUID, info: KindInfo, *,
+                       contact: Contact | None, company: CompanySettings,
+                       now: datetime) -> dict:
+    """The push answer: decide_push(), the decision maybe_push() acts on. A
+    project plan notice is pushed by the same rule: plans/notices.py writes its
+    inbox row with notify(), which calls maybe_push()."""
+    decision = await decide_push(db, person_id, info, contact=contact, company=company,
+                                 now=now)
+    # The decision stops counting phones once a rule before that one fails; the
+    # tool still shows how many the person has.
+    phones = decision.phones or len(await live_registrations(db, person_id, now))
+    return {"outcome": "now" if decision.queue else "not_sent",
+            "reason": decision.reason, "phones": phones}
 
 
 async def _notify_answer(db: AsyncSession, person_id: uuid.UUID, info: KindInfo,

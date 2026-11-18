@@ -66,6 +66,7 @@ from serversherpa.security.key_attestation import (
 )
 from serversherpa.security.tokens import ISSUER as JWT_ISSUER
 from serversherpa.security.tokens import TokenError
+from serversherpa.services import push_registrations
 from serversherpa.services.audit import audit
 
 logger = logging.getLogger(__name__)
@@ -284,16 +285,17 @@ async def clear_personal_on_platform_change(
     """After `device.sub_type` was set (by its owner's check-in, or by an
     admin in the portal): a personal device that moved to another platform
     family, including from none yet, is no longer the phone that was
-    assigned, so its live keys are revoked (reason `platform_changed`) and
-    the assignment is cleared, audited as `personal_cleared` with the old
-    and new sub_type. A move within a family (Android and Zebra) and a
-    non-personal device change nothing. Returns whether it cleared. Does not
-    commit."""
+    assigned, so its live keys are revoked (reason `platform_changed`), its
+    push registration is deleted and the assignment is cleared, audited as
+    `personal_cleared` with the old and new sub_type. A move within a family
+    (Android and Zebra) and a non-personal device change nothing. Returns
+    whether it cleared. Does not commit."""
     before = device.personal_person_id
     if before is None or platform_family(old_sub_type) == platform_family(device.sub_type):
         return False
     await revoke_keys(db, device_id=device.id, reason="platform_changed",
                       actor_id=actor_id, ip=ip)
+    await push_registrations.drop_for_device(db, device.id, reason="platform_changed")
     device.personal_person_id = None
     device.personal_set_at = None
     device.personal_set_by = None

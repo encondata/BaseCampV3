@@ -22,6 +22,7 @@ from serversherpa.api.schemas import RouterDhcpClientIn, RouterReportIn
 from serversherpa.db.models import AuditLog, Device, DeviceDhcpLease
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.live import signal_inboxes
+from serversherpa.notifications.push import on_rows_read
 from serversherpa.notifications.requests import approver_ids
 from serversherpa.services.audit import audit
 
@@ -283,13 +284,20 @@ async def resolve_router_copies(db: AsyncSession, device_id: uuid.UUID, state: s
     decision (any state but pending/open) also marks the copies read, for
     everyone; one already read keeps its first read time. Setting a copy back
     to pending leaves its read state alone."""
+    where = ("WHERE kind = 'router_approval' "
+             "AND payload ->> 'device_id' = CAST(:device_id AS text)")
+    params = {"state": state, "decided_by": decided_by, "device_id": str(device_id)}
+    # the copies this call newly reads: unread now, and the state is decided
+    newly_read = [] if state in ("pending", "open") else [
+        (r.id, r.person_id) for r in await db.execute(text(
+            "SELECT id, person_id FROM notifications " + where
+            + " AND read_at IS NULL"), params)]
     changed = await db.scalars(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
         "'decided_by', CAST(:decided_by AS text)), "
         "read_at = CASE WHEN CAST(:state AS text) IN ('pending', 'open') "
         "THEN read_at ELSE COALESCE(read_at, now()) END "
-        "WHERE kind = 'router_approval' "
-        "AND payload ->> 'device_id' = CAST(:device_id AS text) RETURNING person_id"),
-        {"state": state, "decided_by": decided_by, "device_id": str(device_id)})
+        + where + " RETURNING person_id"), params)
     await signal_inboxes(db, changed.all())
+    await on_rows_read(db, newly_read)

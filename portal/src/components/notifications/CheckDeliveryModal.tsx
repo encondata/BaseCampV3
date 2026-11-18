@@ -29,7 +29,7 @@ import {
   type CheckWatch, type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
 } from '../../lib/api';
 import {
-  ADDRESS_SOURCE_LABELS, AFTER_SUMMARY_LABEL, reasonLabel, scheduleStateOf, shortWhen,
+  ADDRESS_SOURCE_LABELS, AFTER_SUMMARY_LABEL, pushReasonLabel, reasonLabel, scheduleStateOf, shortWhen,
   switchSourceLabel,
 } from '../../lib/deliveryLog';
 import { categoryLabel } from '../../lib/notificationKinds';
@@ -94,6 +94,24 @@ function emailLine(r: DeliveryCheck): ReactNode {
   }
   // In the last hour before they are back online it goes now: that morning's summary has gone
   return <>{chip}{to && ` ${to}`}{r.after_summary && ` · ${AFTER_SUMMARY_LABEL}`}</>;
+}
+
+/** The Push line: "Sends now to 2 phones", or "Not sent · No phone set up for push". */
+function pushLine(push: NonNullable<DeliveryCheck['push']>): ReactNode {
+  if (push.outcome === 'now') {
+    return (
+      <>
+        <span className="chip c-green">Sends now</span>
+        {` to ${push.phones} phone${push.phones === 1 ? '' : 's'}`}
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="chip c-slate">Not sent</span>
+      {push.reason && <> · {pushReasonLabel(push.reason)}</>}
+    </>
+  );
 }
 
 /** "Inbox on (Company default) · Email off (Their choice)". Email needs Inbox:
@@ -242,6 +260,12 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
                 <dd>{inboxLine(result)}</dd>
                 <dt>Email</dt>
                 <dd>{emailLine(result)}</dd>
+                {result.push && (
+                  <>
+                    <dt>Push</dt>
+                    <dd>{pushLine(result.push)}</dd>
+                  </>
+                )}
                 <dt>Their switches</dt>
                 <dd>{switchesLine(result)}</dd>
                 <dt>Their schedule</dt>

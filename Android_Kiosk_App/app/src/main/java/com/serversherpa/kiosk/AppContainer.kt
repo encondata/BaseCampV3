@@ -61,6 +61,12 @@ import com.serversherpa.kiosk.data.printer.isUpTo
 import com.serversherpa.kiosk.data.printer.lockedSender
 import com.serversherpa.kiosk.data.printer.send
 import com.serversherpa.kiosk.data.printer.transportFor
+import com.serversherpa.kiosk.data.push.FcmTokens
+import com.serversherpa.kiosk.data.push.FirebaseFcmTokens
+import com.serversherpa.kiosk.data.push.PendingOpen
+import com.serversherpa.kiosk.data.push.PushActions
+import com.serversherpa.kiosk.data.push.PushKeyStore
+import com.serversherpa.kiosk.data.push.PushRegistrar
 import com.serversherpa.kiosk.data.rolodex.RolodexCacheStore
 import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.station.StationStatus
@@ -93,6 +99,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -114,6 +122,8 @@ class AppContainer(
     bluetoothOverride: BluetoothLeClient? = null,
     /** Tests: the biometric sign-in key (JVM tests have no AndroidKeyStore). */
     biometricKeysOverride: BiometricKeys? = null,
+    /** Tests: the FCM token source (JVM tests never touch Firebase). */
+    fcmTokensOverride: FcmTokens? = null,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -141,6 +151,20 @@ class AppContainer(
     val stationKeys = StationKeyStore(secretStore)
     /** Whether a Time Clock station's key is there, and whether the portal has paused it. */
     val station = StationStatus(stationKeys, apiBase = { config.apiUrlNow() })
+    /** "This is my phone" and its push registration. Firebase only when this build has a Firebase
+     *  project (google-services.json); otherwise the push step says push isn't available. Chosen
+     *  on first use, after Firebase's own startup has run. */
+    val pushKeys = PushKeyStore(secretStore)
+    val pushRegistrar by lazy {
+        PushRegistrar(
+            api, pushKeys, fcmTokensOverride ?: FirebaseFcmTokens.forApp(app), apiBase = { config.apiUrlNow() },
+            personId = { (auth.state.value as? AuthState.Authed)?.person?.id },
+        )
+    }
+    /** A push alert's Snooze and Mark read buttons (data/push/PushActionReceiver.kt). */
+    val pushActions by lazy { PushActions(api, pushKeys, apiBase = { config.apiUrlNow() }) }
+    /** A tapped alert waiting to open Notifications (MainActivity offers it, the shell takes it). */
+    val pendingOpen = PendingOpen()
     val auth = KioskAuth(api, session, identity, scope)
     /** Fingerprint or face sign-in on a personal phone: the offer, Turn on, the card, Forget. */
     val biometric = BiometricSignIn(
@@ -302,6 +326,26 @@ class AppContainer(
         DataWedge.configure(app)
         rfid.start()
         startSledWiring()
+        // A push token update that failed before (network, read-only mode) goes again.
+        // The scope has no exception handler, so nothing may escape: this runs on every start of
+        // every device, and the Keystore-backed key store can throw.
+        scope.launch {
+            try { pushRegistrar.onAppStart() } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
+        watchPersonalPhone()
+    }
+
+    /** Each sign-in and each start or return to the front, once the heartbeat has bound the session
+     *  to this phone: an admin's phone is brought in line with the server (PushRegistrar.check:
+     *  push registered again silently, or a released phone's key dropped). Never on a Zebra.
+     *  Failures are let go; the next sign-in, return or Settings open tries again. Called by start(). */
+    internal fun watchPersonalPhone(): Job = scope.launch {
+        combine(auth.state, heartbeat.registration) { state, registration ->
+            (state as? AuthState.Authed)?.takeIf { registration != null && it.isAdmin && !isZebraHost }?.person?.id
+        }.distinctUntilChanged().collect { personId ->
+            if (personId == null) return@collect
+            try { pushRegistrar.check() } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
     }
 
     /** The sled's scanner state into the guard, its barcodes onto the scan bus once, and the

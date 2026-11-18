@@ -45,7 +45,9 @@ import com.serversherpa.kiosk.ui.screens.scan.ScanScreen
 import com.serversherpa.kiosk.ui.screens.settings.SettingsScreen
 import com.serversherpa.kiosk.ui.screens.setup.KioskSetupScreen
 import com.serversherpa.kiosk.ui.screens.timeclock.TimeclockScreen
+import com.serversherpa.kiosk.ui.screens.notifications.NotificationsRoute
 import com.serversherpa.kiosk.ui.shell.KioskShell
+import com.serversherpa.kiosk.ui.shell.PendingNotificationRedirect
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.flow.Flow
 
@@ -83,12 +85,28 @@ fun KioskApp() {
                 // Admins only, and no setup step: AdminGate instead of SetupGate. The list is a
                 // LazyColumn, so the shell's page doesn't scroll.
                 composable(Routes.ROLODEX) { KioskGuard(nav) { AdminGate(nav) { KioskShell(nav, scroll = false) { RolodexScreen(nav) } } } }
+                // Admins' inbox (the Home tile), or a tapped push alert's item (PendingNotificationRedirect).
+                // No setup step; the route checks the alert's owner before AdminGate. A LazyColumn, so no page scroll.
+                composable(
+                    Routes.NOTIFICATIONS_PATTERN,
+                    arguments = listOf(
+                        navArgument("highlight") { type = NavType.StringType; nullable = true },
+                        navArgument("owner") { type = NavType.StringType; nullable = true },
+                    ),
+                ) { entry ->
+                    KioskGuard(nav) {
+                        KioskShell(nav, scroll = false) {
+                            NotificationsRoute(nav, entry.arguments?.getString("highlight"), entry.arguments?.getString("owner"))
+                        }
+                    }
+                }
             }
             ScanFlash(container.flash)
             SledFlashOverlay(container.rfid.sledFlashes, container.prefs.appearance)
             SledEffects(container, nav, lastTouch)
             EnrollOfferHost(container.enrollOffer)
             SetupClearedRedirect(nav, container.heartbeat.setupCleared)
+            PendingNotificationRedirect(nav, container.pendingOpen, container.auth.state)
         }
     }
 }

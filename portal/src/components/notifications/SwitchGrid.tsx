@@ -1,6 +1,6 @@
 /**
- * SwitchGrid — the category × Inbox / Email grid. One DataTable row per
- * category, and two house Switches per row.
+ * SwitchGrid — the category × Inbox / Email / Push grid. One DataTable row per
+ * category, and three house Switches per row.
  *
  * Person mode (/me › Notifications) shows what the person gets and where each
  * row stands: "Company default" while they follow it, "Your choice" with a
@@ -13,13 +13,17 @@
  * itself: `defaults` is the draft being edited, there is no state line, and
  * `onChange` hands over the category's whole pair.
  *
- * Email needs Inbox in both: with Inbox off the Email switch reads off and is
- * disabled, "Turn on Inbox to get email". The Email value behind it is kept,
- * so turning Inbox back on gives it back. Account security has no switch: it
- * is always on, and shows "Always". The grid keeps no state of its own.
+ * Email and Push need Inbox in both: with Inbox off the switch reads off and
+ * is disabled, "Turn on Inbox to get email" / "Turn on Inbox to get push". The
+ * value behind it is kept, so turning Inbox back on gives it back. Account
+ * security has no switch: it is always on, and shows "Always" under Inbox and
+ * Email and "Never" under Push (security notices don't push). The grid keeps
+ * no state of its own.
  *
  * Nothing can change while the defaults are still loading (`defaults` null),
- * and Email is off limits while the server can't send email.
+ * Email is off limits while the server can't send email, and Push while the
+ * server can't push. `showPush` leaves the Push column out (/me shows it to
+ * admins only).
  */
 
 import type { ReactNode } from 'react';
@@ -38,6 +42,8 @@ import '../../styles/notifications.css';  // .swgrid-*
 
 const NO_SERVER_EMAIL = "Email isn't set up on this server";
 const NEEDS_INBOX = 'Turn on Inbox to get email';
+const NO_SERVER_PUSH = "Push isn't set up on the server";
+const NEEDS_INBOX_PUSH = 'Turn on Inbox to get push';
 
 interface CommonProps {
   /** The company defaults by category (in defaults mode, the draft being
@@ -47,6 +53,10 @@ interface CommonProps {
   own?: NotifSwitches;
   /** Whether the server can send email at all, or null until that is known. */
   emailEnabled: boolean | null;
+  /** Whether the server can push, or null/absent until that is known. */
+  pushEnabled?: boolean | null;
+  /** Whether the Push column shows at all (default true). */
+  showPush?: boolean;
   /** The whole grid inert, e.g. while a save is on its way. */
   disabled?: boolean;
 }
@@ -68,8 +78,11 @@ type Props = CommonProps & (
 /** The "Always" pill that stands where a switch would. */
 const ALWAYS = <span className="chip c-slate">Always</span>;
 
+/** The "Never" pill under Push for account security. */
+const NEVER = <span className="chip c-slate">Never</span>;
+
 export default function SwitchGrid(props: Props) {
-  const { defaults, emailEnabled, disabled = false } = props;
+  const { defaults, emailEnabled, pushEnabled = null, showPush = true, disabled = false } = props;
 
   /** Set one switch of `category`, from the pair the grid is showing. */
   const change = (category: NotificationCategory, def: SwitchPair, channel: SwitchChannel, next: boolean) => {
@@ -91,15 +104,19 @@ export default function SwitchGrid(props: Props) {
       </div>
     );
 
-    if (!CONFIGURABLE.includes(key)) return { key, cells: [describe(null), ALWAYS, ALWAYS] };
+    if (!CONFIGURABLE.includes(key)) {
+      return { key, cells: [describe(null), ALWAYS, ALWAYS, ...(showPush ? [NEVER] : [])] };
+    }
 
     const own = props.mode === 'person' ? props.own?.[key] : undefined;
     const def: SwitchPair | undefined = defaults?.[key];
-    const shown = def ? effective(own, def) : { inbox: false, email: false };
+    const shown = def ? effective(own, def) : { inbox: false, email: false, push: false };
     // Nothing to flip against until the default is known.
     const inert = disabled || def === undefined;
     const emailReason = emailEnabled === false ? NO_SERVER_EMAIL
       : def !== undefined && !shown.inbox ? NEEDS_INBOX : null;
+    const pushReason = pushEnabled === false ? NO_SERVER_PUSH
+      : def !== undefined && !shown.inbox ? NEEDS_INBOX_PUSH : null;
 
     let state: ReactNode = null;
     if (props.mode === 'person') {
@@ -128,6 +145,13 @@ export default function SwitchGrid(props: Props) {
                   disabled={inert || emailReason !== null}
                   onChange={(next) => { if (def) change(key, def, 'email', next); }} />
         </span>,
+        ...(showPush ? [
+          <span title={pushReason ?? undefined}>
+            <Switch label={`Push for ${label}`} checked={shown.push}
+                    disabled={inert || pushReason !== null}
+                    onChange={(next) => { if (def) change(key, def, 'push', next); }} />
+          </span>,
+        ] : []),
       ],
     };
   });
@@ -139,6 +163,7 @@ export default function SwitchGrid(props: Props) {
                    { key: 'category', label: 'Category' },
                    { key: 'inbox', label: 'Inbox', align: 'center', width: '104px' },
                    { key: 'email', label: 'Email', align: 'center', width: '104px' },
+                   ...(showPush ? [{ key: 'push', label: 'Push', align: 'center' as const, width: '104px' }] : []),
                  ]}
                  rows={rows} />
     </div>

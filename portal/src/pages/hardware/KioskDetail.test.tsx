@@ -580,6 +580,23 @@ it('Overview shows the personal device, its fingerprint status, and Change, Clea
   expect(within(row).getByRole('button', { name: 'Forget fingerprint' })).not.toBeNull();
 });
 
+it('shows Push: on or Push: off under the personal device when someone is set', async () => {
+  api.getDevice.mockResolvedValue(personal({ push_registered: true }));
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(within(personalRow()).getByText('Push: on')).not.toBeNull();
+  cleanup();
+  api.getDevice.mockResolvedValue(personal({ push_registered: false }));
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(within(personalRow()).getByText('Push: off')).not.toBeNull();
+  cleanup();
+  api.getDevice.mockResolvedValue(personal({ personal_person: null, personal_biometric: null, push_registered: false }));
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(within(personalRow()).queryByText(/^Push:/)).toBeNull();
+});
+
 it('an expired key reads expired; no key reads off and offers no Forget fingerprint', async () => {
   api.getDevice.mockResolvedValue(personal({ personal_biometric: { on: true, renews_at: '2020-01-02T12:00:00Z' } }));
   renderAt('/hardware/kiosks/k1');

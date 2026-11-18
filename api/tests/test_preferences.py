@@ -504,3 +504,11 @@ async def test_list_view_defaults_when_absent(client, seeded_user):
     resp = await client.put("/auth/me/preferences", json=legacy, headers=headers)
     assert resp.status_code == 200
     assert resp.json()["list_view"] == "expanded"
+
+
+async def test_me_switch_override_push(client, seeded_user):
+    """The preference save stores only the push the person set."""
+    resp = await _put(client, switches={"wiki": {"push": True}, "reports": {"email": False}})
+    assert resp.status_code == 200, resp.text
+    switches = resp.json()["notif"]["switches"]
+    assert switches == {"wiki": {"push": True}, "reports": {"email": False}}

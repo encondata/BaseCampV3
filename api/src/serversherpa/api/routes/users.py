@@ -60,7 +60,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.mail import email_enabled
 from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
-from serversherpa.services import biometric, invites
+from serversherpa.services import biometric, invites, push_registrations
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -699,6 +699,7 @@ async def disable_account(
     await revoke_all_sessions(db, person_id, "account_disabled")
     await biometric.revoke_keys(db, person_id=person_id, reason="account_disabled",
                                 actor_id=actor.person.id)
+    await push_registrations.drop_for_person(db, person_id, reason="account_disabled")
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.disable")
     await db.commit()
@@ -814,6 +815,7 @@ async def demote_to_worker(
         # delete, so the keys must be revoked explicitly (and audited).
         await biometric.revoke_keys(db, person_id=person_id, reason="demoted",
                                     actor_id=actor.person.id, ip=client_ip(request))
+        await push_registrations.drop_for_person(db, person_id, reason="demoted")
         await db.delete(account)   # password_history cascades
 
         audit(db, actor_id=actor.person.id, entity_type="user_account",
@@ -951,11 +953,14 @@ async def revoke_all_user_sessions(
     db: DbSession,
     actor: AuthContext = require_permission("users", "change"),
 ) -> None:
-    """Sign the person out everywhere without disabling them."""
+    """Sign the person out everywhere without disabling them: sessions,
+    biometric keys, remembered browsers and their phones' push registrations
+    (a push key works with no session)."""
     await _load_target(db, actor, person_id)
     await revoke_all_sessions(db, person_id, "admin")
     await biometric.revoke_keys(db, person_id=person_id, reason="admin",
                                 actor_id=actor.person.id)
+    await push_registrations.drop_for_person(db, person_id, reason="admin")
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})

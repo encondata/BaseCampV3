@@ -440,6 +440,8 @@ async def clean_db():
     from serversherpa.api.routes.kiosk import learning_link_limiter, override_limiter
     override_limiter.reset()
     learning_link_limiter.reset()
+    from serversherpa.api.routes.kiosk_push import push_key_limiter
+    push_key_limiter.reset()
     yield
     await dispose_engine()
 
@@ -520,3 +522,25 @@ def storage_calls(monkeypatch):
 
     monkeypatch.setattr("serversherpa.devtools.cleanup.storage.delete_object", fake_delete)
     return calls
+
+
+@pytest.fixture
+def fcm_on(monkeypatch):
+    """Push is set up (a key file path is configured; nothing reads it)."""
+    from serversherpa.config import get_settings
+
+    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_FILE", "/nonexistent/fcm.json")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """`clock(instant)` freezes push.py's clock at `instant`."""
+    from serversherpa.notifications import push as push_mod
+
+    def set_to(instant):
+        monkeypatch.setattr(push_mod, "_now", lambda: instant)
+        return instant
+    return set_to
