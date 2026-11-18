@@ -543,11 +543,18 @@ What differs from, or adds to, the design above. Written after the build.
 
 ### Still open
 
-- Rest of the device pass (Task 13). Done on the Pixel 10 Pro XL (Android 17):
-  registration, delivery, the banner, and Mark read clearing the alert. Still
-  to try: app closed, phone locked, signed out after expiry, quiet hours and a
-  critical kind, Snooze re-alerting after 5 minutes, read on the portal clearing
-  the phone, and the switch turned off.
+- Device pass (Task 13), Pixel 10 Pro XL (Android 17), 2026-11-18. Passed:
+  registration, delivery, the banner with sound, phone locked, app swiped away,
+  Snooze taking the alert down and re-alerting after 5 minutes, Mark read on the
+  portal clearing the phone and cancelling a pending snooze, and tapping an alert
+  while signed out (sign-in, then Notifications with the item outlined). Quiet
+  hours and the critical exception were checked on the server against a copy of
+  the owner's preferences (held at 23:00; critical sent). Skipped by Jimmy:
+  turning "This is my phone" off (it also removes fingerprint sign-in).
+- During the pass the dev API kept restarting: uvicorn `--reload` watched the
+  whole repo, and another session's virtualenv install inside `.claude/worktrees`
+  restarted it, dropping in-flight requests (Snooze looked broken). Start the dev
+  API with `--reload-dir api/src`.
 - A rare deadlock is parked: a snooze row's fifth-attempt fallback ends the
   snooze without SKIP LOCKED. Postgres detects it; the worst case is one failed
   Mark read or a row left queued.
