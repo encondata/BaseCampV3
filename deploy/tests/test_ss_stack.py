@@ -15,6 +15,15 @@ from conftest import ENV_EXAMPLE, SS_STACK, STACK_DIR
 FAKE_DOCKER = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
+  # does the devices database exist? (FAKE_DEVICES_DB: yes)
+  *"-tAc SELECT 1 FROM pg_database WHERE datname = 'serversherpa_devices'")
+    [[ -n "${FAKE_DEVICES_DB:-}" ]] && echo 1 ;;
+  *"pg_dump"*"serversherpa_devices"*)
+    [[ -n "${FAKE_FAIL_DEVICES_DUMP:-}" ]] && { printf 'PGDMP-cut'; exit 1; }
+    printf 'PGDMP-devices' ;;
+  *"pg_restore"*"serversherpa_devices"*)
+    cat > "$DOCKER_LOG.devices-stdin"
+    [[ -n "${FAKE_FAIL_DEVICES_RESTORE:-}" ]] && exit 1 ;;
   "network inspect "*) [[ -n "${FAKE_NETWORK_EXISTS:-}" ]] && exit 0 || exit 1 ;;
   *" ps --status running -q postgres") [[ -n "${FAKE_DB_RUNNING:-}" ]] && echo 0123abcdef ;;
   *pg_dump*)
@@ -184,7 +193,9 @@ def test_dump_writes_and_keeps_the_newest(env_dir: Path, fake: dict[str, str]) -
     new = Path(out.stdout.strip())
     assert new.parent == backups and new.read_text() == "PGDMP-fake"
     assert calls(fake) == [dc(env_dir, "db",
-                              "exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc")]
+                              "exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc"),
+                           dc(env_dir, "db", DEVICES_EXISTS)]
+    assert not (backups / "devices").exists()   # no devices database, no devices dump
     remaining = sorted(p.name for p in backups.glob("*.dump"))
     assert len(remaining) == 5
     assert new.name in remaining
@@ -246,6 +257,96 @@ def test_interrupted_dump_leaves_no_partial(env_dir: Path, fake: dict[str, str],
     assert list(backups.iterdir()) == []
 
 
+# ---- the devices database (serversherpa_devices) rides along with dump and restore ----
+
+DEVICES_EXISTS = ("exec -T postgres psql -U serversherpa -d serversherpa -tAc SELECT 1 FROM "
+                  "pg_database WHERE datname = 'serversherpa_devices'")
+DEVICES_DUMP = "exec -T postgres pg_dump -U serversherpa -d serversherpa_devices -Fc"
+EXTERNAL = ("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+            "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n")
+
+
+def test_dump_writes_the_devices_database_beside_the_main_one(env_dir: Path,
+                                                              fake: dict[str, str]) -> None:
+    out = run({**fake, "FAKE_DEVICES_DB": "1"}, "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    new = Path(out.stdout.strip())       # one line: the main dump
+    backups = env_dir / "backups"
+    assert calls(fake) == [
+        dc(env_dir, "db", "exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc"),
+        dc(env_dir, "db", DEVICES_EXISTS),
+        dc(env_dir, "db", DEVICES_DUMP),
+    ]
+    sibling = backups / "devices" / new.name
+    assert new.read_text() == "PGDMP-fake" and sibling.read_text() == "PGDMP-devices"
+    assert sibling.stat().st_mode & 0o777 == 0o600
+    assert (backups / "devices").stat().st_mode & 0o777 == 0o700
+    # only the main dump is a backup (backups/*.dump); no partial is left
+    assert [p.name for p in backups.glob("*.dump")] == [new.name]
+    assert list(backups.rglob("*.partial")) == []
+
+
+@pytest.mark.parametrize("devices_db", [True, False])
+def test_rotation_removes_the_devices_dump_with_its_main_dump(env_dir: Path, fake: dict[str, str],
+                                                              devices_db: bool) -> None:
+    backups = env_dir / "backups"
+    (backups / "devices").mkdir(parents=True)
+    for i in range(6):
+        (backups / f"20200101T00000{i}Z.dump").write_text("old")
+        (backups / "devices" / f"20200101T00000{i}Z.dump").write_text("old")
+    env = {**fake, "FAKE_DEVICES_DB": "1"} if devices_db else fake
+    out = run(env, "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    new = Path(out.stdout.strip()).name
+    mains = {p.name for p in backups.glob("*.dump")}
+    assert len(mains) == 5 and new in mains
+    siblings = {p.name for p in (backups / "devices").glob("*.dump")}
+    assert siblings == (mains if devices_db else mains - {new})
+
+
+def test_a_failed_devices_dump_keeps_no_backup(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run({**fake, "FAKE_DEVICES_DB": "1", "FAKE_FAIL_DEVICES_DUMP": "1"},
+              "dump", str(env_dir))
+    assert out.returncode != 0
+    assert "pg_dump of the devices database failed" in out.stderr
+    backups = env_dir / "backups"
+    assert list(backups.rglob("*.dump")) == []
+    assert list(backups.rglob("*.partial")) == []
+
+
+def test_external_dump_writes_the_devices_database_and_leaves_no_ca_file(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    """The existence check reads psql's output ($(…), a subshell): the CA
+    file must still be this shell's, so nothing is left behind."""
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    _apps(env_dir, EXTERNAL + f"SS_DATABASE_CA_B64={_ca_b64()}\n")
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1", "FAKE_DEVICES_DB": "1", "TMPDIR": str(tmp)},
+              "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    pg = [x for x in calls(fake) if x.startswith("run --rm -i --network ss-uat ")]
+    assert len(pg) == 3
+    main, exists, devices = pg
+    assert main.endswith("postgres:16-alpine pg_dump -Fc")
+    assert exists.endswith("postgres:16-alpine psql -tAc SELECT 1 FROM pg_database "
+                           "WHERE datname = 'serversherpa_devices'")
+    assert devices.endswith("postgres:16-alpine pg_dump -d serversherpa_devices -Fc")
+    assert all("-e PGSSLMODE=verify-full" in x for x in pg)
+    assert not any("/db/compose.yml" in x for x in calls(fake))
+    new = Path(out.stdout.strip())
+    assert (new.parent / "devices" / new.name).read_text() == "PGDMP-devices"
+    assert list(tmp.iterdir()) == []
+
+
+@pytest.mark.parametrize("command", ["pgdump", "revision"])
+def test_pgdump_and_revision_stay_on_the_main_database(env_dir: Path, fake: dict[str, str],
+                                                       command: str, tmp_path: Path) -> None:
+    extra = [str(tmp_path / "out.dump")] if command == "pgdump" else []
+    out = run({**fake, "FAKE_DEVICES_DB": "1"}, command, str(env_dir), *extra)
+    assert out.returncode == 0, out.stderr
+    assert not any("serversherpa_devices" in c for c in calls(fake))
+
+
 WAIT = "up -d --wait --wait-timeout 300 --remove-orphans"
 PSQL = "exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q"
 CLEAR = ("DO $$ BEGIN IF to_regclass('public.auth_sessions') IS NOT NULL THEN DELETE FROM "
@@ -281,7 +382,8 @@ def test_restore_stops_writers_empties_the_schema_and_restores(
     assert out.stdout.strip() == f"restored {dump}"
     assert calls(fake) == [
         "network inspect ss-uat",
-        dc(env_dir, "status", "stop"), dc(env_dir, "web", "stop"), dc(env_dir, "api", "stop"),
+        dc(env_dir, "status", "stop"), dc(env_dir, "devices", "stop"),
+        dc(env_dir, "web", "stop"), dc(env_dir, "api", "stop"),
         dc(env_dir, "db", WAIT),
         dc(env_dir, "db", f"{PSQL} -c DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
         dc(env_dir, "db", "exec -T postgres pg_restore --exit-on-error --no-owner --no-acl "
@@ -289,6 +391,78 @@ def test_restore_stops_writers_empties_the_schema_and_restores(
         dc(env_dir, "db", f"{PSQL} -c {CLEAR}"),
     ]
     assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"PGDMP-restore-me"
+
+
+DEVICES_PSQL = "exec -T postgres psql -U serversherpa -d serversherpa_devices -v ON_ERROR_STOP=1 -q"
+
+
+def _devices_dump(dump: Path) -> Path:
+    sibling = dump.parent / "devices" / dump.name
+    sibling.parent.mkdir()
+    sibling.write_bytes(b"PGDMP-devices-restore-me")
+    return sibling
+
+
+def test_restore_restores_the_devices_database_from_its_sibling_dump(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    _devices_dump(dump)
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "restore", str(env_dir), str(dump),
+              "--clear-sessions")
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    main_restore = c.index(dc(env_dir, "db", "exec -T postgres pg_restore --exit-on-error "
+                                             "--no-owner --no-acl -U serversherpa -d serversherpa"))
+    assert c[main_restore + 1:] == [
+        dc(env_dir, "db", f"{PSQL} -c {CLEAR}"),
+        # an environment that never ran devices gets the database first
+        dc(env_dir, "db", DEVICES_DB),
+        dc(env_dir, "db", f"{DEVICES_PSQL} -c DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
+        dc(env_dir, "db", "exec -T postgres pg_restore -U serversherpa -d serversherpa_devices "
+                          "--exit-on-error --no-owner --no-acl"),
+    ]
+    assert Path(fake["DOCKER_LOG"] + ".sql").read_text() == DEVICES_SQL
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"PGDMP-restore-me"
+    assert Path(fake["DOCKER_LOG"] + ".devices-stdin").read_bytes() == b"PGDMP-devices-restore-me"
+
+
+def test_restore_without_a_devices_dump_leaves_the_devices_database(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    # a backup from before devices was dumped: the main database only
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "restore", str(env_dir), str(_dump(tmp_path)))
+    assert out.returncode == 0, out.stderr
+    assert not any("serversherpa_devices" in c for c in calls(fake))
+    assert not Path(fake["DOCKER_LOG"] + ".sql").exists()
+
+
+def test_restore_reports_a_failed_devices_restore(env_dir: Path, fake: dict[str, str],
+                                                  tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    _devices_dump(dump)
+    out = run({**fake, "FAKE_FAIL_DEVICES_RESTORE": "1"}, "restore", str(env_dir), str(dump))
+    assert out.returncode != 0
+    assert "pg_restore of the devices database failed" in out.stderr
+
+
+def test_external_restore_restores_the_devices_database(env_dir: Path, fake: dict[str, str],
+                                                        tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    _devices_dump(dump)
+    _apps(env_dir, EXTERNAL)
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "restore", str(env_dir), str(dump))
+    assert out.returncode == 0, out.stderr
+    pg = [x for x in calls(fake) if x.startswith("run --rm -i --network ss-uat ")]
+    assert [x.split("postgres:16-alpine ", 1)[1] for x in pg] == [
+        "psql -v ON_ERROR_STOP=1 -q -c DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+        "pg_restore --exit-on-error --no-owner --no-acl -d serversherpa",
+        "psql -v ON_ERROR_STOP=1 -q",
+        ("psql -d serversherpa_devices -v ON_ERROR_STOP=1 -q -c DROP SCHEMA public CASCADE; "
+         "CREATE SCHEMA public;"),
+        "pg_restore -d serversherpa_devices --exit-on-error --no-owner --no-acl",
+    ]
+    assert all("-e PGSSLMODE=require" in x for x in pg)
+    assert not any("/db/compose.yml" in x for x in calls(fake))
+    assert Path(fake["DOCKER_LOG"] + ".devices-stdin").read_bytes() == b"PGDMP-devices-restore-me"
 
 
 def test_restore_keeps_sessions_unless_asked(env_dir: Path, fake: dict[str, str],
@@ -368,6 +542,23 @@ def test_a_data_vm_publishes_postgres_with_its_hba(env_dir: Path, fake: dict[str
     assert "host serversherpa serversherpa 10.10.48.49/32 scram-sha-256" in hba
     assert "local all all trust" in hba and "0.0.0.0/0" not in hba
     assert oct((env_dir / "pg_hba.conf").stat().st_mode & 0o777) == "0o644"
+
+
+def test_a_data_vm_lets_its_app_servers_reach_the_devices_database(env_dir: Path,
+                                                                    fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    hosts = [line for line in (env_dir / "pg_hba.conf").read_text().splitlines()
+             if line.startswith("host ")]
+    assert hosts == [
+        "host all all 127.0.0.1/32 scram-sha-256",
+        "host serversherpa serversherpa 10.10.48.48/32 scram-sha-256",
+        "host serversherpa_devices serversherpa 10.10.48.48/32 scram-sha-256",
+        "host serversherpa serversherpa 10.10.48.49/32 scram-sha-256",
+        "host serversherpa_devices serversherpa 10.10.48.49/32 scram-sha-256",
+    ]
 
 
 @pytest.mark.parametrize("allow", ["", "10.10.48.48,not-an-ip", "10.10.48.48;rm -rf /",

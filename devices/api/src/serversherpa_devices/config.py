@@ -28,6 +28,9 @@ class Settings(BaseSettings):
 
     database_url: SecretStr                      # postgresql+asyncpg://…
     database_ssl: Literal["require", "disable"] = "disable"
+    # A managed database's CA, base64 PEM (the stack's SS_DATABASE_CA_B64):
+    # with "require", the server is verified against it (see db/tls.py).
+    database_ca_b64: str = ""
 
     # The main API, reached internally (e.g. http://localhost:8000).
     main_api_url: str

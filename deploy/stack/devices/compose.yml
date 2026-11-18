@@ -13,6 +13,8 @@ x-devices-env: &devices-env
   # DEVICES_DATABASE_URL (serversherpa_devices on the managed database).
   DEVICES_DATABASE_URL: ${DEVICES_DATABASE_URL:-postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa_devices}
   DEVICES_DATABASE_SSL: ${SS_DATABASE_SSL:-disable}
+  # a managed database's CA (base64 PEM): with it, TLS is verified against it
+  DEVICES_DATABASE_CA_B64: ${SS_DATABASE_CA_B64:-}
   DEVICES_MAIN_API_URL: http://api:8000
   # Optional here so the stack can be stopped and listed with the app off;
   # ss-stack up refuses to start it without them (and so does the service).
@@ -22,12 +24,13 @@ x-devices-env: &devices-env
   # the stack that owns iPhone installs, when this one has no Apple settings
   DEVICES_IOS_OWNER_URL: ${DEVICES_IOS_OWNER_URL:-}
   # presigned URLs are signed for this host, so it must be the public name;
-  # a DigitalOcean droplet's .env points these at its Spaces
+  # a DigitalOcean droplet's .env points these at its Spaces, with the
+  # devices bucket's own key (DEVICES_SPACES_*_KEY; else the main key)
   DEVICES_SPACES_ENDPOINT: ${SS_SPACES_ENDPOINT:-https://spaces.${STACK_DOMAIN}}
   DEVICES_SPACES_REGION: ${SS_SPACES_REGION:-us-east-1}
   DEVICES_SPACES_BUCKET: ${DEVICES_SPACES_BUCKET:-serversherpa-devices}
-  DEVICES_SPACES_ACCESS_KEY: ${SS_SPACES_ACCESS_KEY:-serversherpa}
-  DEVICES_SPACES_SECRET_KEY: ${SS_SPACES_SECRET_KEY:-${SPACES_SECRET_KEY:?set SPACES_SECRET_KEY}}
+  DEVICES_SPACES_ACCESS_KEY: ${DEVICES_SPACES_ACCESS_KEY:-${SS_SPACES_ACCESS_KEY:-serversherpa}}
+  DEVICES_SPACES_SECRET_KEY: ${DEVICES_SPACES_SECRET_KEY:-${SS_SPACES_SECRET_KEY:-${SPACES_SECRET_KEY:?set SPACES_SECRET_KEY}}}
   DEVICES_SPACES_USE_PATH_STYLE: ${SS_SPACES_USE_PATH_STYLE:-true}
   # uvicorn honors X-Forwarded-For only from NPM (or Caddy), so callers
   # can't spoof their client IP

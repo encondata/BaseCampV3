@@ -37,8 +37,14 @@ stack that owns iPhone installs, for a stack with no Apple settings);
   needed.
 
 With devices off, the API's internal devices endpoints stay off too.
-The devices database isn't in `ss-stack dump` / `restore` (they cover the
-main database only).
+`ss-stack dump` also dumps the devices database, when it exists, to
+`backups/devices/` under the main dump's name (outside the `*.dump` files
+that count as backups; rotated with them). `ss-stack restore` stops the
+devices stack too and, when that sibling dump is there, empties and
+restores the devices database from it; a backup without one leaves the
+devices database as it is. `pgdump` and `revision` cover the main database
+only. On a LAN Blue/Green data VM, `pg_hba.conf` lets the app servers in
+`STACK_DB_ALLOW` reach both databases.
 
 ## DigitalOcean droplets (Sirdar phase 7)
 
@@ -54,8 +60,10 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
   through a one-off client, and the `.env` needs `DEVICES_DATABASE_URL`
   (`serversherpa_devices` there, `postgresql+asyncpg://`; a LAN Blue/Green
   app VM too, on its data VM). The devices service encrypts that connection
-  when `SS_DATABASE_SSL=require` but doesn't check the server against
-  `SS_DATABASE_CA_B64` (the main API does);
+  when `SS_DATABASE_SSL=require` and, like the main API, verifies the
+  server against `SS_DATABASE_CA_B64` when it is set. The devices bucket
+  may have its own Spaces key (`DEVICES_SPACES_ACCESS_KEY` /
+  `DEVICES_SPACES_SECRET_KEY`; without them, the main `SS_SPACES_*` key);
 - dumps and restores through a one-off `postgres:16-alpine` container
   against the managed database (`PGSSLMODE=require`, the password from
   `POSTGRES_PASSWORD`, passed through the environment and never on a

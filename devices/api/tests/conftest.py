@@ -80,6 +80,7 @@ def _prepare_environment() -> None:
     os.environ["DEVICES_ENV"] = "development"
     os.environ["DEVICES_DATABASE_URL"] = asyncpg_url(TEST_DB)
     os.environ["DEVICES_DATABASE_SSL"] = "disable"
+    os.environ["DEVICES_DATABASE_CA_B64"] = ""
     os.environ["DEVICES_MAIN_API_URL"] = "http://main-api.test"
     os.environ["DEVICES_SERVICE_TOKEN"] = "test-service-token"
     os.environ["DEVICES_SECRET_KEY"] = Fernet.generate_key().decode()
