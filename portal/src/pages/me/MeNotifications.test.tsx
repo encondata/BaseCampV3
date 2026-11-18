@@ -53,7 +53,7 @@ vi.mock('../../lib/notificationSounds', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/notificationSounds')>()), ...sounds,
 }));
 
-const status = vi.hoisted(() => ({ email_enabled: true, push_enabled: true }));
+const status = vi.hoisted(() => ({ email_enabled: true, push_enabled: true as boolean | undefined }));
 // false: the first /system/status answer has not landed yet
 const statusLoaded = vi.hoisted(() => ({ value: true }));
 vi.mock('../../lib/systemStatusContext', () => ({
@@ -200,6 +200,16 @@ it('push says it is not set up on the server when the status says so', async () 
   const push = screen.getByRole('checkbox', { name: 'Push for Wiki' }) as HTMLInputElement;
   expect(push.disabled).toBe(true);
   expect(reason(push)).toBe("Push isn't set up on the server");
+});
+
+it('push stays enabled when an older API sends no push_enabled', async () => {
+  auth.maxRank = 60;
+  status.push_enabled = undefined;
+  render(<MeNotifications />);
+  await loaded();
+  const push = screen.getByRole('checkbox', { name: 'Push for Wiki' }) as HTMLInputElement;
+  expect(push.disabled).toBe(false);
+  expect(reason(push)).toBeNull();
 });
 
 // ── the "What you get" card ──────────────────────────────────────────────

@@ -17,6 +17,13 @@ import {
 } from '../../lib/api';
 
 const auth = vi.hoisted(() => ({ canChange: true }));
+const sysStatus = vi.hoisted(() => ({ push_enabled: true as boolean | undefined, loaded: true }));
+vi.mock('../../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({
+    status: { push_enabled: sysStatus.push_enabled }, loaded: sysStatus.loaded, refresh: () => {},
+  }),
+}));
+
 vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     can: (resource: string, action: string) =>
@@ -249,6 +256,24 @@ it('the defaults grid has a Push column: off to start, and saving sends the whol
   await waitFor(() => expect(api.updateNotificationSettings).toHaveBeenCalledTimes(1));
   expect(api.updateNotificationSettings.mock.calls[0][0].defaults)
     .toEqual({ wiki: { inbox: true, email: true, push: true } });
+});
+
+it('Push is disabled with its reason when the server has no push, editable when it has', async () => {
+  sysStatus.push_enabled = false;
+  await mount();
+  const off = gridSwitch('Push', 'Wiki');
+  expect(off.disabled).toBe(true);
+  expect(off.closest('[title]')?.getAttribute('title')).toBe("Push isn't set up on the server");
+  expect(gridSwitch('Email', 'Wiki').disabled).toBe(false);
+  cleanup();
+  sysStatus.push_enabled = true;
+  await mount();
+  expect(gridSwitch('Push', 'Wiki').disabled).toBe(false);
+  cleanup();
+  sysStatus.push_enabled = undefined;   // an older API says nothing: blocks nothing
+  await mount();
+  expect(gridSwitch('Push', 'Wiki').disabled).toBe(false);
+  sysStatus.push_enabled = true;
 });
 
 it('a category left alone is not sent, so a tab loaded before another admin\'s save keeps their change', async () => {

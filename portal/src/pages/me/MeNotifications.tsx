@@ -4,8 +4,8 @@
  * notification groups they belong to.
  *
  * "What you get" is the Inbox / Email switch grid, with a Push column for
- * admins (max rank 60 and up). A switch the person has not
- * changed follows the company default, which the server sends
+ * admins (max rank 60 and up). A switch the person has not changed follows
+ * the company default, which the server sends
  * (GET /notifications/settings); only their own choices are saved, so a later
  * change to a default still reaches them. The grid stays off limits until the
  * defaults have loaded. Under it the critical note names the kinds an admin
