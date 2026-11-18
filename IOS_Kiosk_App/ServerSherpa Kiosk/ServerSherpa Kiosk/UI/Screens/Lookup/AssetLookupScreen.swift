@@ -40,17 +40,24 @@ private struct AssetLookupLive: View {
 }
 
 /// Whether a new answer's first line (`top`, in the scroll view's own coordinates) is out of
-/// sight: above the visible area, or less than a line from its bottom (a phone on its side, or the
-/// on-screen keyboard up).
-func lookupNeedsReveal(top: CGFloat, viewport: CGFloat, line: CGFloat = 44) -> Bool {
-    top < 0 || top + line > viewport
+/// sight: under the box row stuck at the top (`pinned` tall), or less than a line from the bottom
+/// (a phone on its side, or the on-screen keyboard up).
+func lookupNeedsReveal(top: CGFloat, viewport: CGFloat, pinned: CGFloat, line: CGFloat = 44) -> Bool {
+    top < pinned || top + line > viewport
 }
 
-/// The screen itself. Only the box, Search and Clear are pinned, above the scrolling page, on every
-/// size and orientation, so the buttons never scroll away; the header scrolls with the results.
-/// When an answer lands out of sight, the page scrolls to it (the pinned row stays). From 700 pt
-/// wide (Scanning's table width) the box shares a row with its buttons and the list and the scan
-/// history are tables; narrower, the buttons sit right under the box and the rows stack.
+/// Whether the box row (starting at `rowTop` in the scroll view) runs past the bottom of the
+/// visible area: the header above it plus the on-screen keyboard on a phone on its side.
+func lookupRowCutOff(rowTop: CGFloat, rowHeight: CGFloat, viewport: CGFloat) -> Bool {
+    rowTop + rowHeight > viewport + 0.5
+}
+
+/// The screen itself, top to bottom: the header, the box with Search and Clear, the results. The
+/// box row is a pinned section header: once the header scrolls away the row sticks at the top, so
+/// the buttons are never only reachable by scrolling. When an answer lands out of sight, the page
+/// scrolls it in just under the row. From 700 pt wide (Scanning's table width) the box shares a
+/// row with its buttons and the list and the scan history are tables; narrower, the buttons sit
+/// right under the box and the rows stack.
 struct AssetLookupBody: View {
     let vm: AssetLookupViewModel
     let ready: Bool
@@ -60,43 +67,52 @@ struct AssetLookupBody: View {
     @State private var camera = false
     /// The page's width inside its padding; nil until measured.
     @State private var contentWidth: CGFloat?
-    /// The scroll view's visible height, and where the results and the card start in it.
+    /// The scroll view's visible height, the box row's height, and where the results and the card
+    /// start in the scroll view.
     @State private var viewport: CGFloat = 0
-    @State private var resultsTop: CGFloat = 0
+    @State private var rowHeight: CGFloat = 0
+    /// Where the header ends in the scroll view: the box row starts there, or sticks at 0.
+    @State private var headerBottom: CGFloat = 0
     @State private var cardTop: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.kioskPalette) private var palette
 
     private static let wideWidth: CGFloat = 700
-    private static let cardId = "lookup-card"
-    private static let resultsId = "lookup-results"
+    private static let cardMark = "lookup-card-start"
+    /// The header's end, where the box row starts: scrolled to the top, the row sticks there with
+    /// the results right under it. A direct child of the lazy stack, so it is always there to find.
+    private static let rowMark = "lookup-row-start"
     private static let scrollSpace = "lookup-scroll"
 
     /// Until the first measurement, regular-width devices (iPad) start wide so there is no stacked first frame.
     private var wide: Bool { contentWidth.map { $0 >= Self.wideWidth } ?? (sizeClass == .regular) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            bar.padding(.horizontal, 16).padding(.vertical, 10)
-            Rectangle().fill(palette.paperLine).frame(height: 1)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        PageHeader(eyebrow: "Kiosk · Asset Lookup", title: "Asset Lookup", subtitle: subtitle)
-                        Color.clear.frame(height: 0).id(Self.resultsId)
-                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { resultsTop = $0 }
-                        results
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    PageHeader(eyebrow: "Kiosk · Asset Lookup", title: "Asset Lookup", subtitle: subtitle)
+                        .padding([.horizontal, .top], 16)
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).maxY } action: { headerBottom = $0 }
+                    Color.clear.frame(height: 0).id(Self.rowMark)
+                    Section {
+                        VStack(alignment: .leading, spacing: 0) { results }
+                            .padding([.horizontal, .bottom], 16)
+                    } header: {
+                        boxRow
                     }
-                    .padding(16)
-                }
-                .coordinateSpace(.named(Self.scrollSpace))
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
-                .scrollDismissesKeyboard(.never)
-                // A lookup or a pick just answered.
-                .onChange(of: vm.ui.searching) { was, now in
-                    if was && !now { reveal(proxy) }
                 }
             }
+            .coordinateSpace(.named(Self.scrollSpace))
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
+            .scrollDismissesKeyboard(.never)
+            // A lookup or a pick just answered.
+            .onChange(of: vm.ui.searching) { was, now in
+                if was && !now { reveal(proxy) }
+            }
+            // The keyboard came up or the device turned: the whole box row stays on screen.
+            .onChange(of: viewport) { _, _ in keepRowInView(proxy) }
+            .onAppear { keepRowInView(proxy) }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width - 32 } action: { contentWidth = $0 }
         .background(palette.paper2)
@@ -109,17 +125,51 @@ struct AssetLookupBody: View {
         }
     }
 
-    /// Brings the answer's first line into view when it landed out of sight: a picked row's card
-    /// (the list stays above it, as on the web), else the results. Read once the new answer is laid out.
+    /// A zero-height marker the page scrolls to, reporting where it is in the scroll view.
+    private func mark(_ id: String, _ report: @escaping (CGFloat) -> Void) -> some View {
+        Color.clear.frame(height: 0).id(id)
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { report($0) }
+    }
+
+    /// Where a zero-height marker lands right under the stuck box row (a fraction of the height).
+    private var underRow: UnitPoint { UnitPoint(x: 0, y: min(rowHeight / max(viewport, 1), 0.9)) }
+
+    /// When the header leaves too little room for the whole box row, the header scrolls away and
+    /// the row sticks at the top. Checked once the keyboard has finished coming up: a scroll made
+    /// while it animates in is undone by the keyboard's own adjustment.
+    private func keepRowInView(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard lookupRowCutOff(rowTop: max(headerBottom, 0), rowHeight: rowHeight, viewport: viewport) else { return }
+            withAnimation { proxy.scrollTo(Self.rowMark, anchor: .top) }
+        }
+    }
+
+    /// Brings the answer's first line in just under the stuck box row when it landed out of sight:
+    /// a picked row's card (the list stays above it, as on the web), else the results. Read once
+    /// the new answer is laid out.
     private func reveal(_ proxy: ScrollViewProxy) {
         let pick = vm.ui.list != nil && vm.ui.detail != nil
         DispatchQueue.main.async {
-            guard lookupNeedsReveal(top: pick ? cardTop : resultsTop, viewport: viewport) else { return }
-            withAnimation { proxy.scrollTo(pick ? Self.cardId : Self.resultsId, anchor: .top) }
+            // The results start right under the row (stuck or not).
+            let top = pick ? cardTop : headerBottom + rowHeight
+            guard lookupNeedsReveal(top: top, viewport: viewport, pinned: rowHeight) else { return }
+            withAnimation {
+                if pick { proxy.scrollTo(Self.cardMark, anchor: underRow) } else { proxy.scrollTo(Self.rowMark, anchor: .top) }
+            }
         }
     }
 
     // MARK: the pinned row
+
+    /// The box row on the page's background, so the results never show through it once it sticks.
+    private var boxRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            bar.padding(.horizontal, 16).padding(.vertical, 10)
+            Rectangle().fill(palette.paperLine).frame(height: 1)
+        }
+        .background(palette.paper2)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowHeight = $0 }
+    }
 
     private var bar: some View {
         Group {
@@ -173,8 +223,8 @@ struct AssetLookupBody: View {
                 .accessibilityLabel("Looking up")
         }
         if let detail = ui.detail {
-            DetailCard(detail: detail, scans: ui.scans, wide: wide).id(Self.cardId)
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.scrollSpace)).minY } action: { cardTop = $0 }
+            mark(Self.cardMark) { cardTop = $0 }
+            DetailCard(detail: detail, scans: ui.scans, wide: wide)
         }
     }
 }

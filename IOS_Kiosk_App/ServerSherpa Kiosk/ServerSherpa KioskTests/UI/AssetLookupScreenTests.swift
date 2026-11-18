@@ -5,15 +5,24 @@ import Testing
 /// The screen's pure pieces: when an answer is scrolled into view, and the shared status chip.
 @MainActor
 struct AssetLookupScreenTests {
-    /// An answer is brought into view when its first line is above the visible area or less than
-    /// a line from its bottom (a phone on its side, the on-screen keyboard up); otherwise the page
-    /// stays where it is.
+    /// An answer is brought into view when its first line is under the box row stuck at the top,
+    /// or less than a line from the bottom (a phone on its side, the on-screen keyboard up);
+    /// otherwise the page stays where it is.
     @Test func anAnswerOutOfSightIsRevealed() {
-        #expect(!lookupNeedsReveal(top: 120, viewport: 600))
-        #expect(!lookupNeedsReveal(top: 0, viewport: 44))
-        #expect(lookupNeedsReveal(top: 120, viewport: 150), "less than a line showing")
-        #expect(lookupNeedsReveal(top: 300, viewport: 90), "below the fold")
-        #expect(lookupNeedsReveal(top: -40, viewport: 600), "scrolled past")
+        #expect(!lookupNeedsReveal(top: 200, viewport: 600, pinned: 72), "at rest, under the header and the row")
+        #expect(!lookupNeedsReveal(top: 72, viewport: 116, pinned: 72), "just under the stuck row, a line showing")
+        #expect(lookupNeedsReveal(top: 40, viewport: 600, pinned: 72), "hidden under the stuck row")
+        #expect(lookupNeedsReveal(top: -40, viewport: 600, pinned: 72), "scrolled past")
+        #expect(lookupNeedsReveal(top: 120, viewport: 150, pinned: 72), "less than a line showing")
+        #expect(lookupNeedsReveal(top: 300, viewport: 90, pinned: 72), "below the fold")
+    }
+
+    /// The box row is brought fully on screen when the header above it pushes its bottom past the
+    /// visible area (a phone on its side with the keyboard up); stuck at the top it always fits.
+    @Test func aCutOffBoxRowIsBroughtIn() {
+        #expect(!lookupRowCutOff(rowTop: 111, rowHeight: 72, viewport: 600))
+        #expect(!lookupRowCutOff(rowTop: 0, rowHeight: 72, viewport: 100), "stuck at the top")
+        #expect(lookupRowCutOff(rowTop: 111, rowHeight: 72, viewport: 100), "half under the keyboard")
     }
 
     private func width(_ chip: ColorChip, dark: Bool = false) -> CGFloat {
