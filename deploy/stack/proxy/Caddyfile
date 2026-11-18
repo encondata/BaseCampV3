@@ -39,6 +39,7 @@
 	@wiki host wiki.{$STACK_DOMAIN}
 	@learn host learn.{$STACK_DOMAIN}
 	@status host status.{$STACK_DOMAIN}
+	@devices host devices.{$STACK_DOMAIN}
 	# production has the rule too, but no DNS record or certificate name, so
 	# nothing reaches it
 	@home host {$STACK_DOMAIN}
@@ -65,6 +66,14 @@
 			header_up X-Forwarded-For {client_ip}
 		}
 		reverse_proxy @status status:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		# defense in depth: the service itself refuses bodies over 1 MiB
+		# (packages go straight to Spaces, never through here)
+		request_body @devices {
+			max_size 2MB
+		}
+		reverse_proxy @devices devices:8080 {
 			header_up X-Forwarded-For {client_ip}
 		}
 		respond 404

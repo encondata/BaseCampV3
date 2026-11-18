@@ -35,11 +35,12 @@ pytestmark = [
 ]
 
 PORTS = {"API": 18000, "PORTAL": 18091, "KIOSK": 18090, "WIKI": 18096, "LEARN": 18092,
-         "SPACES": 19000, "STATUS": 18095, "MAILPIT": 18025}
+         "SPACES": 19000, "STATUS": 18095, "MAILPIT": 18025, "DEVICES": 18093}
 # which stack and Compose service answers on each published port
 OWNERS = {"API": ("api", "api"), "PORTAL": ("web", "portal"), "KIOSK": ("web", "kiosk"),
           "WIKI": ("web", "wiki"), "LEARN": ("web", "learn"), "SPACES": ("storage", "seaweedfs"),
-          "STATUS": ("status", "status"), "MAILPIT": ("storage", "mailpit")}
+          "STATUS": ("status", "status"), "MAILPIT": ("storage", "mailpit"),
+          "DEVICES": ("devices", "devices")}
 SERVICES = {"api", "import-worker", "log-service", "notification-worker",
             "scan-matching-worker", "report-worker", "label-worker",
             "spec-lookup-worker", "db-testing-worker", "wiki-worker", "wiki-export-worker"}
@@ -80,6 +81,8 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
         f"SS_TOTP_ENCRYPTION_KEY={fernet}",
         f"SS_PASSWORD_PEPPER={secrets.token_hex(32)}",
         f"SS_WIKI_SERVICE_TOKEN={secrets.token_hex(32)}",
+        f"SS_DEVICES_SERVICE_TOKEN={secrets.token_hex(32)}",
+        f"DEVICES_SECRET_KEY={base64.urlsafe_b64encode(os.urandom(32)).decode()}",
     ]
     (d / ".env").write_text("\n".join(lines) + "\n")
     build = ss("build", str(d), timeout=3600)
@@ -103,7 +106,7 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 
 @pytest.mark.parametrize("name,path", [
     ("API", "/healthz"), ("PORTAL", "/"), ("KIOSK", "/"), ("WIKI", "/healthz"), ("LEARN", "/"),
-    ("SPACES", "/healthz"), ("STATUS", "/healthz"), ("MAILPIT", "/"),
+    ("SPACES", "/healthz"), ("STATUS", "/healthz"), ("MAILPIT", "/"), ("DEVICES", "/healthz"),
 ])
 def test_every_service_answers(env_dir: Path, name: str, path: str) -> None:
     url = f"http://127.0.0.1:{PORTS[name]}{path}"

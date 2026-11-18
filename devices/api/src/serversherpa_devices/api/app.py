@@ -2,6 +2,7 @@
 downloads get their own top-level prefixes (/enroll, /ota, /dl). The built
 SPA (when DEVICES_STATIC_DIR is set) is served from / — see _mount_spa."""
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from serversherpa_devices.api.body_limit import BodyLimitMiddleware
 from serversherpa_devices.api.routes import apple, apps, devices, enroll, install, updates, uploads
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.db.engine import dispose_engine, get_sessionmaker
+from serversherpa_devices.services import storage
+
+log = logging.getLogger(__name__)
 
 # Paths the SPA never answers: a miss under these is a 404, not index.html.
 _NOT_SPA = ("api", "enroll", "ota", "dl")
@@ -22,6 +26,14 @@ _NOT_SPA = ("api", "enroll", "ota", "dl")
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # The bucket is created on first start (a new stack has none). Never
+    # fatal: the API still answers, and uploads fail until storage is back.
+    # ensure_bucket logs its own storage errors; anything else is logged by
+    # class only (messages can carry the endpoint URL).
+    try:
+        await storage.ensure_bucket()
+    except Exception as exc:  # noqa: BLE001
+        log.error("storage: ensure_bucket failed: %s", type(exc).__name__)
     yield
     await dispose_engine()
 

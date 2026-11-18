@@ -1,6 +1,6 @@
 # deploy/stack — one ServerSherpa environment on one host
 
-Five Compose stacks (six on a DigitalOcean droplet) run one environment on
+Six Compose stacks (seven on a DigitalOcean droplet) run one environment on
 a Docker host:
 
 | Stack | Services | Published |
@@ -9,11 +9,24 @@ a Docker host:
 | `storage` | seaweedfs, mailpit | 9000 (spaces), 8025 (mailpit UI) |
 | `api` | migrate (job), api, 10 workers | 8000 |
 | `web` | portal, kiosk, wiki, learn | 8091, 8090, 8096, 8092 |
+| `devices` | devices (API + web app), devices-worker | 8093 |
 | `status` | status | 8095 |
 | `proxy` | caddy | 80 (DigitalOcean droplets only) |
 
 All of them share the Docker network `ss-<env>`. `ss-stack` runs them in
 order; Sirdar's deploy pipeline (phase 2) will run the same commands.
+
+The `devices` stack (crew app installs, `devices/`) has its own database,
+`serversherpa_devices`, on the environment's database server: `ss-stack up`
+creates it when it is missing (before starting the stack), and the service
+migrates it on start. Its bucket, `serversherpa-devices`, sits beside the
+main one in SeaweedFS or Spaces; the service creates it on start. Its keys
+in the `.env`: `SS_DEVICES_SERVICE_TOKEN` (hex, shared with the API),
+`DEVICES_SECRET_KEY` (Fernet: encrypts the saved Apple settings and signs
+install links; a new key makes saved Apple settings unreadable),
+`STACK_DEVICES_PORT` (8093), and optionally `DEVICES_IOS_OWNER_URL` (the
+devices site of the stack that owns iPhone installs, for a stack with no
+Apple settings).
 
 ## DigitalOcean droplets (Sirdar phase 7)
 
@@ -25,7 +38,9 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
 
 - skips the `db` and `storage` stacks: the database is a managed PostgreSQL
   and objects live in DigitalOcean Spaces (mailpit still runs from the
-  `storage` stack);
+  `storage` stack). The devices database is created on the same cluster
+  through a one-off client, and the `.env` needs `DEVICES_DATABASE_URL`
+  (`serversherpa_devices` there, `postgresql+asyncpg://`);
 - dumps and restores through a one-off `postgres:16-alpine` container
   against the managed database (`PGSSLMODE=require`, the password from
   `POSTGRES_PASSWORD`, passed through the environment and never on a
@@ -51,7 +66,9 @@ running api container (Sirdar's step 20, Seed starter content); the first
 command that fails stops it with its exit code.
 
 `STACK_APPS` also reaches the API as `SS_APPS` (the portal hides links to an
-app that is off), and `ss-stack` refuses `learn` without `wiki`.
+app that is off), and `ss-stack` refuses `learn` without `wiki`. With
+`devices` off, `ss-stack up` stops the devices stack and creates no
+database.
 `SS_KIOSK_SIGNING_DIGESTS` (comma-separated SHA-256 digests of the kiosk
 app's signing certificates) reaches the API unchanged; empty refuses every
 biometric enroll.
@@ -105,7 +122,7 @@ LAN environment is `uat`.
    - `STACK_IMAGE_TAG` = `git -C /opt/serversherpa/uat/repo rev-parse --short HEAD`
    - `STACK_PROXY_IP` = NPM's LAN IP
    - every `CHANGEME`: hex values from `openssl rand -hex 32`; the
-     Fernet key (goes in `SS_TOTP_ENCRYPTION_KEY`) from
+     Fernet keys (go in `SS_TOTP_ENCRYPTION_KEY` and `DEVICES_SECRET_KEY`) from
      `python3 -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'`.
      To sign in with existing accounts later, `SS_PASSWORD_PEPPER` and
      `SS_TOTP_ENCRYPTION_KEY` must instead equal the values of the
@@ -124,10 +141,11 @@ LAN environment is `uat`.
 
 5. **DNS (Cloudflare, DNS only / grey cloud)** — A records to the WAN IP
    (`curl -fsS https://api.ipify.org` on the host):
-   `api.uat`, `portal.uat`, `kiosk.uat`, `wiki.uat`, `learn.uat`, `spaces.uat`, `status.uat`.
+   `api.uat`, `portal.uat`, `kiosk.uat`, `wiki.uat`, `learn.uat`, `spaces.uat`, `status.uat`,
+   `devices.uat`.
 
    LAN browsers need the router to support hairpin NAT for the `*.uat`
-   names. If it doesn't, add the seven names to local DNS pointing at NPM's
+   names. If it doesn't, add the eight names to local DNS pointing at NPM's
    LAN IP. The containers themselves already go straight to NPM.
 
    Sirdar does steps 5 and 6 itself for an environment with Publish on
@@ -147,11 +165,15 @@ LAN environment is `uat`.
    | `learn.uat.serversherpa.com` | 8092 |
    | `spaces.uat.serversherpa.com` | 9000 |
    | `status.uat.serversherpa.com` | 8095 |
+   | `devices.uat.serversherpa.com` | 8093 |
 
    For `spaces`, add to the Advanced tab: `client_max_body_size 0;`
-   (large uploads go straight to SeaweedFS).
+   (large uploads go straight to SeaweedFS). `devices` needs nothing there:
+   app packages upload straight to `spaces` too, and the service refuses
+   any other request body over 1 MiB. iPhones install over HTTPS only, so
+   `devices` needs its certificate before an iPhone can be added.
 
-   The API trusts forwarded client IPs only from `STACK_PROXY_IP`. If NPM
+   The API and the devices service trust forwarded client IPs only from `STACK_PROXY_IP`. If NPM
    ever runs on the same host as the stack, its connections arrive from a
    Docker gateway address, and `STACK_PROXY_IP` must be that address instead.
 

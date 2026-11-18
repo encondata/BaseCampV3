@@ -164,3 +164,34 @@ async def test_build_sort_round_trips_as_int(db):
     assert all(type(v) is int for v in stored)
     assert (await db.scalar(select(AppVersion.build_sort)
                             .where(AppVersion.build_sort > 10**35))) == keys[2]
+
+
+async def test_startup_ensures_the_bucket_once(monkeypatch):
+    from serversherpa_devices.api import app as app_module
+    from serversherpa_devices.services import storage
+
+    calls = []
+
+    async def fake_ensure_bucket() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(storage, "ensure_bucket", fake_ensure_bucket)
+    app = app_module.create_app()
+    async with app.router.lifespan_context(app):
+        assert calls == [1]
+    assert calls == [1]
+
+
+async def test_startup_survives_a_bucket_failure(monkeypatch, caplog):
+    from serversherpa_devices.api import app as app_module
+    from serversherpa_devices.services import storage
+
+    async def broken() -> None:
+        raise ValueError("Invalid endpoint: https://secret-host.example")
+
+    monkeypatch.setattr(storage, "ensure_bucket", broken)
+    app = app_module.create_app()
+    async with app.router.lifespan_context(app):
+        pass
+    assert "ensure_bucket failed: ValueError" in caplog.text
+    assert "secret-host" not in caplog.text
