@@ -331,7 +331,8 @@ private struct AskResultCard: View {
                 Text(error).font(KioskType.bodySmall).foregroundStyle(ChipTone.red.text).fixedSize(horizontal: false, vertical: true)
             }
             if !result.reply.isEmpty {
-                ReplyBox(text: visibleBytes(result.reply))
+                // `~HS`'s front-panel password shows as `****`.
+                ReplyBox(text: result.shownReply)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

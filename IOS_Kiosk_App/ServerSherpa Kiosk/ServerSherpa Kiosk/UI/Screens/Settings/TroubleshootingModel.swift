@@ -80,6 +80,10 @@ struct AskResult: Identifiable, Equatable, Sendable {
 
     /// The reply's length in bytes (Latin-1: one byte a character).
     var bytes: Int { reply.unicodeScalars.count }
+
+    /// The reply as the card shows it: its control bytes visible, and `~HS`'s front-panel password
+    /// masked (`reply` keeps what the printer sent, which `meaning` was read from).
+    var shownReply: String { visibleBytes(withoutPanelPassword(command: command, reply: reply)) }
 }
 
 /// One speed-test label: its size, and how long it took to send (or why it didn't go).
@@ -356,7 +360,7 @@ final class TroubleshootingModel {
                 noteReach(nil, from: section)
             } catch {
                 detailsError = troubleText(error, started.printer)
-                log("← ~HI failed: \(String(describing: error))")
+                log("← ~HI failed: \(describe(error))")
                 noteReach(error, from: section)
             }
             running = nil
@@ -404,7 +408,7 @@ final class TroubleshootingModel {
             } catch {
                 result.error = troubleText(error, started.printer)
                 result.milliseconds = stopwatch.milliseconds
-                log("← \(label) failed after \(msText(result.milliseconds)) ms: \(String(describing: error))")
+                log("← \(label) failed after \(msText(result.milliseconds)) ms: \(describe(error))")
                 noteReach(error, from: action)
             }
             asks.append(result)
@@ -462,7 +466,7 @@ final class TroubleshootingModel {
                 noteReach(nil, from: .speed)
             } catch {
                 speedRows.append(SpeedRow(id: id, run: run, targetKb: kb, bytes: bytes, error: troubleText(error, started.printer)))
-                log("Run \(run) failed: \(String(describing: error))")
+                log("Run \(run) failed: \(describe(error))")
                 noteReach(error, from: .speed)
                 return
             }
@@ -493,7 +497,7 @@ final class TroubleshootingModel {
             } catch {
                 cutSendMessage = troubleText(error, started.printer)
                 cutSendError = true
-                log("Cut-send test failed: \(String(describing: error))")
+                log("Cut-send test failed: \(describe(error))")
                 noteReach(error, from: .cutSend)
             }
             running = nil
@@ -539,9 +543,11 @@ final class TroubleshootingModel {
 
     func stopScan() { bluetooth.stopScan() }
 
-    /// "D8J224508535 · -52 dBm · Zebra": a device the scan heard, for the log and the report.
+    /// "D8J224508535 · -52 dBm · Zebra": a device the scan heard, for the log and the report. A device
+    /// that isn't a Zebra goes by its signal alone: its name is often a person's ("Jimmy's AirPods").
+    /// The tab itself still lists every device by name.
     private static func scanLine(_ d: FoundBluetoothPrinter) -> String {
-        "\(d.name) · \(d.rssi) dBm\(d.isZebra ? " · Zebra" : "")\(d.advertisesZebra ? " (advertises Zebra)" : "")"
+        d.isZebra ? "\(d.name) · \(d.rssi) dBm · Zebra\(d.advertisesZebra ? " (advertises Zebra)" : "")" : "Other device · \(d.rssi) dBm"
     }
 
     // MARK: Report
@@ -550,6 +556,11 @@ final class TroubleshootingModel {
     /// printer, its connection and details, every ask with its reply, the speed rows, the Cut-send
     /// test, the Bluetooth scan, then the log: the tab's lines and the Bluetooth link's events
     /// ("Bluetooth: …"), in time order. Shared as `printer-report-<yyyyMMdd-HHmmss>.txt`.
+    ///
+    /// What the tab hears is cleaned on the way out: a failure says only the app's own words or
+    /// its kind (`troubleText`, `describe`), every line has its secret-looking values masked
+    /// (`redactSecrets`), the reply to a secret setting goes whole, `~HS`'s front-panel password is
+    /// `****`, and a Bluetooth device that isn't a Zebra goes by its signal alone.
     func report(now: Date = Date()) -> (name: String, text: String) {
         let c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
         let name = String(format: "printer-report-%04d%02d%02d-%02d%02d%02d.txt",
@@ -557,7 +568,7 @@ final class TroubleshootingModel {
         var out: [String] = []
         out.append("ServerSherpa Kiosk · Printer troubleshooting report")
         out.append("Generated \(ISO8601DateFormatter().string(from: now)) (\(TimeZone.current.identifier))")
-        out.append(device())
+        out.append(contentsOf: device().split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
 
         out.append("")
         out.append("== Saved printer ==")
@@ -590,8 +601,12 @@ final class TroubleshootingModel {
             if let error = ask.error { out.append("  Error: \(error)") }
             if !ask.reply.isEmpty {
                 out.append("  Reply:")
-                for line in visibleBytes(ask.reply).split(separator: "\n", omittingEmptySubsequences: false) {
-                    out.append("    \(line)")
+                if asksForASecret(ask.command) {
+                    out.append("    [redacted: the reply to a secret setting]")
+                } else {
+                    for line in ask.shownReply.split(separator: "\n", omittingEmptySubsequences: false) {
+                        out.append("    \(line)")
+                    }
                 }
             }
         }
@@ -623,6 +638,7 @@ final class TroubleshootingModel {
         if let found {
             out.append("\(found.count) named device\(found.count == 1 ? "" : "s"), strongest first\(scanning ? " (still scanning)" : "")")
             out.append(contentsOf: found.map { "  \(Self.scanLine($0))" })
+            if found.contains(where: { !$0.isZebra }) { out.append("Devices that aren't Zebras are listed by signal only.") }
             if let message = scanMessage { out.append(message) }
         } else {
             out.append("Not run")
@@ -636,8 +652,9 @@ final class TroubleshootingModel {
             .enumerated()
             .sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
             .map(\.element)
-        out.append(contentsOf: merged.map { "\(clockText($0.at, millis: true))  \($0.text)" })
-        return (name, out.joined(separator: "\n") + "\n")
+        let head = out.map { redactSecrets($0) }
+        let logs = merged.map { redactSecrets("\(clockText($0.at, millis: true))  \($0.text)") }
+        return (name, (head + logs).joined(separator: "\n") + "\n")
     }
 
     /// Adds a line to the log the report carries, keeping the last `LOG_CAP`.
@@ -687,8 +704,10 @@ final class TroubleshootingModel {
     }
 
     /// What a failed call says: the app's words for what a crew can act on (unreachable, Local
-    /// Network or Bluetooth refused, a printer that forgot this iPad, a cut font), else the error's.
-    /// A `~JX` clear that failed reads as its cause: the call itself never went out.
+    /// Network or Bluetooth refused, a printer that forgot this iPad, a cut font), the app's own
+    /// printer messages, and for anything else only its kind: a stray error's message could carry
+    /// anything, and this text goes in the shared report. A `~JX` clear that failed reads as its
+    /// cause: the call itself never went out.
     private func troubleText(_ error: Error, _ printer: SavedPrinter) -> String {
         if let clear = error as? PrinterClearFailed { return troubleText(clear.cause, printer) }
         if error is PrinterNoReply { return "No reply." }
@@ -697,9 +716,26 @@ final class TroubleshootingModel {
         if let text = bluetoothRefusal(error)?.errorDescription { return text }
         if error is PrinterUnreachable || error is BluetoothPrinterNotFound { return printerUnreachableText(printer) }
         if error is PrinterTimeout { return "The printer didn't take it in time." }
-        return (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        if let own = error as? PrinterError, let text = own.errorDescription { return text }
+        return "Something went wrong (\(errorKind(error)))."
     }
 }
+
+/// What the log says about `error`: its kind, and its message only when it is the app's own
+/// printer words (for its cause too): any other message could carry anything.
+private func describe(_ error: Error) -> String {
+    let own = error is PrinterError || error is PrinterNeedsRestart
+    let said = own ? ((error as? LocalizedError)?.errorDescription).map { ": \($0)" } ?? "" : ""
+    var cause = ""
+    if let clear = error as? PrinterClearFailed {
+        let causeSaid = clear.cause is PrinterError ? ((clear.cause as? LocalizedError)?.errorDescription).map { ": \($0)" } ?? "" : ""
+        cause = " (cause \(errorKind(clear.cause))\(causeSaid))"
+    }
+    return errorKind(error) + said + cause
+}
+
+/// `error`'s type name ("PrinterTimeout"): what a failure that isn't the app's own says about itself.
+private func errorKind(_ error: Error) -> String { String(describing: type(of: error)) }
 
 /// A call the tab started: the printer, and the way to it under the lock and the guard.
 private struct Started {

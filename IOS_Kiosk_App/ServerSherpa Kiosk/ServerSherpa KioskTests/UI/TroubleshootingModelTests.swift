@@ -78,6 +78,13 @@ private let HQES_REPLY = "\u{02}\r\n\r\n  PRINTER STATUS                        
 private let HW_REPLY = "\u{02}\r\n- DIR E:*.* \r\n* E:TT0003M_.TTF    169188       K  \r\n\r\n-  63311872 bytes free E: ONBOARD FLASH \r\n\u{03}"
 private let ZD421_SERIAL = "D8J224508535"
 
+/// A failure that isn't one of the app's printer errors, with a message of its own (a socket's or
+/// a framework's could say anything).
+private struct StrayError: LocalizedError {
+    var text: String
+    var errorDescription: String? { text }
+}
+
 /// Settings › Troubleshooting (D13, D16): every call to the printer goes through the app's printer
 /// lock and guard, the command box is for admins and developers, the Cut-send test for developers,
 /// and the report carries everything the tab found.
@@ -561,13 +568,18 @@ final class TroubleshootingModelTests {
         let now = Date()
         m.log("Tab line")
         bluetooth.events = [BluetoothLinkEvent(at: now.addingTimeInterval(-60), text: "Connect to D8J224508535 started"),
-                            BluetoothLinkEvent(at: now.addingTimeInterval(60), text: "Link dropped: The link closed")]
+                            BluetoothLinkEvent(at: now.addingTimeInterval(60), text: "Link dropped: The link closed"),
+                            BluetoothLinkEvent(at: now.addingTimeInterval(61), text: "Connect failed: password=hunter2")]
         let text = m.report(now: now).text
         let connect = try #require(text.range(of: "  Bluetooth: Connect to D8J224508535 started\n"))
         let tab = try #require(text.range(of: "  Tab line\n"))
         let drop = try #require(text.range(of: "  Bluetooth: Link dropped: The link closed\n"))
+        let failed = try #require(text.range(of: "  Bluetooth: Connect failed: password=[redacted]\n"))
         #expect(connect.lowerBound < tab.lowerBound)
         #expect(tab.lowerBound < drop.lowerBound)
+        #expect(drop.lowerBound < failed.lowerBound)
+        // The link's events are masked as the tab's lines are.
+        #expect(!text.contains("hunter2"))
     }
 
     @Test func reportCarriesEverything() async throws {
@@ -581,6 +593,9 @@ final class TroubleshootingModelTests {
         let m = model()
         await m.readDetails()?.value
         for ask in PrinterAsk.allCases { await m.ask(ask)?.value }
+        zebra.failure = PrinterNoReply(host: ZD421_SERIAL)
+        await m.ask(.peeler)?.value
+        zebra.failure = nil
         await m.startSpeedTest()?.value
         m.scan()
         bluetooth.hear([FoundBluetoothPrinter(id: peripheral, name: ZD421_SERIAL, rssi: -52, advertisesZebra: false),
@@ -606,24 +621,221 @@ final class TroubleshootingModelTests {
         for line in m.hostIdLines + m.deviceInfoLines { #expect(text.contains("\(line.label): \(line.value)")) }
         #expect(text.contains("ZD421-300dpi"))
         #expect(text.contains("Zebra Technologies"))
-        // Every ask: its command and reply with the control bytes visible, bytes and milliseconds.
-        #expect(m.asks.count == PrinterAsk.allCases.count)
+        // Every ask: its command and reply with the control bytes visible, bytes and milliseconds,
+        // and the one that failed with its error.
+        #expect(m.asks.count == PrinterAsk.allCases.count + 1)
         for ask in m.asks {
             #expect(text.contains(visibleBytes(ask.command)))
             #expect(text.contains("\(ask.bytes) B in \(ask.milliseconds ?? -1) ms"))
-            for line in visibleBytes(ask.reply).split(separator: "\n") { #expect(text.contains(line)) }
+            // ~HS's third string is the printer's front-panel password: masked in the report.
+            let reply = ask.command == ZebraCommands.hostStatus
+                ? ask.reply.replacingOccurrences(of: "\u{02}0000,0\u{03}", with: "\u{02}****,0\u{03}") : ask.reply
+            for line in visibleBytes(reply).split(separator: "\n") { #expect(text.contains(line)) }
         }
         #expect(text.contains("␂030,0,0,0612,000,0,0,0,000,0,0,0␃␍␊"))
+        #expect(text.contains("␂****,0␃␍␊"))
+        #expect(!text.contains("␂0000,0␃"))
         #expect(text.contains("ERRORS:         0 00000000 00000000"))
+        #expect(text.contains("Error: No reply."))
         // The speed rows.
         let row = try #require(m.speedRows.first)
         #expect(text.contains("1 | 10 | \(row.bytes) | "))
-        // What the Bluetooth scan heard.
+        // What the Bluetooth scan heard: the Zebra by its serial, other devices by signal alone,
+        // in the scan section and in the log (the tab still lists them by name).
         #expect(text.contains("\(ZD421_SERIAL) · -52 dBm · Zebra"))
-        #expect(text.contains("James’s Mac mini · -70 dBm"))
+        #expect(text.contains("  Other device · -70 dBm\n"))
+        #expect(text.contains("Devices that aren't Zebras are listed by signal only."))
+        #expect(!text.contains("James"))
+        #expect(m.found?.map(\.name) == [ZD421_SERIAL, "James’s Mac mini"])
         // The log.
         #expect(!m.logLines.isEmpty)
         for line in m.logLines { #expect(text.contains(line.text)) }
+        #expect(m.logLines.contains { $0.text == "  Other device · -70 dBm" })
+    }
+
+    /// A scan that heard only Zebras says nothing about other devices.
+    @Test func aScanOfOnlyZebrasNamesThemAll() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        m.scan()
+        bluetooth.hear([FoundBluetoothPrinter(id: UUID(), name: ZD421_SERIAL, rssi: -52, advertisesZebra: true)])
+        await eventually("heard") { m.found?.count == 1 }
+        m.stopScan()
+        await eventually("scan ended") { !m.scanning }
+        let text = m.report().text
+        #expect(text.contains("  \(ZD421_SERIAL) · -52 dBm · Zebra (advertises Zebra)\n"))
+        #expect(!text.contains("Devices that aren't Zebras"))
+    }
+
+    /// A token, a key and a password planted in everything the tab hears (a failed call's own
+    /// message, the command typed, the printer's replies) never reach the report. The tab never
+    /// sees the session, cookies or keys at all: its inputs are the label settings, the link, the
+    /// printer and the role checks.
+    @Test func reportCarriesNoSecrets() async throws {
+        settings.setPrinter(network)
+        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0aW5hIn0.c2VjcmV0LXRva2VuLTdmM2E"
+        let key = "sk-station-9c41d2e7b0"
+        let password = "Hunter2-Move-Pass"
+        let m = model(isAdmin: true)
+        zebra.failure = StrayError(text: "Authorization: Bearer \(token); station_key=\(key)")
+        await m.ask(.status)?.value
+        zebra.failure = StrayError(text: "move password \(password) rejected")
+        await m.readDetails()?.value
+        zebra.failure = PrinterClearFailed(host: "10.0.0.5", cause: StrayError(text: "cookie: refresh=\(token)"))
+        await m.startSpeedTest()?.value
+        zebra.failure = PrinterUnreachable(host: "10.0.0.5")
+        await m.ask(.serial)?.value
+        zebra.failure = nil
+        // An admin sets a Wi-Fi password and reads secrets back: the report keeps the command, not the values.
+        zebra.replies = [
+            "! U1 getvar \"wlan.wpa.psk\"\r\n": "\"\(password)\"",
+            "! U1 getvar \"wlan.private_key_password\"\r\n": "\"\(key)\"",
+            "! U1 getvar \"bluetooth.bluetooth_pin\"\r\n": "\"\(key)\"",
+        ]
+        for command in [
+            "! U1 setvar \"wlan.wpa.psk\" \"\(password)\"",
+            "! U1 getvar \"wlan.wpa.psk\"",
+            "! U1 getvar \"wlan.private_key_password\"",
+            "! U1 getvar \"bluetooth.bluetooth_pin\"",
+            "password=\(password)&token=\(token)",
+        ] {
+            m.commandText = command
+            await m.sendCommand()?.value
+        }
+        let text = m.report().text
+        for secret in [token, key, password, "Bearer", "rejected", "refresh"] {
+            #expect(!text.contains(secret), "the report carries \(secret):\n\(text)")
+        }
+        // What was asked still shows.
+        #expect(text.contains("setvar \"wlan.wpa.psk\""))
+        #expect(text.contains("getvar \"wlan.private_key_password\""))
+        #expect(text.contains("    [redacted: the reply to a secret setting]"))
+        #expect(text.contains("Something went wrong (StrayError)."))
+        #expect(text.contains("Can't reach the printer at 10.0.0.5."))
+    }
+
+    /// A quoted secret is hidden whole, spaces and all, up to its matching closing quote: in SGD's
+    /// `"name" "value"`, `name: "value"`, single quotes, JSON, with an escaped or embedded quote,
+    /// and one that never closes; in what an admin types and in what the printer replies.
+    @Test func aQuotedSecretWithSpacesIsHiddenWhole() async throws {
+        settings.setPrinter(network)
+        let m = model(isAdmin: true)
+        let replyCommand = "! U1 getvar \"device.config\"\r\n"
+        zebra.replies = [replyCommand: "{\"wlan.wpa.psk\": \"uniform7 victor7 whiskey7\", \"ip.addr\": \"10.0.0.5\"}"]
+        let typed = [
+            "! U1 setvar \"wlan.wpa.psk\" \"horse7 battery7 staple7\"",
+            "password: \"alpha7 bravo7 charlie7\"",
+            "token='delta7 echo7 foxtrot7'",
+            "{\"api_key\": \"golf7 hotel7 india7\", \"user\": \"tina\"}",
+            "password=\"juliet7 \\\"kilo7\\\" lima7\"",
+            "secret='mike7 \"november7\" oscar7'",
+            "! U1 setvar \"wlan.wpa.psk\" \"it's7 papa7 quebec7\"",
+            "passphrase: \"romeo7 sierra7 tango7",
+            "! U1 getvar \"device.config\"",
+        ]
+        for command in typed {
+            m.commandText = command
+            await m.sendCommand()?.value
+        }
+        let text = m.report().text
+        let words = [
+            "horse7", "battery7", "staple7", "alpha7", "bravo7", "charlie7", "delta7", "echo7", "foxtrot7",
+            "golf7", "hotel7", "india7", "juliet7", "kilo7", "lima7", "mike7", "november7", "oscar7",
+            "it's7", "papa7", "quebec7", "romeo7", "sierra7", "tango7", "uniform7", "victor7", "whiskey7",
+        ]
+        for word in words { #expect(!text.contains(word), "the report carries \(word):\n\(text)") }
+        // What was asked, and what isn't secret, still shows.
+        #expect(text.contains("setvar \"wlan.wpa.psk\" \"[redacted]\""))
+        #expect(text.contains("\"user\": \"tina\""))
+        #expect(text.contains("\"ip.addr\": \"10.0.0.5\""))
+    }
+
+    /// A tab typed in the command box (shown as `<09>`) is no way around the masking.
+    @Test func aTabTypedInTheCommandBoxIsStillMasked() async throws {
+        settings.setPrinter(network)
+        let m = model(isAdmin: true)
+        m.commandText = "password:\thunter2"
+        await m.sendCommand()?.value
+        #expect(!m.report().text.contains("hunter2"))
+    }
+
+    /// A stray error's own message could carry anything: the tab says only its kind, and so does
+    /// the report.
+    @Test func aStrayErrorSaysOnlyItsKind() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        zebra.failure = StrayError(text: "socket said: hello")
+        await m.ask(.serial)?.value
+        #expect(m.asks.last?.error == "Something went wrong (StrayError).")
+        await m.readDetails()?.value
+        #expect(m.detailsError == "Something went wrong (StrayError).")
+        #expect(!m.report().text.contains("socket said"))
+    }
+
+    /// The log says what kind of failure it was, and its words only when they are the app's own
+    /// printer words (its cause's too).
+    @Test func aLoggedFailureCarriesOnlyItsKind() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        zebra.failure = StrayError(text: "socket said: hello")
+        await m.ask(.serial)?.value
+        zebra.failure = PrinterTimeout(host: "10.0.0.5")
+        await m.readDetails()?.value
+        zebra.failure = PrinterClearFailed(host: "10.0.0.5", cause: StrayError(text: "socket said: bye"))
+        await m.ask(.dpi)?.value
+        // Last: a failed send marks the printer for a clear, which the next call would send first.
+        zebra.failure = PrinterClearFailed(host: "10.0.0.5", cause: PrinterUnreachable(host: "10.0.0.5"))
+        await m.startSpeedTest()?.value
+        let failures = m.logLines.map(\.text).filter { $0.contains("failed") }
+        try #require(failures.count == 4, "\(failures)")
+        #expect(failures[0].hasPrefix("← Serial number failed after ") && failures[0].hasSuffix(" ms: StrayError"))
+        #expect(failures[1] == "← ~HI failed: PrinterTimeout: The printer at 10.0.0.5 didn't take the job in time")
+        #expect(failures[2].hasSuffix(" ms: PrinterClearFailed: Couldn't clear the printer at 10.0.0.5 before sending (cause StrayError)"))
+        #expect(failures[3] == "Run 1 failed: PrinterClearFailed: Couldn't clear the printer at 10.0.0.5 before sending"
+            + " (cause PrinterUnreachable: No printer answered at 10.0.0.5)")
+        #expect(!m.logLines.contains { $0.text.contains("socket said") })
+    }
+
+    /// The ask card and the report show `~HS`'s front-panel password as `****`, also when `~HS`
+    /// sits inside a format typed in the command box; the reply kept underneath is the printer's.
+    @Test func thePanelPasswordIsHiddenOnTheCardAndInTheReport() async throws {
+        settings.setPrinter(network)
+        zebra.replies = [ZebraCommands.hostStatus: HS_REPLY, "^XA~HS^XZ\r\n": HS_REPLY]
+        let m = model(isAdmin: true)
+        await m.ask(.status)?.value
+        m.commandText = "^XA~HS^XZ"
+        await m.sendCommand()?.value
+        #expect(m.asks.count == 2)
+        for ask in m.asks {
+            #expect(ask.reply == HS_REPLY)
+            #expect(ask.shownReply.contains("␂****,0␃␍␊"))
+            #expect(!ask.shownReply.contains("␂0000,0␃"))
+            #expect(ask.shownReply.contains("␂030,0,0,0612,000,0,0,0,000,0,0,0␃␍␊"))
+        }
+        #expect(m.asks.first?.meaning?.hasPrefix("Ready to print.") == true)
+        let text = m.report().text
+        #expect(text.contains("␂****,0␃"))
+        #expect(!text.contains("␂0000,0␃"))
+        // Any other reply shows as it came.
+        zebra.replies = [ZebraCommands.serialNumber: "\"\(ZD421_SERIAL)\""]
+        await m.ask(.serial)?.value
+        #expect(m.asks.last?.shownReply == visibleBytes("\"\(ZD421_SERIAL)\""))
+    }
+
+    /// A pasted label in the command box and a 64 KB one-line reply still make a report quickly.
+    @Test func aReportWithAPastedLabelAndAHugeReplyIsQuick() async throws {
+        settings.setPrinter(network)
+        let hex = String(String(repeating: "0123456789ABCDEF", count: 100_000 / 16 + 1).prefix(100_000))
+        zebra.replies = ["! U1 getvar \"device.dump\"\r\n": "\"" + String(hex.prefix(65_000)) + "\""]
+        let m = model(isAdmin: true)
+        m.commandText = "^XA^FO0,0^GFA,50000,50000,100,\(hex)^FS^XZ"
+        await m.sendCommand()?.value
+        m.commandText = "! U1 getvar \"device.dump\""
+        await m.sendCommand()?.value
+        var text = ""
+        let elapsed = ContinuousClock().measure { text = m.report().text }
+        #expect(elapsed < .seconds(1), "the report took \(elapsed)")
+        #expect(text.contains(String(hex.prefix(1_000))))
     }
 
     @Test func logKeepsTheLast5000Lines() {
