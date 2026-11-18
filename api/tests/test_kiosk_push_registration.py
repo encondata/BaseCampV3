@@ -11,6 +11,7 @@ Spec: docs/superpowers/specs/2026-11-17-android-push-notifications-design.md
 (decisions 4 and 14, "API: endpoints")."""
 
 import hashlib
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -30,7 +31,7 @@ from serversherpa.services import push_registrations
 from serversherpa.wiki.share_links import IpRateLimiter
 from tests.push_helpers import _phone
 from tests.test_kiosk_biometric_api import _beat, _kiosk_login, _person
-from tests.test_status_values_write import _make
+from tests.test_status_values_write import PW, _make
 from tests.test_system_admin_api import _admin as _super_admin
 
 SERIAL = "android-push-0001"
@@ -253,6 +254,7 @@ async def test_session_from_other_device_refused(client, db, seeded_user):
 # ── registration and the push key ───────────────────────────────────
 
 async def test_register_returns_key_once_and_hashes_it(client, db, seeded_user, caplog):
+    caplog.set_level(logging.DEBUG, logger="serversherpa")
     hdrs, person = await _on_phone(db, client)
     # not personal yet
     r = await _register(client, hdrs)
@@ -270,6 +272,9 @@ async def test_register_returns_key_once_and_hashes_it(client, db, seeded_user, 
     assert row.person_id == person.id and row.device_id == device_id
     assert (row.platform, row.provider, row.token) == ("android", "fcm", TOKEN)
     assert row.secret_hash == hashlib.sha256(body["push_key"].encode()).hexdigest()
+    # the module's records are captured (so the check below is real)...
+    assert f"push registration {body['registration_id']}" in caplog.text
+    # ...and carry neither the key nor the token
     assert body["push_key"] not in caplog.text and TOKEN not in caplog.text
 
     # the key is never shown again...
@@ -456,3 +461,119 @@ async def test_drop_helpers(db, seeded_user):
                                     "Bearer x.y"])
 async def test_verify_key_malformed_is_none(db, header):
     assert await push_registrations.verify_key(db, header) is None
+
+
+# ── fix round 1: revoke-all, races, read-only ──────────────────────
+
+async def test_per_person_revoke_all_drops_push(client, db, seeded_user):
+    sa = await _super_admin(db, client)
+    target = await _target_with_phone(db, client, "push-revoke@test.example.com")
+    bystander = await _target_with_phone(db, client, "push-bystander@test.example.com")
+    r = await client.post(f"/users/{target}/sessions/revoke-all", headers=sa)
+    assert r.status_code == 204, r.text
+    assert [row.person_id for row in await _registrations(db)] == [bystander]
+
+
+async def test_system_revoke_all_drops_every_registration(client, db, seeded_user):
+    sa = await _super_admin(db, client)
+    await _target_with_phone(db, client, "push-one@test.example.com")
+    await _target_with_phone(db, client, "push-two@test.example.com")
+    assert len(await _registrations(db)) == 2
+    r = await client.post("/system/sessions/revoke-all", headers=sa)
+    assert r.status_code == 200, r.text
+    assert await _registrations(db) == []
+
+
+async def test_password_change_keeps_push(client, db, seeded_user):
+    _, _, body = await _claimed_and_registered(db, client)
+    portal = await client.post("/auth/login", json={"email": ADMIN, "password": PW})
+    assert portal.status_code == 200, portal.text
+    mine = {"Authorization": f"Bearer {portal.json()['access_token']}"}
+    r = await client.post("/auth/me/password", headers=mine, json={
+        "current_password": PW, "new_password": "NewHorse-Battery-42"})
+    assert r.status_code == 204, r.text
+    assert len(await _registrations(db)) == 1
+    # the key needs no session, so it still works after the sign-out
+    assert (await _refresh(client, body)).status_code == 204
+
+
+async def _other_phone_token(db) -> str:
+    """A token alice's phone (another device) already holds."""
+    alice = await db.scalar(select(Person).where(Person.email == "alice@test.example.com"))
+    other = await _phone(db, alice)
+    await db.commit()
+    return await db.scalar(select(PushRegistration.token).where(
+        PushRegistration.device_id == other.id))
+
+
+async def test_register_retakes_token_after_a_collision(client, db, seeded_user,
+                                                        monkeypatch, caplog):
+    """Another phone stored the same token between our free and our write: the
+    write collides, its savepoint rolls back, and the retry takes the token."""
+    caplog.set_level(logging.DEBUG)
+    hdrs, _ = await _on_phone(db, client)
+    assert (await _personal(client, hdrs, True)).status_code == 200
+    taken = await _other_phone_token(db)
+    real_free = push_registrations._free_token
+    calls = []
+
+    async def late_free(db_, token, *, keep_device):
+        calls.append(token)
+        if len(calls) > 1:                     # the first pass misses the other row
+            await real_free(db_, token, keep_device=keep_device)
+
+    monkeypatch.setattr(push_registrations, "_free_token", late_free)
+    r = await _register(client, hdrs, token=taken)
+    assert r.status_code == 200, r.text
+    assert len(calls) == 2
+    rows = await _registrations(db)
+    assert [(row.token, str(row.id)) for row in rows] == [(taken, r.json()["registration_id"])]
+    assert taken not in caplog.text
+
+
+async def test_token_conflict_twice_is_409_without_the_token(client, db, seeded_user,
+                                                             monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    hdrs, _, body = await _claimed_and_registered(db, client)
+    taken = await _other_phone_token(db)
+
+    async def never_free(db_, token, *, keep_device):
+        return None
+
+    monkeypatch.setattr(push_registrations, "_free_token", never_free)
+    for r in (await _register(client, hdrs, token=taken),
+              await _refresh(client, body, token=taken)):
+        assert r.status_code == 409, r.text
+        assert r.json() == {"detail": {"code": "token_conflict"}}
+    assert taken not in caplog.text
+    # both rows are as they were, and the phone's key still works
+    assert sorted(row.token for row in await _registrations(db)) == sorted([TOKEN, taken])
+    monkeypatch.undo()
+    assert (await _refresh(client, body)).status_code == 204
+
+
+async def test_token_refresh_after_row_deleted_is_401(client, db, seeded_user, monkeypatch):
+    """The row is deleted between the key check and the write."""
+    _, _, body = await _claimed_and_registered(db, client)
+    real_update = push_registrations.update_token
+
+    async def deleted_first(db_, registration, token):
+        await push_registrations.drop_for_device(db_, registration.device_id, reason="test")
+        return await real_update(db_, registration, token)
+
+    monkeypatch.setattr(push_registrations, "update_token", deleted_first)
+    r = await _refresh(client, body)
+    assert r.status_code == 401 and r.json() == {"detail": {"code": "push_key_invalid"}}
+
+
+async def test_token_refresh_refused_in_read_only_mode(client, db, seeded_user):
+    _, _, body = await _claimed_and_registered(db, client)
+    sa = await _super_admin(db, client)
+    r = await client.put("/system/admin", headers=sa, json={"read_only": True})
+    assert r.status_code == 200, r.text
+    r = await _refresh(client, body)
+    assert r.status_code == 423 and _code(r) == "read_only_mode"
+    assert [row.token for row in await _registrations(db)] == [TOKEN]
+    r = await client.put("/system/admin", headers=sa, json={"read_only": False})
+    assert r.status_code == 200, r.text
+    assert (await _refresh(client, body)).status_code == 204

@@ -10,8 +10,10 @@ device of" and the app's "This is my phone").
   sender uses (notifications.push.live_registrations).
 - `drop_for_device` / `drop_for_person` delete registrations, which kills
   their keys. Every writer of `devices.personal_person_id` drops the
-  device's row; losing access (demoted, disabled, blacklisted) drops the
-  person's rows.
+  device's row; losing access (demoted, disabled, blacklisted) or an
+  admin's revoke-all for the person drops the person's rows, and the
+  system-wide revoke-all drops every row (drop_all). A password change and
+  Forget fingerprint leave push alone.
 
 Never logs a push key or an FCM token: ids and reasons only. Nothing here
 commits.
@@ -25,7 +27,9 @@ import secrets
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import AccessInfo, resolve_access
@@ -95,43 +99,70 @@ async def _free_token(db: AsyncSession, token: str, *, keep_device: uuid.UUID) -
                     row.id, row.device_id)
 
 
+class TokenConflict(Exception):
+    """Another device's row took the same FCM token at the same moment, twice
+    over. Carries no token (an IntegrityError's text would)."""
+
+
+async def _with_token(db: AsyncSession, token: str, device_id: uuid.UUID, write):
+    """Run `write()` (one statement that stores `token` on `device_id`'s row)
+    after freeing the token, in a savepoint. Two devices storing one token at
+    once collide on its unique index: the loser's savepoint rolls back and
+    it frees and writes once more, now seeing the winner's committed row.
+    A second collision is TokenConflict; the IntegrityError (whose text holds
+    the token) never leaves here."""
+    for attempt in range(2):
+        try:
+            async with db.begin_nested():
+                await _free_token(db, token, keep_device=device_id)
+                return await write()
+        except IntegrityError:
+            if attempt:
+                raise TokenConflict from None
+    raise AssertionError("unreachable")
+
+
 async def register(db: AsyncSession, device: Device, person_id: uuid.UUID, *,
                    token: str, platform: str = "android",
                    ) -> tuple[PushRegistration, str]:
     """Create or replace `device`'s registration for `person_id` with this
     FCM `token`, and return it with its new push key (the raw key: shown to
     the phone once, never stored or logged). Any earlier key stops working.
-    The caller has checked the device is personal to the person."""
+    The caller has checked the device is personal to the person. Raises
+    TokenConflict when the token can't be taken over (see _with_token)."""
     raw = secrets.token_urlsafe(32)
     now = datetime.now(UTC)
-    await _free_token(db, token, keep_device=device.id)
-    row = await db.scalar(select(PushRegistration)
-                          .where(PushRegistration.device_id == device.id)
-                          .with_for_update())
-    if row is None:
-        row = PushRegistration(device_id=device.id, created_at=now)
-        db.add(row)
-    row.person_id = person_id
-    row.platform = platform
-    row.provider = PROVIDER
-    row.token = token
-    row.secret_hash = _hash(raw)
-    row.updated_at = now
-    row.last_error = None
-    await db.flush()
-    logger.info("push registration %s on device %s registered", row.id, device.id)
+    device_id = device.id
+    values = {"person_id": person_id, "platform": platform, "provider": PROVIDER,
+              "token": token, "secret_hash": _hash(raw), "updated_at": now,
+              "last_error": None}
+    stmt = (pg_insert(PushRegistration)
+            .values(device_id=device_id, created_at=now, **values)
+            .on_conflict_do_update(index_elements=[PushRegistration.device_id], set_=values)
+            .returning(PushRegistration.id))
+
+    async def write():
+        return await db.scalar(stmt)
+
+    registration_id = await _with_token(db, token, device_id, write)
+    row = await db.get(PushRegistration, registration_id, populate_existing=True)
+    logger.info("push registration %s on device %s registered", registration_id, device_id)
     return row, raw
 
 
-async def update_token(db: AsyncSession, registration: PushRegistration, token: str) -> None:
-    """The phone's FCM token rotated: store the new one (the key stays)."""
-    if registration.token == token:
-        return
-    await _free_token(db, token, keep_device=registration.device_id)
-    registration.token = token
-    registration.updated_at = datetime.now(UTC)
-    registration.last_error = None
-    await db.flush()
+async def update_token(db: AsyncSession, registration: PushRegistration, token: str) -> bool:
+    """The phone's FCM token rotated: store the new one (the key stays).
+    A guarded UPDATE: False when the row is gone (deleted since the key was
+    checked). Raises TokenConflict like register."""
+    registration_id, device_id = registration.id, registration.device_id
+    stmt = (update(PushRegistration).where(PushRegistration.id == registration_id)
+            .values(token=token, updated_at=datetime.now(UTC), last_error=None)
+            .execution_options(synchronize_session=False))
+
+    async def write():
+        return (await db.execute(stmt)).rowcount
+
+    return await _with_token(db, token, device_id, write) == 1
 
 
 async def drop_for_device(db: AsyncSession, device_id: uuid.UUID, *, reason: str) -> bool:
@@ -156,6 +187,16 @@ async def drop_for_person(db: AsyncSession, person_id: uuid.UUID, *, reason: str
     for registration_id in gone:
         logger.info("push registration %s of person %s dropped: %s",
                     registration_id, person_id, reason)
+    return len(gone)
+
+
+async def drop_all(db: AsyncSession, *, reason: str) -> int:
+    """Delete every registration (the system-wide revoke-all). Returns how many."""
+    gone = (await db.execute(
+        delete(PushRegistration).returning(PushRegistration.id)
+        .execution_options(synchronize_session=False))).scalars().all()
+    if gone:
+        logger.info("%d push registrations dropped: %s", len(gone), reason)
     return len(gone)
 
 

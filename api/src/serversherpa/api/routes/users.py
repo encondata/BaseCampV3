@@ -953,11 +953,14 @@ async def revoke_all_user_sessions(
     db: DbSession,
     actor: AuthContext = require_permission("users", "change"),
 ) -> None:
-    """Sign the person out everywhere without disabling them."""
+    """Sign the person out everywhere without disabling them: sessions,
+    biometric keys, remembered browsers and their phones' push registrations
+    (a push key works with no session)."""
     await _load_target(db, actor, person_id)
     await revoke_all_sessions(db, person_id, "admin")
     await biometric.revoke_keys(db, person_id=person_id, reason="admin",
                                 actor_id=actor.person.id)
+    await push_registrations.drop_for_person(db, person_id, reason="admin")
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})

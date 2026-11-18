@@ -16,7 +16,8 @@ request):
 With the push key instead of a session (`Authorization: PushKey
 <registration id>.<key>`, the push_registration dependency):
 - `PUT /kiosk/push/registration/token` `{token}`: FCM rotated the token while
-  nobody was signed in.
+  nobody was signed in. Read-only mode refuses it (423), like the station-key
+  writes.
 
 A wrong, unknown or dead key is one flat 401 `push_key_invalid`; refused
 keys are capped per address (rate_limit_ip). The key and the token are never
@@ -37,6 +38,7 @@ from serversherpa.api.deps import (
     AuthContext,
     DbSession,
     client_ip,
+    enforce_read_only_config,
     rate_limit_ip,
     require_permission,
 )
@@ -63,6 +65,11 @@ TOKEN_MAX_LENGTH = 4096
 
 def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+def _push_key_invalid() -> HTTPException:
+    return HTTPException(status_code=401, detail={"code": "push_key_invalid"},
+                         headers={"WWW-Authenticate": push_registrations.SCHEME})
 
 
 def _refused(reason: str) -> HTTPException:
@@ -112,8 +119,7 @@ async def push_registration(request: Request, db: DbSession) -> PushRegistration
     registration = await push_registrations.verify_key(
         db, request.headers.get("authorization") or "")
     if registration is None:
-        raise HTTPException(status_code=401, detail={"code": "push_key_invalid"},
-                            headers={"WWW-Authenticate": push_registrations.SCHEME})
+        raise _push_key_invalid()
     push_key_limiter.release(bucket, window)
     return registration
 
@@ -211,8 +217,12 @@ async def post_push_registration(
         raise _err(403, "not_personal_device")
     if actor.access.max_rank < GATE_BYPASS_RANK:
         raise _err(403, "not_admin")
-    registration, raw = await push_registrations.register(
-        db, device, actor.person.id, token=body.token, platform=family)
+    try:
+        registration, raw = await push_registrations.register(
+            db, device, actor.person.id, token=body.token, platform=family)
+    except push_registrations.TokenConflict:
+        await db.rollback()
+        raise _err(409, "token_conflict") from None
     registration_id = str(registration.id)
     await db.commit()
     return KioskPushRegistrationOut(registration_id=registration_id, push_key=raw)
@@ -237,9 +247,21 @@ async def delete_push_registration(
 
 @router.put("/push/registration/token", status_code=204)
 async def put_push_token(
-    body: KioskPushTokenIn, db: DbSession,
+    body: KioskPushTokenIn, request: Request, db: DbSession,
     registration: PushRegistration = Depends(push_registration),
 ) -> None:
-    """The phone's FCM token rotated (push key, no session)."""
-    await push_registrations.update_token(db, registration, body.token)
+    """The phone's FCM token rotated (push key, no session). Read-only mode
+    refuses it with 423 like the station-key writes; the app sends it again
+    on its next start. A registration deleted since the key was checked is
+    the same 401 push_key_invalid; 409 token_conflict when another phone
+    took the same token at the same moment."""
+    await enforce_read_only_config(db, request)
+    try:
+        updated = await push_registrations.update_token(db, registration, body.token)
+    except push_registrations.TokenConflict:
+        await db.rollback()
+        raise _err(409, "token_conflict") from None
+    if not updated:
+        await db.rollback()
+        raise _push_key_invalid()
     await db.commit()
