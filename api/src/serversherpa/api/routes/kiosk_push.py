@@ -27,9 +27,11 @@ Spec: docs/superpowers/specs/2026-11-17-android-push-notifications-design.md
 (decisions 4 and 14, "API: endpoints"). Registrations and keys:
 services/push_registrations.py."""
 
+import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -44,8 +46,12 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import RESET_WINDOW_SECONDS
 from serversherpa.api.routes.kiosk import _inet_or_none, own_device
+from serversherpa.api.schemas import NotificationInboxItemOut, NotificationInboxOut
 from serversherpa.config import get_settings
-from serversherpa.db.models import Device, Person, PushRegistration
+from serversherpa.db.models import Device, Notification, Person, PushRegistration
+from serversherpa.notifications import inbox_ops, push
+from serversherpa.notifications.kinds import kind_info
+from serversherpa.notifications.live import signal_inbox
 from serversherpa.services import biometric, push_registrations
 from serversherpa.services.audit import audit
 from serversherpa.wiki.share_links import IpRateLimiter
@@ -265,3 +271,123 @@ async def put_push_token(
         await db.rollback()
         raise _push_key_invalid()
     await db.commit()
+
+
+# ── the app's notifications ─────────────────────────────────────────
+# The app's session reaches only /kiosk/*, so these mirror the portal's
+# /notifications/inbox routes under /kiosk, over the same code
+# (notifications/inbox_ops.py). Every route acts on the caller's own rows.
+
+class KioskNotificationItemOut(NotificationInboxItemOut):
+    """An inbox item for the app: adds the end of its snooze, if any."""
+
+    push_snoozed_until: datetime | None = None
+
+
+class KioskNotificationsOut(NotificationInboxOut):
+    items: list[KioskNotificationItemOut]
+
+
+class KioskSnoozeOut(BaseModel):
+    snoozed_until: datetime
+
+
+async def _admin_actor(
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> AuthContext:
+    """The app's notification screens are for admins (rank 60+), as push is."""
+    if actor.access.max_rank < GATE_BYPASS_RANK:
+        raise _err(403, "not_admin")
+    return actor
+
+
+AdminActor = Annotated[AuthContext, Depends(_admin_actor)]
+
+
+async def _snooze(db: DbSession, person_id: uuid.UUID, notification_id: uuid.UUID) -> dict:
+    """Push the notification again in 5 minutes. 404 when it isn't the
+    person's own; 409 `not_live` when it is read or hidden."""
+    row = await db.scalar(select(Notification).where(
+        Notification.id == notification_id, Notification.person_id == person_id))
+    if row is None:
+        raise inbox_ops.not_found()
+    try:
+        until = await push.snooze(db, row, now=datetime.now(UTC))
+    except ValueError:
+        raise _err(409, "not_live") from None
+    await signal_inbox(db, person_id)
+    await db.commit()
+    return {"snoozed_until": until}
+
+
+@router.get("/notifications", response_model=KioskNotificationsOut)
+async def list_notifications(
+    db: DbSession, actor: AdminActor, unread_only: bool = False,
+    category: str | None = None, cursor: str | None = None,
+    limit: int = inbox_ops.INBOX_LIMIT,
+) -> KioskNotificationsOut:
+    """The same query and response as GET /notifications/inbox, each item with
+    its `push_snoozed_until`."""
+    unread, total, page, next_cursor = await inbox_ops.list_page(
+        db, actor.person.id, unread_only=unread_only, category=category,
+        cursor=cursor, limit=limit)
+    items = []
+    for row in page:
+        info = kind_info(row.kind)
+        items.append(KioskNotificationItemOut.model_validate(row).model_copy(
+            update={"category": info.category if info else None}))
+    return KioskNotificationsOut(unread_count=unread, items=items,
+                                 next_cursor=next_cursor, total=total)
+
+
+@router.post("/notifications/{notification_id}/read", status_code=204)
+async def read_notification(notification_id: uuid.UUID, db: DbSession,
+                            actor: AdminActor) -> Response:
+    await inbox_ops.mark_read(db, actor.person.id, notification_id)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/notifications/{notification_id}/unread", status_code=204)
+async def unread_notification(notification_id: uuid.UUID, db: DbSession,
+                              actor: AdminActor) -> Response:
+    await inbox_ops.mark_unread(db, actor.person.id, notification_id)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/notifications/{notification_id}/snooze", response_model=KioskSnoozeOut)
+async def snooze_notification(notification_id: uuid.UUID, db: DbSession,
+                              actor: AdminActor) -> dict:
+    return await _snooze(db, actor.person.id, notification_id)
+
+
+@router.delete("/notifications/{notification_id}", status_code=204)
+async def hide_notification(notification_id: uuid.UUID, db: DbSession,
+                            actor: AdminActor) -> Response:
+    await inbox_ops.hide(db, actor.person.id, notification_id)
+    await db.commit()
+    return Response(status_code=204)
+
+
+# With the push key (no session): only the registration's own person's
+# notifications, and only these two writes. Read-only mode refuses both (423).
+
+@router.post("/push/notifications/{notification_id}/read", status_code=204)
+async def push_read_notification(
+    notification_id: uuid.UUID, request: Request, db: DbSession,
+    registration: PushRegistration = Depends(push_registration),
+) -> Response:
+    await enforce_read_only_config(db, request)
+    await inbox_ops.mark_read(db, registration.person_id, notification_id)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/push/notifications/{notification_id}/snooze", response_model=KioskSnoozeOut)
+async def push_snooze_notification(
+    notification_id: uuid.UUID, request: Request, db: DbSession,
+    registration: PushRegistration = Depends(push_registration),
+) -> dict:
+    await enforce_read_only_config(db, request)
+    return await _snooze(db, registration.person_id, notification_id)
