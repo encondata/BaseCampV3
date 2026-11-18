@@ -9,10 +9,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import Notification, NotificationLog, PushOutbox, UserAccount
 from serversherpa.notifications import address_blocks, reset_requests
 from serversherpa.notifications.inbox import notify
-from serversherpa.notifications.push import SNOOZE, on_read_or_hidden, snooze
+from serversherpa.notifications.push import SNOOZE, on_read_or_hidden, queue_push, snooze
 from serversherpa.notifications.requests import resolve_copies
 from serversherpa.security.passwords import hash_password
 from serversherpa.services.router_agent import resolve_router_copies
@@ -292,3 +293,96 @@ async def test_bumped_reset_request_pushes_again(db, fcm_on, clock):
     # a second bump moves the one queued row instead of adding another
     await reset_requests.open_or_bump(db, target)
     assert len(await _queued(db, "notification")) == 1
+
+
+async def _approver_card(db, clock):
+    """An approver with a phone and an open, unread reset-request card."""
+    clock(NOW)
+    await _company(db, defaults={"approvals": {"inbox": True, "email": True, "push": True}})
+    approver = await _admin(db)
+    await _phone(db, approver)
+    target = await _admin(db, role="staff")
+    card = await _card(db, approver, reset_requests.KIND,
+                       {"target_person_id": str(target.id), "state": "open", "count": 1})
+    await db.commit()
+    return approver, target, card
+
+
+async def test_bump_ends_an_old_snooze(db, fcm_on, clock):
+    _, target, card = await _approver_card(db, clock)
+    await snooze(db, card, now=NOW)
+    assert card.push_snoozed_until == NOW + SNOOZE
+    await reset_requests.open_or_bump(db, target)
+    await db.flush()
+    assert card.push_snoozed_until is None
+    (row,) = await _queued(db, "notification")
+    assert (row.reason, row.send_at) == ("new", NOW)
+
+
+async def _cleared(db, clock):
+    """A notification read (its clear queued for the phone) and then unread."""
+    person, n = await _pushed(db, clock)
+    (first,) = await _queued(db, "notification")
+    first.state = "sent"
+    await db.flush()
+    await on_read_or_hidden(db, [n.id], person.id)
+    (clear,) = await _queued(db, "clear")
+    return person, n, clear
+
+
+async def _dropped_clear_logged(db, n, clear):
+    await db.refresh(clear)
+    assert (clear.state, clear.last_error) == ("dropped", "alerted_again")
+    log = list(await db.scalars(select(NotificationLog).where(
+        NotificationLog.event == "push_dropped",
+        NotificationLog.reason == "alerted_again")))
+    assert len(log) == 1 and log[0].notification_id == n.id
+    assert log[0].detail == {"push_outbox_id": str(clear.id), "message_type": "clear"}
+
+
+async def test_snooze_drops_a_stale_clear(db, fcm_on, clock):
+    _, n, clear = await _cleared(db, clock)
+    await snooze(db, n, now=NOW)
+    assert await _queued(db, "clear") == []
+    (row,) = await _queued(db, "notification")
+    assert row.reason == "snooze"
+    await _dropped_clear_logged(db, n, clear)
+
+
+async def test_new_push_drops_a_stale_clear(db, fcm_on, clock):
+    _, n, clear = await _cleared(db, clock)
+    await queue_push(db, n, reason="new", send_at=NOW)
+    assert await _queued(db, "clear") == []
+    await _dropped_clear_logged(db, n, clear)
+
+
+async def test_bump_drops_a_stale_clear(db, fcm_on, clock):
+    approver, target, card = await _approver_card(db, clock)
+    await on_read_or_hidden(db, [card.id], approver.id)
+    (clear,) = await _queued(db, "clear")
+    await reset_requests.open_or_bump(db, target)
+    assert await _queued(db, "clear") == []
+    (row,) = await _queued(db, "notification")
+    assert row.reason == "new"
+    await _dropped_clear_logged(db, card, clear)
+
+
+async def test_a_sent_row_is_never_moved_by_a_later_snooze(db, fcm_on, clock):
+    # the worker sent the row (committed in its own session) after this session
+    # first saw it queued: a snooze must queue a fresh row, not move the sent one
+    _, n = await _pushed(db, clock)
+    (first,) = await _queued(db, "notification")
+    assert first.state == "queued"            # this session's copy says queued
+    async with get_sessionmaker()() as worker:
+        sent = await worker.get(PushOutbox, first.id)
+        sent.state = "sent"
+        sent.handled_at = NOW
+        await worker.commit()
+    await snooze(db, n, now=NOW)
+    await db.commit()
+    rows = await _rows(db, "notification")
+    assert len(rows) == 2
+    old = next(r for r in rows if r.id == first.id)
+    assert (old.state, old.reason, old.send_at) == ("sent", "new", NOW)
+    (fresh,) = [r for r in rows if r.state == "queued"]
+    assert (fresh.reason, fresh.send_at) == ("snooze", NOW + SNOOZE)

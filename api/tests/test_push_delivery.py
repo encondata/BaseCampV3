@@ -3,15 +3,19 @@ client records every send and returns scripted results; nothing touches FCM.
 
 Spec: docs/superpowers/specs/2026-11-17-android-push-notifications-design.md"""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
+    Notification,
     NotificationLog,
     PushOutbox,
     PushRegistration,
 )
+from serversherpa.notifications import push as push_mod
 from serversherpa.notifications import worker as worker_mod
 from serversherpa.notifications.inbox import notify
 from serversherpa.push.delivery import drain_push
@@ -291,6 +295,79 @@ async def test_bad_row_is_retried_and_does_not_sink_the_batch(db, fcm_on, clock,
     assert "RuntimeError" in bad.last_error and "secret" not in bad.last_error
     # not due again until the backoff ends
     assert await drain_push(db, client, now=NOW + timedelta(seconds=1)) == 0
+
+
+async def test_each_row_is_committed_before_the_next_is_sent(db, fcm_on, clock):
+    # no lock outlives its own row: while the second row is being sent the
+    # first is already committed as sent and anyone can lock it at once
+    person, _, first_n, first = await _queued(db, clock)
+    second_n = await notify(db, person.id, KIND, "Two")
+    await db.commit()
+    seen = []
+
+    class Watching(FakeClient):
+        async def send(self, token, data, *, high_priority):
+            if data["notification_id"] == str(second_n.id):
+                async with get_sessionmaker()() as other:
+                    state = await other.scalar(
+                        select(PushOutbox.state).where(PushOutbox.id == first.id)
+                        .with_for_update(nowait=True))
+                    seen.append(state)
+                    await other.rollback()
+            return await super().send(token, data, high_priority=high_priority)
+
+    assert await drain_push(db, Watching(), now=NOW) == 2
+    assert seen == ["sent"]
+    assert first_n.id != second_n.id
+
+
+async def test_a_snooze_during_the_send_is_not_lost(db, fcm_on, clock):
+    # a Snooze that lands while the worker is sending the queued row waits for
+    # the worker, then queues a fresh row: it never moves the row just sent
+    _, _, n, _ = await _queued(db, clock)
+    await db.commit()
+    tasks = []
+
+    async def snooze_elsewhere():
+        async with get_sessionmaker()() as api:
+            note = await api.get(Notification, n.id)
+            await push_mod.snooze(api, note, now=NOW)
+            await api.commit()
+
+    class Racing(FakeClient):
+        async def send(self, token, data, *, high_priority):
+            tasks.append(asyncio.create_task(snooze_elsewhere()))
+            await asyncio.sleep(0.5)
+            assert not tasks[0].done()      # held by the worker's locks
+            return await super().send(token, data, high_priority=high_priority)
+
+    assert await drain_push(db, Racing(), now=NOW) == 1
+    await asyncio.wait_for(tasks[0], 10)
+    rows = list(await db.scalars(select(PushOutbox).order_by(PushOutbox.created_at)
+                                 .execution_options(populate_existing=True)))
+    assert [(r.state, r.reason) for r in rows] == [("sent", "new"), ("queued", "snooze")]
+    assert rows[1].send_at == NOW + push_mod.SNOOZE
+    await db.refresh(n)
+    assert n.push_snoozed_until == NOW + push_mod.SNOOZE
+
+
+async def test_a_notification_being_changed_is_left_for_the_next_drain(db, fcm_on, clock):
+    # someone holds the notification (Mark read in flight): the worker does not
+    # wait on it, sends nothing and leaves the row queued
+    _, _, n, row = await _queued(db, clock)
+    await db.commit()
+    client = FakeClient()
+    async with get_sessionmaker()() as api:
+        await api.scalar(select(Notification).where(Notification.id == n.id)
+                         .with_for_update())
+        assert await asyncio.wait_for(drain_push(db, client, now=NOW), 10) == 0
+        await api.rollback()
+    assert client.calls == []
+    await db.refresh(row)
+    assert (row.state, row.attempts) == ("queued", 0)
+    assert await drain_push(db, client, now=NOW) == 1
+    await db.refresh(row)
+    assert row.state == "sent"
 
 
 async def test_dropped_snooze_clears_snoozed_until(db, fcm_on, clock):

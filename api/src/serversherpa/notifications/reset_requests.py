@@ -41,6 +41,8 @@ async def open_or_bump(db: AsyncSession, person: Person) -> int:
             card.read_at = None
             card.dismissed_at = None
             card.created_at = now
+            # a bump pushes now (below): an old snooze no longer applies
+            card.push_snoozed_until = None
             await signal_inbox(db, card.person_id)
         await db.flush()
         # A bumped card is unread and back on top: it pushes again, by the

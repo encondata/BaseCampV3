@@ -118,15 +118,43 @@ async def decide_push(db: AsyncSession, person_id: uuid.UUID, info: KindInfo | N
     return PushDecision(True, None, phones, critical, switches)
 
 
+async def _drop_queued_clears(db: AsyncSession, notification: Notification) -> None:
+    """Drop the `clear` rows still queued for this notification (reason
+    `alerted_again`): the notification is being pushed again."""
+    dropped = (await db.execute(
+        update(PushOutbox)
+        .where(PushOutbox.notification_id == notification.id,
+               PushOutbox.message_type == "clear", PushOutbox.state == "queued")
+        .values(state="dropped", last_error="alerted_again", handled_at=_now())
+        .returning(PushOutbox.id))).scalars().all()
+    for outbox_id in dropped:
+        record(db, "push_dropped", channel="push", person_id=notification.person_id,
+               notification_id=notification.id, kind=notification.kind,
+               reason="alerted_again",
+               detail={"push_outbox_id": str(outbox_id), "message_type": "clear"})
+
+
 async def queue_push(db: AsyncSession, notification: Notification, *, reason: str,
                      send_at: datetime) -> PushOutbox:
     """Queue the one pending push for this notification, or move the one that
-    is already queued to a new reason and time. Never queues a second."""
-    row = await db.scalar(select(PushOutbox).where(
-        PushOutbox.notification_id == notification.id,
-        PushOutbox.message_type == "notification",
-        PushOutbox.state == "queued"))
-    if row is not None:
+    is already queued to a new reason and time. Never queues a second.
+
+    The queued row is locked (FOR UPDATE) and read fresh: when the worker is
+    sending it right now this waits for the worker, and a row the worker has
+    since sent or dropped no longer matches, so a new row is queued instead of
+    moving one that will never send again (a lost Snooze).
+
+    A `clear` still queued for this notification is dropped: it would remove
+    the alert this push puts back on the phone."""
+    await _drop_queued_clears(db, notification)
+    row = await db.scalar(
+        select(PushOutbox).where(
+            PushOutbox.notification_id == notification.id,
+            PushOutbox.message_type == "notification",
+            PushOutbox.state == "queued")
+        .with_for_update()
+        .execution_options(populate_existing=True))
+    if row is not None and row.state == "queued":
         row.reason = reason
         row.send_at = send_at
         return row
@@ -143,14 +171,17 @@ async def queue_push(db: AsyncSession, notification: Notification, *, reason: st
 async def maybe_push(db: AsyncSession, notification: Notification, *,
                      info: KindInfo | None, contact: Contact | None,
                      company: CompanySettings) -> None:
-    """Queue the push now, or not, as decide_push() says. Either way the
-    decision lands in the delivery log: `push_queued` or `push_not_queued`
-    with the reason."""
+    """Queue the push now, or not, as decide_push() says. The decision lands
+    in the delivery log as `push_queued`, or `push_not_queued` with the
+    reason, except when push is not set up on the server at all: that would
+    log one row for every notification and says nothing about this one."""
     now = _now()
     decision = await decide_push(db, notification.person_id, info, contact=contact,
                                  company=company, now=now)
     category = info.category if info else None
     if not decision.queue:
+        if decision.reason == "push_not_set_up":
+            return
         record(db, "push_not_queued", channel="push", person_id=notification.person_id,
                notification_id=notification.id, kind=notification.kind,
                category=category, reason=decision.reason)
