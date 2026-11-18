@@ -13,7 +13,8 @@ _ALL = ["dashboard", "users", "workers", "clients", "partners",
         "attachments", "settings", "access", "audit", "devtools", "sites",
         "assets", "asset_models", "containers", "trucks", "warehouse", "initiatives", "scans",
         "status_rules", "scanning_hardware", "labels", "reports", "time",
-        "notifications", "ai", "kiosk", "learning", "project_plans"]
+        "notifications", "ai", "kiosk", "learning", "project_plans",
+        "app_distribution"]
 # resources that only ever carry `view`, whoever holds them
 VIEW_ONLY = ("ai", "kiosk")
 
@@ -42,7 +43,7 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "scanning_hardware": FULL, "labels": FULL, "reports": FULL,
               "time": FULL, "notifications": FULL, "ai": ("view",),
               "kiosk": ("view",), "wiki": WIKI_ADD_DELETE, "learning": FULL,
-              "project_plans": FULL},
+              "project_plans": FULL, "app_distribution": FULL},
     "staff": {"dashboard": ("view",), "users": ("view", "add", "change"),
               "workers": FULL, "clients": FULL, "partners": FULL,
               "attachments": FULL, "settings": ("view",), "access": ("view",),
@@ -51,7 +52,8 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "scans": ("view",),
               "status_rules": ("view",), "scanning_hardware": ("view",),
               "labels": ("view",), "reports": ("view", "add"), "time": ("view",),
-              "kiosk": ("view",), "wiki": WIKI_ADD, "learning": ("view",)},
+              "kiosk": ("view",), "wiki": WIKI_ADD, "learning": ("view",),
+              "app_distribution": ("view",)},
     "learning_admin": {"learning": FULL, "wiki": WIKI_VIEW},
     "client_owner":  {"dashboard": ("view",), "clients": ("view", "change"),
                       "attachments": ("view",), "assets": ("view",),
