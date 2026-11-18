@@ -61,6 +61,10 @@ import com.serversherpa.kiosk.data.printer.isUpTo
 import com.serversherpa.kiosk.data.printer.lockedSender
 import com.serversherpa.kiosk.data.printer.send
 import com.serversherpa.kiosk.data.printer.transportFor
+import com.serversherpa.kiosk.data.push.FcmTokens
+import com.serversherpa.kiosk.data.push.FirebaseFcmTokens
+import com.serversherpa.kiosk.data.push.PushKeyStore
+import com.serversherpa.kiosk.data.push.PushRegistrar
 import com.serversherpa.kiosk.data.rolodex.RolodexCacheStore
 import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.station.StationStatus
@@ -114,6 +118,8 @@ class AppContainer(
     bluetoothOverride: BluetoothLeClient? = null,
     /** Tests: the biometric sign-in key (JVM tests have no AndroidKeyStore). */
     biometricKeysOverride: BiometricKeys? = null,
+    /** Tests: the FCM token source (JVM tests never touch Firebase). */
+    fcmTokensOverride: FcmTokens? = null,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -141,6 +147,13 @@ class AppContainer(
     val stationKeys = StationKeyStore(secretStore)
     /** Whether a Time Clock station's key is there, and whether the portal has paused it. */
     val station = StationStatus(stationKeys, apiBase = { config.apiUrlNow() })
+    /** "This is my phone" and its push registration. Firebase only when this build has a Firebase
+     *  project (google-services.json); otherwise the push step says push isn't available. Chosen
+     *  on first use, after Firebase's own startup has run. */
+    val pushKeys = PushKeyStore(secretStore)
+    val pushRegistrar by lazy {
+        PushRegistrar(api, pushKeys, fcmTokensOverride ?: FirebaseFcmTokens.forApp(app), apiBase = { config.apiUrlNow() })
+    }
     val auth = KioskAuth(api, session, identity, scope)
     /** Fingerprint or face sign-in on a personal phone: the offer, Turn on, the card, Forget. */
     val biometric = BiometricSignIn(
@@ -302,6 +315,8 @@ class AppContainer(
         DataWedge.configure(app)
         rfid.start()
         startSledWiring()
+        // A push token update that failed before (network, read-only mode) goes again.
+        scope.launch { pushRegistrar.onAppStart() }
     }
 
     /** The sled's scanner state into the guard, its barcodes onto the scan bus once, and the

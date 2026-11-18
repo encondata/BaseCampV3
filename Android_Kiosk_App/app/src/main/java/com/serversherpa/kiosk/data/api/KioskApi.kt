@@ -33,6 +33,9 @@ import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
+import com.serversherpa.kiosk.core.model.PersonalState
+import com.serversherpa.kiosk.core.model.PushRegistration
+import com.serversherpa.kiosk.data.push.PushKey
 import kotlinx.serialization.json.JsonObject
 
 /** Every endpoint the kiosk calls — kiosk/src/lib/api.ts, function for function.
@@ -71,6 +74,26 @@ interface KioskApi {
     suspend fun biometricSignIn(keyId: String, challenge: String, signature: String): SessionData
     /** DELETE /kiosk/biometric?serial= under the session: revokes the person's own key here (204 always). */
     suspend fun biometricForget(serial: String)
+
+    // ── "This is my phone" and push (errors as {"detail":{"code":…}}) ──
+    // Always about the phone the session is bound to; 403 not_this_kiosk when it isn't bound yet.
+
+    /** GET /kiosk/personal under the session: the Settings switch's state. */
+    suspend fun getPersonal(): PersonalState
+    /** PUT /kiosk/personal {on} under the session. 422 not_eligible with detail.reason (not_admin,
+     *  zebra, shared_station, platform_unknown, owned_by_other, no_account, account_disabled,
+     *  move_identity, no_kiosk_view on; not_owner off), 423. The answer's pushRegistered is false. */
+    suspend fun setPersonal(on: Boolean): PersonalState
+    /** POST /kiosk/push/registration {token} under the session: creates or replaces this phone's
+     *  registration; the push key comes back this once. 403 not_personal_device / not_admin,
+     *  409 token_conflict, 423. */
+    suspend fun registerPush(token: String): PushRegistration
+    /** DELETE /kiosk/push/registration under the session (204, none included). 403 not_owner. */
+    suspend fun deletePush()
+    /** PUT /kiosk/push/registration/token {token} with only `Authorization: PushKey <id>.<key>`,
+     *  sent to [key]'s base URL: no bearer, no cookie, no refresh, never a session-ended signal.
+     *  401 push_key_invalid, 409 token_conflict, 423 read-only, 429 rate_limited. */
+    suspend fun updatePushToken(token: String, key: PushKey)
 
     // ── setup & sync ────────────────────────────────────────────────
 

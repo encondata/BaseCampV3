@@ -6,6 +6,14 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Push notifications (FCM) read the Firebase project from app/google-services.json, which is
+// committed once the project exists (it identifies the project; it is not a secret). Without it
+// the plugin stays off: the app still builds, its tests run, and "This is my phone" reports that
+// push isn't available in this build (data/push/FcmTokens.kt).
+if (file("google-services.json").exists()) {
+    apply(plugin = libs.plugins.google.services.get().pluginId)
+}
+
 android {
     namespace = "com.serversherpa.kiosk"
     compileSdk = 36
@@ -110,6 +118,9 @@ dependencies {
     implementation(libs.androidx.biometric)
     // MainActivity is a FragmentActivity (BiometricPrompt); never left to whatever appcompat pulls in.
     implementation(libs.androidx.fragment.ktx)
+    // Push notifications. Only data/push/FirebaseFcmTokens.kt touches Firebase; tests use a fake.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
     // The RFIDAPI3 .aar is wired in as a raw local artifact (see
     // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency.
     implementation(project(":RFIDAPI3Library"))

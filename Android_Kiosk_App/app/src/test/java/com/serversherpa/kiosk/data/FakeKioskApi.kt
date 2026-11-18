@@ -77,6 +77,24 @@ open class FakeKioskApi : KioskApi {
     override suspend fun clockOut(body: ClockOutIn) = clockOutResult(body).also { calls += "clockOut" }
     var issueStationKeyResult: (String) -> String = { "station-key-1" }
     override suspend fun issueStationKey(serial: String) = issueStationKeyResult(serial).also { calls += "issueStationKey" }
+    // ── "This is my phone" and push ──
+    // Suspending, so a test can hold a call open. Each call is recorded in `calls` first; tokens and
+    // keys go only to their own lists, never into `calls`.
+    var getPersonalResult: suspend () -> PersonalState = { PersonalState(on = false, ownerName = null) }
+    var setPersonalResult: suspend (Boolean) -> PersonalState = { on -> PersonalState(on = on, ownerName = if (on) "Tina T" else null) }
+    var registerPushResult: suspend (String) -> PushRegistration = { PushRegistration(registrationId = "reg-1", pushKey = "push-key-1") }
+    val pushRegistrations = ArrayList<String>()
+    var deletePushResult: suspend () -> Unit = { }
+    var updatePushTokenResult: suspend (String, com.serversherpa.kiosk.data.push.PushKey) -> Unit = { _, _ -> }
+    val pushTokenUpdates = ArrayList<Pair<String, com.serversherpa.kiosk.data.push.PushKey>>()
+    override suspend fun getPersonal(): PersonalState { calls += "getPersonal"; return getPersonalResult() }
+    override suspend fun setPersonal(on: Boolean): PersonalState { calls += "setPersonal:$on"; return setPersonalResult(on) }
+    override suspend fun registerPush(token: String): PushRegistration { calls += "registerPush"; pushRegistrations += token; return registerPushResult(token) }
+    override suspend fun deletePush() { calls += "deletePush"; deletePushResult() }
+    override suspend fun updatePushToken(token: String, key: com.serversherpa.kiosk.data.push.PushKey) {
+        calls += "updatePushToken"; pushTokenUpdates += token to key; updatePushTokenResult(token, key)
+    }
+
 
     // ── rolodex ─────────────────────────────────────────────────────
     // Suspending, so a test can hold a call open (a double tap while saving). Each call is
