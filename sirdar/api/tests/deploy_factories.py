@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog, Environment, EnvironmentSecret, EnvironmentService
-from sirdar_api.deploy import envfile, known_hosts, pipeline, vault
+from sirdar_api.deploy import apps, envfile, known_hosts, pipeline, vault
 
 from .fake_provisioner import FakeProvisioner
 from .fake_publisher import FakePublisher
@@ -92,12 +92,14 @@ async def make_environment(db, *, name: str = "uat", target_id: str = "ssh",
                       keep_dumps=5, spaces_bucket="serversherpa", log_level="INFO")
     db.add(env)
     await db.flush()
+    # Hostnames only for the names a real environment publishes: its apps are
+    # Environment.apps' default (every app Sirdar runs), as environments.py does.
+    public = apps.public_services(list(apps.RUNNABLE_APPS))
     for service in envfile.SERVICES:
         db.add(EnvironmentService(
             environment_id=env.id, service=service, host_ip=host,
             port=envfile.DEFAULT_PORTS[service], proxied=False,
-            hostname=(f"{service}.{env.base_domain}"
-                      if service in envfile.PUBLIC_SERVICES else None)))
+            hostname=f"{service}.{env.base_domain}" if service in public else None))
     if with_home:
         db.add(EnvironmentService(
             environment_id=env.id, service="home", host_ip=host,
