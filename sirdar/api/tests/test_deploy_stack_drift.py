@@ -1,12 +1,20 @@
 """Sirdar's app and port lists against deploy/stack's: a new optional app or
-port in the stack must reach Sirdar (and the reverse)."""
+port in the stack must reach Sirdar (and the reverse). And every playbook
+grep that asks what a checkout's ss-stack can do must still find its line in
+the real ss-stack: rewording that line silently turns the feature off (as
+4e8ceb1d4 did to the learning site's check)."""
 
 import re
+import subprocess
 from pathlib import Path
 
+import yaml
+
 from sirdar_api.deploy import apps, certs, envfile, smoke
+from sirdar_api.deploy.steps import PLAYBOOK_DIR
 
 STACK = Path(__file__).resolve().parents[3] / "deploy" / "stack"
+SS_STACK_ARG = "{{ ss_stack }}"
 
 
 def _stack_apps() -> set[str]:
@@ -30,3 +38,56 @@ def test_learn_is_a_public_app_everywhere():
     assert "learn" in envfile.PUBLIC_SERVICES and "learn" in certs.PUBLIC_SERVICES
     assert envfile.DEFAULT_PORTS["learn"] == 8092
     assert smoke.PATHS["learn"] == "/"
+
+
+# ---- the playbooks' greps of the checkout's ss-stack ----------------------------
+
+def _stack_greps() -> list[tuple[str, str, list[str]]]:
+    """Every command task in the playbooks (tasks/ included) that greps the
+    checkout's ss-stack: (playbook, task name, argv)."""
+    found: list[tuple[str, str, list[str]]] = []
+
+    def walk(node, playbook: str) -> None:
+        if isinstance(node, dict):
+            command = node.get("ansible.builtin.command") or node.get("command")
+            argv = command.get("argv") if isinstance(command, dict) else None
+            if argv and argv[0] == "grep" and argv[-1] == SS_STACK_ARG:
+                found.append((playbook, node.get("name"), argv))
+            node = list(node.values())
+        if isinstance(node, list):
+            for item in node:
+                walk(item, playbook)
+
+    for path in sorted(PLAYBOOK_DIR.rglob("*.yml")):
+        walk(yaml.safe_load(path.read_text()), path.relative_to(PLAYBOOK_DIR).as_posix())
+    return found
+
+
+def _failed_greps(ss_stack: Path) -> list[str]:
+    """Each playbook grep, run as the playbook runs it, that finds nothing in
+    `ss_stack`."""
+    failed = []
+    for playbook, name, argv in _stack_greps():
+        rc = subprocess.run([*argv[:-1], str(ss_stack)], check=False).returncode
+        if rc != 0:
+            failed.append(f"{playbook}: {name!r} greps ss-stack for {argv[-2]!r} (rc {rc})")
+    return failed
+
+
+def test_the_playbook_greps_cover_learn_and_the_commands():
+    greps = _stack_greps()
+    assert {p for p, _, argv in greps if "learn" in argv[-2]} == {"render.yml", "slot_smoke.yml"}
+    for playbook, command in (("data.yml", "data"), ("first_admin.yml", "admin"),
+                              ("seed.yml", "seed")):
+        assert any(p == playbook and f"{command})" in argv[-2] for p, _, argv in greps), playbook
+
+
+def test_every_playbook_grep_finds_its_line_in_ss_stack():
+    failed = _failed_greps(STACK / "ss-stack")
+    assert not failed, "deploy/stack/ss-stack no longer has what these checks grep for:\n" \
+        + "\n".join(failed)
+
+
+def test_render_and_slot_smoke_ask_the_same_learn_question():
+    learn = {p: argv for p, _, argv in _stack_greps() if "learn" in argv[-2]}
+    assert learn["render.yml"] == learn["slot_smoke.yml"]

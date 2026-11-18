@@ -1033,7 +1033,7 @@ def test_seed_playbook_explains_an_old_checkout(tmp_path):
     assert calls == []
 
 
-# ---- a checkout from before the learning site (ss-stack without learn) ----
+# ---- whether a checkout knows the learning site (its ss-stack, with or without learn) ----
 
 PREDATES_LEARN = "This commit predates the learning site, so it runs without it."
 # check_apps as ss-stack had it from a6ceb51e until 6cc4c8b7 added learn
@@ -1047,31 +1047,56 @@ check_apps() {
   done
 }
 """
+# check_apps as ss-stack had it from 6cc4c8b7 (learn in its case line) until
+# 4e8ceb1d4 moved the names into OPTIONAL_APPS; this is 253c882bb's
+CASE_SS_STACK = """#!/usr/bin/env bash
+check_apps() {
+  local apps app list
+  apps=$(env_value STACK_APPS)
+  [[ -z $apps || $apps == none ]] && return 0
+  IFS=, read -ra list <<<"$apps"
+  for app in "${list[@]}"; do
+    case $app in
+      wiki|kiosk|learn|status|devices|mailpit) ;;
+      none) die "STACK_APPS: none can't be combined with other apps" ;;
+      *) die "STACK_APPS has '$app', not one of wiki, kiosk, learn, status, devices, mailpit" ;;
+    esac
+  done
+  if app_on learn && ! app_on wiki; then
+    die "The learning site needs the wiki: turn the wiki on, or turn learning off."
+  fi
+}
+"""
+# The two forms a checkout that knows learn has: this checkout's real
+# ss-stack (its OPTIONAL_APPS list, 4e8ceb1d4 on) and the old case line.
+KNOWS_LEARN = {"optional-apps": None, "case-line": CASE_SS_STACK}
 
 
-def _old_ss_stack(tmp_path: Path) -> Path:
-    old = tmp_path / "old-ss-stack"
-    old.write_text(OLD_SS_STACK)
-    old.chmod(0o755)
-    return old
+def _ss_stack(tmp_path: Path, text: str) -> Path:
+    stack = tmp_path / "other-ss-stack"
+    stack.write_text(text)
+    stack.chmod(0o755)
+    return stack
 
 
-def _render(tmp_path: Path, apps: str, *, old: bool):
+def _render(tmp_path: Path, apps: str, *, stack: str | None = None):
+    """Render with `stack` as the checkout's ss-stack (None: the real one)."""
     env_dir, env = _target(tmp_path)
     secret = "render-SECRET-0123abcd"
     text = f"STACK_ENV=e2e\nSTACK_APPS={apps}\nPOSTGRES_PASSWORD={secret}\n"
     extra = {**_common(env_dir), "env_file_b64": base64.b64encode(text.encode()).decode()}
-    if old:
-        extra["ss_stack"] = str(_old_ss_stack(tmp_path))
+    if stack is not None:
+        extra["ss_stack"] = str(_ss_stack(tmp_path, stack))
     result, _ = _play(tmp_path, "render.yml", extra, env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert secret not in result.stdout + result.stderr
     return result, (env_dir / ".env").read_text()
 
 
+@pytest.mark.parametrize("stack", list(KNOWS_LEARN.values()), ids=list(KNOWS_LEARN))
 @pytest.mark.parametrize("apps", ["wiki,learn,kiosk", "learn,wiki", "wiki,learn", "none"])
-def test_render_keeps_learn_for_a_checkout_that_knows_it(tmp_path, apps):
-    result, written = _render(tmp_path, apps, old=False)
+def test_render_keeps_learn_for_a_checkout_that_knows_it(tmp_path, apps, stack):
+    result, written = _render(tmp_path, apps, stack=stack)
     assert f"STACK_APPS={apps}\n" in written
     assert PREDATES_LEARN not in result.stdout
 
@@ -1083,7 +1108,7 @@ def test_render_keeps_learn_for_a_checkout_that_knows_it(tmp_path, apps):
 def test_render_drops_learn_for_a_checkout_from_before_it(tmp_path, apps, kept):
     """Roll back, Update or adopt to a commit whose ss-stack refuses learn:
     the .env runs without the learning site, and the step says so."""
-    result, written = _render(tmp_path, apps, old=True)
+    result, written = _render(tmp_path, apps, stack=OLD_SS_STACK)
     assert f"STACK_APPS={kept}\n" in written
     assert "learn" not in written
     assert "POSTGRES_PASSWORD=render-SECRET-0123abcd\n" in written
@@ -1092,13 +1117,15 @@ def test_render_drops_learn_for_a_checkout_from_before_it(tmp_path, apps, kept):
 
 @pytest.mark.parametrize("apps", ["wiki,kiosk", "none"])
 def test_render_says_nothing_when_an_old_checkout_runs_no_learn(tmp_path, apps):
-    result, written = _render(tmp_path, apps, old=True)
+    result, written = _render(tmp_path, apps, stack=OLD_SS_STACK)
     assert f"STACK_APPS={apps}\n" in written
     assert PREDATES_LEARN not in result.stdout
 
 
-@pytest.mark.parametrize("old", [False, True])
-def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, old):
+@pytest.mark.parametrize("stack, old", [*((s, False) for s in KNOWS_LEARN.values()),
+                                        (OLD_SS_STACK, True)],
+                         ids=[*KNOWS_LEARN, "before-learn"])
+def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, stack, old):
     _Answer.status, _Answer.seen = 200, []
     server = HTTPServer(("127.0.0.1", 0), _Answer)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1108,8 +1135,8 @@ def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, old):
                  {"service": "learn", "hostname": "learn.e2e.serversherpa.com", "path": "/"}]
         extra = {**_common(env_dir), "public_hosts": hosts, "slot_port": server.server_port,
                  "slot_smoke_retries": 1, "slot_smoke_delay": 0}
-        if old:
-            extra["ss_stack"] = str(_old_ss_stack(tmp_path))
+        if stack is not None:
+            extra["ss_stack"] = str(_ss_stack(tmp_path, stack))
         result, _ = _play(tmp_path, "slot_smoke.yml", extra, env)
     finally:
         server.shutdown()
