@@ -282,3 +282,25 @@ async def test_stale_uploads_are_purged(api, bucket, db):
     assert {fresh, done} <= ids
     assert not any(k.startswith(f"uploads/{stale}/") for k in bucket.object_keys())
     assert any(k.startswith(f"uploads/{fresh}/") for k in bucket.object_keys())
+
+
+async def test_commit_stores_the_inspected_bytes_even_if_reuploaded(api, bucket, db):
+    """The presigned PUT stays valid after inspection: a second PUT must never
+    become the version."""
+    import hashlib
+
+    upload_id = await start_upload(api, bucket, HELLO_A)
+    presigned_key = bucket.presigned[-1][0]
+    assert (await inspect(api, upload_id))["problems"] == []
+    inspected_key = f"uploads/{upload_id}/inspected/hello-a.apk"
+    assert bucket.read(inspected_key) == HELLO_A.read_bytes()
+    assert not bucket.exists(presigned_key)   # the client-writable copy is gone
+
+    bucket.put(presigned_key, b"swapped after review" * 100)
+    r = await commit(api, upload_id)
+    assert r.status_code == 201, r.text
+    row = await db.get(AppVersion, uuid.UUID(r.json()["version"]["id"]))
+    assert row.sha256 == hashlib.sha256(HELLO_A.read_bytes()).hexdigest()
+    assert row.size == HELLO_A.stat().st_size
+    assert bucket.read(row.file_key) == HELLO_A.read_bytes()
+    assert not any(k.startswith("uploads/") for k in bucket.object_keys())

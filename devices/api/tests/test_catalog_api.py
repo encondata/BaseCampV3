@@ -124,3 +124,19 @@ async def test_app_without_icon_has_no_icon_url(api, bucket, db, tmp_path):
     await db.commit()
     assert (await api.get("/api/apps")).json()[0]["icon_url"] is None
     assert (await api.get(f"/api/apps/{app_id}/icon")).status_code == 404
+
+
+async def test_commit_rejects_build_older_than_a_deleted_one(api, bucket, db, tmp_path):
+    """Phones may still have a deleted build installed, so it still sets the bar."""
+    from .catalog_support import commit, inspect, start_upload
+
+    _, v1, v2 = await _two_versions(api, bucket, db, tmp_path)
+    assert (await api.post(f"/api/versions/{v1['id']}/make-current")).status_code == 200
+    assert (await api.delete(f"/api/versions/{v2['id']}")).status_code == 204
+
+    upload_id = await start_upload(api, bucket, hello_ipa(tmp_path / "c", version="1.6",
+                                                          build="5"))
+    assert (await inspect(api, upload_id))["problems"] == ["Build 5 isn't newer than 1.5 (10)."]
+    r = await commit(api, upload_id)
+    assert r.status_code == 409
+    assert r.json()["detail"]["problems"] == ["Build 5 isn't newer than 1.5 (10)."]

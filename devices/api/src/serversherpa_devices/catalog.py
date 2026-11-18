@@ -59,6 +59,19 @@ def upload_key(upload_id: uuid.UUID, filename: str) -> str:
     return f"uploads/{upload_id}/{filename}"
 
 
+def inspected_key(upload_id: uuid.UUID, filename: str) -> str:
+    """Where inspection keeps the bytes it read. The client never gets a URL
+    for this key (its presigned key has no '/' after the id), so a PUT after
+    inspection can't change what commit stores."""
+    return f"uploads/{upload_id}/inspected/{filename}"
+
+
+def upload_object_keys(upload: Upload) -> list[str]:
+    """Every object an upload can own."""
+    return [upload.file_key, inspected_key(upload.id, upload.filename),
+            upload_icon_key(upload.id)]
+
+
 def upload_icon_key(upload_id: uuid.UUID) -> str:
     # A leading dot: safe_filename never produces one, so it can't clash.
     return f"uploads/{upload_id}/.icon.png"
@@ -107,13 +120,13 @@ async def problems(db: AsyncSession, review: dict, app: App | None) -> list[str]
     found: list[str] = []
     version_name, build = review["version_name"], review["build"]
     if app is not None:
-        # Deleted versions count: their version and build can't come back.
+        # Deleted versions count in both checks: their version and build can't
+        # come back, and phones may still have a deleted build installed.
         duplicate = await db.scalar(select(AppVersion.id).where(
             AppVersion.app_id == app.id, AppVersion.version_name == version_name,
             AppVersion.build == build).limit(1))
         highest = await db.scalar(
-            select(AppVersion).where(AppVersion.app_id == app.id,
-                                     AppVersion.deleted_at.is_(None))
+            select(AppVersion).where(AppVersion.app_id == app.id)
             .order_by(AppVersion.build_sort.desc()).limit(1))
         if duplicate is not None:
             found.append(f"{version_name} ({build}) is already uploaded.")
@@ -144,7 +157,7 @@ async def purge_stale_uploads(db: AsyncSession) -> None:
     gone: list[uuid.UUID] = []
     for upload in stale:
         try:
-            for key in (upload.file_key, upload_icon_key(upload.id)):
+            for key in upload_object_keys(upload):
                 await storage.delete_object(key)
         except (ClientError, BotoCoreError, OSError) as exc:
             log.warning("storage: couldn't purge a stale upload: %s", type(exc).__name__)

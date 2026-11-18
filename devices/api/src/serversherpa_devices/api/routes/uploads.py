@@ -128,21 +128,31 @@ def _inspect_out(review: dict, app: App | None, problems: list[str]) -> dict:
 
 @router.post("/uploads/{upload_id}/inspect", response_model=InspectOut,
              response_model_exclude_none=True)
-async def inspect_upload(upload_id: uuid.UUID, db: Db, principal: Adder):
+async def inspect_upload(upload_id: uuid.UUID, background: BackgroundTasks, db: Db,
+                         principal: Adder):
     upload = await _own_upload(db, upload_id, principal)
-    head = await storage.head_object(upload.file_key)
+    # A fresh PUT, or else (checking again) the copy an earlier inspection kept.
+    source = upload.file_key
+    head = await storage.head_object(source)
+    if head is None and upload.inspected is not None:
+        source = catalog.inspected_key(upload.id, upload.filename)
+        head = await storage.head_object(source)
     if head is None or head["size"] != upload.size:
         raise api_error(409, "not_uploaded", NOT_UPLOADED)
 
     with tempfile.TemporaryDirectory(prefix="devices-upload-") as tmp:
         path = Path(tmp) / upload.filename
-        await storage.download_to(upload.file_key, path)
+        await storage.download_to(source, path)
         try:
             # A child process with a 60 s limit: never on the event loop.
             info = await asyncio.to_thread(inspect_package_isolated, path)
         except PackageError as exc:
             raise api_error(422, "unreadable_package", exc.message) from None
         sha256 = await asyncio.to_thread(_sha256, path)
+        size = path.stat().st_size
+        # Commit stores these bytes, never the client-writable object.
+        await storage.upload_from(path, catalog.inspected_key(upload.id, upload.filename),
+                                  _DEFAULT_TYPE)
         if info.icon_png:
             icon = Path(tmp) / "icon.png"
             icon.write_bytes(info.icon_png)
@@ -152,12 +162,14 @@ async def inspect_upload(upload_id: uuid.UUID, db: Db, principal: Adder):
               "version_name": info.version_name, "build": info.build,
               # A string: an iOS sort key is wider than JSON numbers are safe for.
               "build_sort": str(info.build_sort), "min_os": info.min_os,
-              "signing_digest": info.signing_digest, "sha256": sha256, "size": head["size"],
+              "signing_digest": info.signing_digest, "sha256": sha256, "size": size,
+              "inspected_key": catalog.inspected_key(upload.id, upload.filename),
               "has_icon": bool(info.icon_png)}
     app = await catalog.find_app(db, info.platform, info.identifier)
     problems = await catalog.problems(db, review, app)
     upload.inspected = {**review, "problems": problems}
     await db.commit()
+    background.add_task(catalog.delete_objects, [upload.file_key])
     return _inspect_out(review, app, problems)
 
 
@@ -167,7 +179,7 @@ async def commit_upload(upload_id: uuid.UUID, body: CommitIn, request: Request,
                         principal: Adder):
     upload = await _own_upload(db, upload_id, principal, lock=True)
     review = upload.inspected
-    if review is None:
+    if review is None or "inspected_key" not in review:
         raise api_error(409, "not_inspected", "Check the file before saving it.")
     # Checked again: another upload may have been saved since the inspection.
     app = await catalog.find_app(db, review["platform"], review["identifier"], lock=True)
@@ -196,7 +208,7 @@ async def commit_upload(upload_id: uuid.UUID, body: CommitIn, request: Request,
         is_current=True)
     version.file_key = catalog.version_key(app.id, version.id, upload.filename)
     copied = [version.file_key]
-    await storage.copy_object(upload.file_key, version.file_key)
+    await storage.copy_object(review["inspected_key"], version.file_key)
     if review["has_icon"]:
         await storage.copy_object(catalog.upload_icon_key(upload.id), catalog.app_icon_key(app.id))
         app.icon_key = catalog.app_icon_key(app.id)
@@ -231,6 +243,5 @@ async def commit_upload(upload_id: uuid.UUID, body: CommitIn, request: Request,
                  **{k: {"from": None, "to": getattr(version, k)}
                     for k in ("version_name", "build", "size")}},
         ip=ip)
-    background.add_task(catalog.delete_objects,
-                        [upload.file_key, catalog.upload_icon_key(upload.id)])
+    background.add_task(catalog.delete_objects, catalog.upload_object_keys(upload))
     return {"app_id": app.id, "version": version_out(version)}
