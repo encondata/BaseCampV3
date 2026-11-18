@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 
-from serversherpa_devices.api.routes import apps, uploads
+from serversherpa_devices.api.routes import apple, apps, uploads
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.db.engine import dispose_engine, get_sessionmaker
 
@@ -84,6 +84,7 @@ def create_app() -> FastAPI:
 
     api.include_router(apps.router)
     api.include_router(uploads.router)
+    api.include_router(apple.router)
     app.include_router(api)
 
     @app.get("/healthz", include_in_schema=False)

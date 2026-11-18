@@ -187,11 +187,10 @@ def main_fake():
 
 
 @pytest.fixture
-async def api(main_fake):
+async def devices_app(main_fake):
     """The app with the main API swapped for `main_fake`. Authorize answers
-    aren't cached, so a test can change roles between calls."""
-    from httpx import ASGITransport, AsyncClient
-
+    aren't cached, so a test can change roles between calls. Tests may add
+    their own dependency_overrides."""
     from serversherpa_devices.api.app import create_app
     from serversherpa_devices.auth.main_api import MainApiClient, get_main_api
     from serversherpa_devices.config import get_settings
@@ -202,7 +201,16 @@ async def api(main_fake):
                              cache_seconds=0, transport=main_fake.transport())
     app = create_app()
     app.dependency_overrides[get_main_api] = lambda: main_api
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+    yield app
+    await main_api.aclose()
+
+
+@pytest.fixture
+async def api(devices_app):
+    """A client for `devices_app`, signed in as whoever `main_fake` says."""
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=devices_app),
+                           base_url="http://testserver",
                            headers={"Authorization": "Bearer tok-test"}) as c:
         yield c
-    await main_api.aclose()
