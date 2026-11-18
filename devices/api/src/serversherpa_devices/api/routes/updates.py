@@ -73,9 +73,13 @@ async def _ios(db: AsyncSession, bundle_id: str, build_sort: int, profile_kind: 
         return {"status": "register_first",
                 "message": f"Add this iPhone on {install_state.public_url()} first."}
     profile = await install_state.app_profile(db, app)
-    signed = await install_state.ready_build(db, current, profile) if profile else None
-    if signed is None:
+    if profile is None:
         return {"status": "preparing", "message": install_state.PREPARING}
+    state, signed = await install_state.build_state(db, current, profile)
+    if signed is None:
+        # A failure inside the retry window is still "preparing" to the app.
+        message = install_state.BUILD_FAILED if state == "failed" else install_state.PREPARING
+        return {"status": "preparing", "message": message}
     return _available(current, install_state.ios_install_url(signed))
 
 

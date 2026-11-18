@@ -20,6 +20,7 @@ from serversherpa_devices.db.models import (
     IosDevice,
     IosProfile,
     Job,
+    SignedBuild,
 )
 from serversherpa_devices.signing import resign
 from serversherpa_devices.worker.run import run_once
@@ -386,6 +387,7 @@ async def test_sign_build_failure_records_error(db, apple, bucket, tmp_path, sig
     (row,) = await signed_builds()
     assert (row.status, row.error, row.file_key) == (
         "failed", "error: the certificate password is wrong", None)
+    assert row.failed_at is not None
     assert not any("/signed/" in key for key in bucket.object_keys())
     (job,) = await jobs_of()
     assert (job.status, job.attempts) == ("failed", 1)   # signing again won't help
@@ -412,6 +414,7 @@ async def test_sign_build_storage_failure_is_retried(db, apple, bucket, tmp_path
     assert await run_once(get_sessionmaker())
     (row,) = await signed_builds()
     assert (row.status, row.error) == ("failed", "Signing didn't finish (OSError).")
+    assert row.failed_at is not None
     (job,) = await jobs_of()
     assert (job.status, job.attempts) == ("queued", 1)
 
@@ -480,3 +483,18 @@ async def test_missing_device_skips_and_bad_payload_fails_without_retry(db, appl
     assert await run_once(get_sessionmaker())
     job = (await jobs_of())[-1]
     assert job.status == "failed"
+
+
+async def test_sign_build_gave_up_marks_running_build_failed(db, apple, bucket, tmp_path):
+    from serversherpa_devices.worker import jobs
+
+    _app, version, _ = await _ready_to_sign(db, apple, bucket, tmp_path)
+    db.add(SignedBuild(version_id=version.id, profile_uuid=PROFILE_UUID, status="running"))
+    job = Job(kind="sign_build", payload={"version_id": str(version.id)}, status="failed")
+    db.add(job)
+    await db.commit()
+    await jobs.gave_up(db, job)
+    await db.commit()
+    (row,) = await signed_builds()
+    assert (row.status, row.error) == ("failed", jobs.SIGN_GAVE_UP)
+    assert row.failed_at is not None

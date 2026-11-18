@@ -183,6 +183,8 @@ class SignedBuild(Base):
     file_key: Mapped[str | None]
     error: Mapped[str | None]
     created_at: Mapped[datetime] = _now()
+    # When it last failed (migration 0003): paces re-signing on demand.
+    failed_at: Mapped[datetime | None]
 
     __table_args__ = (
         CheckConstraint(_in("status", ("queued", "running", "ready", "failed")),

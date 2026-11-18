@@ -50,7 +50,9 @@ class InstallOut(BaseModel):
 @router.post("/apps/{app_id}/install", response_model=InstallOut,
              responses={202: {"description": "iOS: the iPhone or the build isn't ready yet"}})
 async def install(app_id: uuid.UUID, body: InstallIn, db: Db,
-                  _: Annotated[Principal, Depends(require("view"))]):
+                  # Allowed in read-only mode: it changes no catalog data
+                  # (queuing re-signing is housekeeping).
+                  _: Annotated[Principal, Depends(require("view", allow_read_only=True))]):
     app = await db.get(App, app_id)
     if app is None:
         raise api_error(404, "not_found", "That app doesn't exist.")

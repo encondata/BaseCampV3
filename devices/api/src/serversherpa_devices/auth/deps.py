@@ -3,7 +3,7 @@
 - `current_principal`: any live session (401 / 503 otherwise).
 - `require(action)`: the web app's routes. Portal sessions only, no forced
   password change outstanding, the action granted, and no writes while the
-  main API is in read-only mode.
+  main API is in read-only mode (unless `allow_read_only`).
 - `kiosk_principal`: the kiosk app's routes (/api/updates and its links).
   Kiosk sessions, or portal sessions holding `view`.
 """
@@ -44,8 +44,10 @@ async def current_principal(
     return principal
 
 
-def require(action: str):
-    """A dependency for a web-app route that needs `action`."""
+def require(action: str, *, allow_read_only: bool = False):
+    """A dependency for a web-app route that needs `action`. With
+    `allow_read_only`, a write that changes no catalog data (getting an
+    install link) still works in read-only mode."""
 
     async def dependency(
         request: Request,
@@ -58,7 +60,8 @@ def require(action: str):
                        "Change your password before continuing.")
         if not principal.can(action):
             raise _err(403, "forbidden", "You don't have permission to do that.")
-        if principal.read_only and request.method not in _READ_METHODS:
+        if principal.read_only and not allow_read_only \
+                and request.method not in _READ_METHODS:
             raise _err(423, "read_only_mode",
                        principal.read_only_message or "ServerSherpa is in read-only mode.")
         return principal

@@ -26,7 +26,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -341,7 +341,8 @@ async def sign_build(db: AsyncSession, job: Job) -> dict:
         message = str(exc) if permanent else f"Signing didn't finish ({type(exc).__name__})."
         await db.rollback()
         await _set_signed_build(db, version_id, profile_uuid, status="failed",
-                                error=message[:ERROR_MAX], file_key=None)
+                                error=message[:ERROR_MAX], file_key=None,
+                                failed_at=func.now())
         await db.commit()
         if permanent:                      # the same IPA and certificate fail again
             raise JobFailed(message) from None
@@ -400,6 +401,6 @@ async def gave_up(db: AsyncSession, job: Job) -> None:
                 update(SignedBuild)
                 .where(SignedBuild.version_id == uuid.UUID(str(payload["version_id"])),
                        SignedBuild.status == "running")
-                .values(status="failed", error=SIGN_GAVE_UP))
+                .values(status="failed", error=SIGN_GAVE_UP, failed_at=func.now()))
     except (KeyError, ValueError):
         return

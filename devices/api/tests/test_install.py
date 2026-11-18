@@ -278,3 +278,53 @@ async def test_older_version_install_enqueues_sign(api, bucket, db):
     assert r.status_code == 409
     assert r.json()["detail"] == {"code": "register_first",
                                   "message": "This iPhone isn't registered."}
+
+
+async def test_install_link_allowed_in_read_only_mode(api, main_fake, bucket, db):
+    app, (version,) = await seed_android(db, bucket)
+    main_fake.as_staff(read_only=True, read_only_message="ServerSherpa is being updated.")
+    r = await api.post(f"/api/apps/{app.id}/install", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["url"].startswith(f"{PUBLIC_URL}/dl/")
+
+    # Every other write is still refused.
+    main_fake.as_admin(read_only=True, read_only_message="ServerSherpa is being updated.")
+    r = await api.patch(f"/api/versions/{version.id}", json={"notes": "x"})
+    assert r.status_code == 423
+    assert r.json()["detail"] == {"code": "read_only_mode",
+                                  "message": "ServerSherpa is being updated."}
+    assert (await api.post("/api/enroll", json={"device_name": "Pat's iPhone"})).status_code \
+        == 423
+
+
+async def test_failed_build_retry_is_paced(api, main_fake, bucket, db):
+    app, version = await _ios_app(db, bucket)
+    device = await seed_device(db, UDID_A, status="registered", asc_device_id="ASCDEV1")
+    await add_profile(db, app, [device.id])
+    signed = await add_signed(db, bucket, version, status="failed",
+                              failed_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=2))
+    ref = {"device_ref": str(device.id)}
+    failed = {"state": "failed", "message": "This app couldn't be prepared for this iPhone. "
+                                            "It will try again in a few minutes."}
+
+    # Failed 2 minutes ago: shown as failed, not tried again yet.
+    for _ in range(3):
+        assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == failed
+    r = await api.post(f"/api/apps/{app.id}/install", json={"device_ref": str(device.id)})
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "failed", "message": failed["message"]}
+    main_fake.as_kiosk()
+    r = await api.get("/api/updates", params={"platform": "ios", "bundle_id": app.identifier,
+                                              "build": "1", "profile_kind": "adhoc"})
+    assert r.json() == {"status": "preparing", "message": failed["message"]}
+    assert await sign_jobs(db) == []
+
+    # Ten minutes on, the next look tries once more.
+    main_fake.as_admin()
+    await db.execute(update(SignedBuild).where(SignedBuild.id == signed.id).values(
+        failed_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10, seconds=5)))
+    await db.commit()
+    preparing = {"state": "preparing", "message": "Preparing the app for this iPhone…"}
+    for _ in range(3):
+        assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == preparing
+    assert [j.payload for j in await sign_jobs(db)] == [{"version_id": str(version.id)}]

@@ -2,6 +2,7 @@
 into the database with their files in the fake bucket, a profile, signed
 builds, and a client that sends no session."""
 
+import datetime as dt
 import io
 import uuid
 from urllib.parse import parse_qs, urlsplit
@@ -106,14 +107,16 @@ async def add_profile(db, app: App, device_ids: list[uuid.UUID],
 
 async def add_signed(db, bucket, version: AppVersion, *, status: str = "ready",
                      profile_uuid: str = "PROFILE-UUID-1",
-                     data: bytes = b"signed ipa bytes") -> SignedBuild:
+                     data: bytes = b"signed ipa bytes",
+                     failed_at: dt.datetime | None = None) -> SignedBuild:
     key = None
     if status == "ready":
         key = f"apps/{version.app_id}/{version.id}/signed/{profile_uuid}.ipa"
         bucket.put(key, data)
     row = SignedBuild(id=uuid.uuid4(), version_id=version.id, profile_uuid=profile_uuid,
                       status=status, file_key=key,
-                      error="Signing didn't finish." if status == "failed" else None)
+                      error="Signing didn't finish." if status == "failed" else None,
+                      failed_at=failed_at)
     db.add(row)
     await db.commit()
     return row

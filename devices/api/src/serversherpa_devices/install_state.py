@@ -7,6 +7,7 @@
 - `apk_url` / `ios_install_url`: the links phones download from. Their
   tokens are the only credential (iOS fetches without cookies)."""
 
+import datetime as dt
 import uuid
 from typing import NotRequired, TypedDict
 from urllib.parse import quote
@@ -23,6 +24,10 @@ REGISTER_FIRST = "This iPhone isn't registered."
 REGISTERING = "Registering this iPhone with Apple…"
 DISABLED = "This iPhone was removed from Devices."
 PREPARING = "Preparing the app for this iPhone…"
+BUILD_FAILED = ("This app couldn't be prepared for this iPhone. "
+                "It will try again in a few minutes.")
+# A failed re-signing is tried again at most this often.
+RETRY_AFTER = dt.timedelta(minutes=10)
 
 
 class IosState(TypedDict):
@@ -67,27 +72,33 @@ async def app_profile(db: AsyncSession, app: App) -> IosProfile | None:
     return await db.scalar(select(IosProfile).where(IosProfile.app_id == app.id))
 
 
-async def _queue_signing(db: AsyncSession, version_id: uuid.UUID) -> None:
-    """Queue sign_build for the version unless one is queued or running."""
-    waiting = await db.scalar(select(Job.id).where(
+async def _signing_queued(db: AsyncSession, version_id: uuid.UUID) -> bool:
+    """A sign_build for the version is queued or running."""
+    return await db.scalar(select(Job.id).where(
         Job.kind == "sign_build", Job.status.in_(("queued", "running")),
-        Job.payload["version_id"].astext == str(version_id)).limit(1))
-    if waiting is None:
-        await catalog.queue_job(db, "sign_build", {"version_id": str(version_id)})
+        Job.payload["version_id"].astext == str(version_id)).limit(1)) is not None
 
 
-async def ready_build(db: AsyncSession, version: AppVersion,
-                      profile: IosProfile) -> SignedBuild | None:
-    """The version re-signed with `profile`, when that is ready. Otherwise
-    None, and re-signing is queued when it never started or failed (the
-    worker never retries a failed one by itself)."""
+async def build_state(db: AsyncSession, version: AppVersion,
+                      profile: IosProfile) -> tuple[str, SignedBuild | None]:
+    """("ready", the build) when the version is re-signed with `profile`;
+    otherwise ("preparing", None) or ("failed", None). The worker never
+    retries a failed build by itself, so looking queues re-signing when it
+    never started, or when it failed RETRY_AFTER ago or more; inside that
+    window it stays "failed"."""
     signed = await db.scalar(select(SignedBuild).where(
         SignedBuild.version_id == version.id, SignedBuild.profile_uuid == profile.uuid))
     if signed is not None and signed.status == "ready" and signed.file_key:
-        return signed
-    if signed is None or signed.status == "failed":
-        await _queue_signing(db, version.id)
-    return None
+        return "ready", signed
+    if signed is not None and signed.status != "failed":
+        return "preparing", None          # queued or running
+    if await _signing_queued(db, version.id):
+        return "preparing", None
+    if signed is not None and signed.failed_at is not None \
+            and dt.datetime.now(dt.UTC) - signed.failed_at < RETRY_AFTER:
+        return "failed", None
+    await catalog.queue_job(db, "sign_build", {"version_id": str(version.id)})
+    return "preparing", None
 
 
 # The web page's state.
@@ -114,7 +125,9 @@ async def ios_state(db: AsyncSession, app: App, device_ref: uuid.UUID | None, *,
     # rebuild that registering queued makes a new one and signs with it.
     if version is None or profile is None or device.id not in (profile.device_ids or []):
         return _state("preparing", PREPARING)
-    signed = await ready_build(db, version, profile)
+    state, signed = await build_state(db, version, profile)
+    if state == "failed":
+        return _state("failed", BUILD_FAILED)
     if signed is None:
         return _state("preparing", PREPARING)
     return {"state": "ready", "message": "", "install_url": ios_install_url(signed)}
