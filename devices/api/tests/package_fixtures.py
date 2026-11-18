@@ -63,8 +63,10 @@ def make_provision(*, devices: list[str] | None = None, all_devices: bool = Fals
                    uuid: str = "3f1c6c1e-0000-4000-8000-000000000001",
                    name: str = "Hello Ad Hoc",
                    expires: dt.datetime = dt.datetime(2027, 11, 17, 12, 30, tzinfo=dt.UTC),
+                   extra_entitlements: dict | None = None, binary: bool = False,
                    ) -> bytes:
-    """A DER CMS SignedData provisioning profile wrapping an XML plist."""
+    """A DER CMS SignedData provisioning profile wrapping a plist (XML, or
+    binary when `binary`)."""
     profile: dict = {
         "AppIDName": "Hello",
         "TeamIdentifier": [team_id],
@@ -84,7 +86,9 @@ def make_provision(*, devices: list[str] | None = None, all_devices: bool = Fals
         profile["ProvisionedDevices"] = devices
     if all_devices:
         profile["ProvisionsAllDevices"] = True
-    xml = plistlib.dumps(profile, fmt=plistlib.FMT_XML)
+    profile["Entitlements"].update(extra_entitlements or {})
+    xml = plistlib.dumps(profile, fmt=plistlib.FMT_BINARY if binary else plistlib.FMT_XML,
+                         aware_datetime=True)
 
     key = ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Fixture Signer")])

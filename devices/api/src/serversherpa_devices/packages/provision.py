@@ -16,6 +16,10 @@ RAW_LIMIT = 1024 * 1024   # real profiles are tens of KB, even with 100 devices
 # 2^40 nodes; the entitlements are copied within these bounds.
 _MAX_DEPTH = 32
 _MAX_NODES = 10_000
+# ...and one large string referenced from many places would still copy to
+# gigabytes, so strings, data and keys share a byte budget too (counted every
+# time a shared value is copied).
+_MAX_BYTES = 256 * 1024
 
 
 @dataclass
@@ -77,21 +81,36 @@ def _str_or_none(value: object) -> str | None:
 def _bounded_copy(entitlements: dict) -> dict:
     """A plain copy of the entitlements: string keys; str, bool, int, float,
     list and dict values (others, such as <data> and <date>, are dropped);
-    at most _MAX_DEPTH deep and _MAX_NODES values, else PackageError."""
-    budget = [_MAX_NODES]
+    at most _MAX_DEPTH deep, _MAX_NODES values and _MAX_BYTES of strings,
+    data and keys, else PackageError."""
+    nodes, size = [_MAX_NODES], [_MAX_BYTES]
+
+    def spend(n: int) -> None:
+        size[0] -= n
+        if size[0] < 0:
+            raise PackageError(UNREADABLE)
 
     def copy(value: object, depth: int):
-        budget[0] -= 1
-        if budget[0] < 0 or depth > _MAX_DEPTH:
+        nodes[0] -= 1
+        if nodes[0] < 0 or depth > _MAX_DEPTH:
             raise PackageError(UNREADABLE)
+        if isinstance(value, (str, bytes)):
+            spend(len(value))
         if isinstance(value, (str, bool, int, float)):
             return value
         if isinstance(value, list):
             items = (copy(v, depth + 1) for v in value)
             return [v for v in items if v is not _DROPPED]
         if isinstance(value, dict):
-            pairs = ((k, copy(v, depth + 1)) for k, v in value.items() if isinstance(k, str))
-            return {k: v for k, v in pairs if v is not _DROPPED}
+            copied = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    continue
+                spend(len(key))
+                item = copy(item, depth + 1)
+                if item is not _DROPPED:
+                    copied[key] = item
+            return copied
         return _DROPPED
 
     return copy(entitlements, 0)

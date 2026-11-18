@@ -40,3 +40,18 @@ def test_provision_garbage_raises_package_error():
     with pytest.raises(PackageError) as caught:
         parse(b"\x30\x03not cms")
     assert caught.value.message == "The provisioning profile can't be read"
+
+
+def test_provision_shared_string_reference_bomb_rejected():
+    # Binary plists store an equal string once, so one ~100 KB string can sit
+    # behind many keys in a small file; copied out, each reference counts.
+    big = "x" * (100 * 1024)
+    bomb = make_provision(binary=True, extra_entitlements={f"k{i}": big for i in range(50)})
+    assert len(bomb) < 200 * 1024   # well under the 1 MB raw limit
+    with pytest.raises(PackageError) as caught:
+        parse(bomb)
+    assert caught.value.message == "The provisioning profile can't be read"
+
+    # Two references (about 200 KB) stay within the 256 KB budget.
+    fits = parse(make_provision(binary=True, extra_entitlements={"a": big, "b": [big]}))
+    assert fits.entitlements["a"] == big and fits.entitlements["b"] == [big]

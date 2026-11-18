@@ -86,3 +86,23 @@ def test_isolated_inspect_timeout(tmp_path, monkeypatch):
         with pytest.raises(PackageError) as caught:
             inspect_package_isolated(path)
         assert caught.value.message == FAILED, script
+
+
+def test_isolated_output_over_cap_is_package_error(monkeypatch):
+    script = "import sys; sys.stdout.write('x' * (17 * 1024 * 1024)); sys.stdout.flush()"
+    monkeypatch.setattr(isolated, "_worker_command",
+                        lambda *args, **kwargs: [sys.executable, "-I", "-c", script])
+    started = time.monotonic()
+    with pytest.raises(PackageError) as caught:
+        inspect_package_isolated(FIXTURES / "hello-a.apk")
+    assert caught.value.message == FAILED
+    assert time.monotonic() - started < 10
+
+    # An endless writer is killed at the cap instead of being read forever.
+    endless = "import sys\nwhile True: sys.stdout.write('x' * 65536)"
+    monkeypatch.setattr(isolated, "_worker_command",
+                        lambda *args, **kwargs: [sys.executable, "-I", "-c", endless])
+    with pytest.raises(PackageError) as caught:
+        inspect_package_isolated(FIXTURES / "hello-a.apk", timeout_seconds=30)
+    assert caught.value.message == FAILED
+    assert time.monotonic() - started < 20
