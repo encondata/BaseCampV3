@@ -27,7 +27,7 @@ The release is signed with the Play upload key, which lives outside the repo: `~
 ./gradlew assembleDirectRelease   # app/build/outputs/apk/direct/release/app-direct-release.apk
 ```
 
-Signed with the same upload key, then uploaded on devices.<env>. Play uploads stay `./gradlew bundlePlayRelease`. A phone that has the Play copy uninstalls it once before the direct build, because the two are signed by different keys.
+Signed with the same upload key, then uploaded on devices.<env>. Play uploads stay `./gradlew bundlePlayRelease`. A phone that has the Play copy uninstalls it once before the direct build, because the two are signed by different keys. A debug-signed direct build (`assembleDirectDebug`) never matches the uploaded APK's signer, so its update check only shows the server's reinstall message: test updates with an `assembleDirectRelease` build (upload key) installed on the phone.
 
 ## Install
 
