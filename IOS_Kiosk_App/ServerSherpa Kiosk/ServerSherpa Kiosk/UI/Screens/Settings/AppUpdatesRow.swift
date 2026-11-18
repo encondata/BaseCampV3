@@ -28,6 +28,24 @@ func lastCheckedLine(_ date: Date?, timeZone: TimeZone = .current) -> String? {
     return "Last checked \(formatter.string(from: date))"
 }
 
+/// The row's description under its title.
+let appUpdatesDetail = "Updates come from the Devices site. The kiosk checks after sign-in and when the app is reopened, at most every 6 hours."
+
+/// `Installed: 1.0 (1)`: the version and build iOS shows for this install.
+func installedLine(_ installed: InstalledApp) -> String {
+    "Installed: \(installed.versionName) (\(installed.build))"
+}
+
+/// Settings' detail: the answer it shows, or under a check that's out or failed the last
+/// answer's offer (so notes, size and Update stay); nil before any answer.
+func shownOffer(_ state: UpdateCheckState, lastOffer: UpdateOffer?) -> UpdateOffer? {
+    switch state {
+    case .done(let offer): return offer
+    case .checking, .failed: return lastOffer
+    case .idle: return nil
+    }
+}
+
 /// The download size as Files shows it (`48.2 MB`); nil when the Devices site didn't say.
 func sizeLine(_ bytes: Int?) -> String? {
     guard let bytes else { return nil }
@@ -37,8 +55,9 @@ func sizeLine(_ bytes: Int?) -> String? {
 // MARK: - The row
 
 /// Settings › This Kiosk › App updates: the last check's answer, Update when one can be installed,
-/// and Check for updates (the visible control for the automatic checks). Signed out it explains
-/// that a check needs a sign-in.
+/// and Check for updates (the visible control for the automatic checks), with the installed version
+/// always shown. Update checks again first and opens only the fresh answer's link (the install link
+/// expires 30 minutes after its answer). Signed out it explains that a check needs a sign-in.
 struct AppUpdatesRow: View {
     @Environment(UpdateChecker.self) private var updates
     @Environment(KioskAuth.self) private var auth
@@ -50,9 +69,10 @@ struct AppUpdatesRow: View {
 
     var body: some View {
         SettingsRow(title: "App updates",
-                    detail: "Updates come from the Devices site. The kiosk checks after sign-in and every 6 hours.") {
+                    detail: appUpdatesDetail) {
             VStack(alignment: .leading, spacing: 8) {
                 status
+                Text(installedLine(updates.installed)).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
                 offerDetail
                 if !authed {
                     Text("Sign in to check for updates.").font(KioskType.bodyMedium).foregroundStyle(palette.textMute)
@@ -80,9 +100,9 @@ struct AppUpdatesRow: View {
     }
 
     @ViewBuilder private var offerDetail: some View {
-        if case .done(let offer) = updates.state {
+        if let offer = shownOffer(updates.state, lastOffer: updates.lastOffer) {
             switch offer {
-            case .available(_, _, let notes, let size, let installUrl):
+            case .available(_, _, let notes, let size, _):
                 if let notes, !notes.isEmpty {
                     Text(notes).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
                         .fixedSize(horizontal: false, vertical: true)
@@ -90,8 +110,10 @@ struct AppUpdatesRow: View {
                 if let size = sizeLine(size) {
                     Text(size).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
                 }
-                PrimaryButton("Update") { openURL(installUrl) }
-                    .accessibilityIdentifier("update-now")
+                PrimaryButton("Update", enabled: !checking) {
+                    Task { if let url = await updates.freshInstallUrl() { openURL(url) } }
+                }
+                .accessibilityIdentifier("update-now")
             case .registerFirst(let message), .waiting(let message):
                 Text(message).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
                     .fixedSize(horizontal: false, vertical: true)

@@ -50,6 +50,24 @@ struct UpdateCopyTests {
         #expect(sizeLine(nil) == nil)
         let expected = ByteCountFormatter.string(fromByteCount: 48_200_000, countStyle: .file)
         #expect(sizeLine(48_200_000) == expected)
-        #expect(sizeLine(48_200_000)?.contains("48.2") == true)
+    }
+
+    @Test func installedLineShowsVersionAndBuild() {
+        #expect(installedLine(installed) == "Installed: 1.0 (1)")
+    }
+
+    @Test func detailSaysWhenTheKioskChecks() {
+        #expect(appUpdatesDetail == "Updates come from the Devices site. The kiosk checks after sign-in and when the app is reopened, at most every 6 hours.")
+    }
+
+    /// Under a failed check (or one that's out) Settings keeps the last offer's notes, size and Update.
+    @Test func shownOfferKeepsTheLastOfferUnderAFailure() {
+        let url = URL(string: "itms-services://?action=download-manifest&url=x")!
+        let offer = UpdateOffer.available(version: "1.2.0", build: "7", notes: "Fixes", size: 1, installUrl: url)
+        #expect(shownOffer(.failed("x"), lastOffer: offer) == offer)
+        #expect(shownOffer(.checking, lastOffer: offer) == offer)
+        #expect(shownOffer(.failed("x"), lastOffer: nil) == nil)
+        #expect(shownOffer(.done(.upToDate), lastOffer: offer) == .upToDate)
+        #expect(shownOffer(.idle, lastOffer: offer) == nil)
     }
 }

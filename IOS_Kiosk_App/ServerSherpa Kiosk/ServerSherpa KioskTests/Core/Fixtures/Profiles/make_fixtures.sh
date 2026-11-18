@@ -14,11 +14,11 @@ cat > "$T/$1.plist" <<PL
 <dict>
 	<key>Name</key><string>Fixture $1</string>
 	<key>UUID</key><string>$4</string>
-	<key>TeamIdentifier</key><array><string>Y2QYBG96U4</string></array>
+	<key>TeamIdentifier</key><array><string>ABCDE12345</string></array>
 $2
 	<key>Entitlements</key>
 	<dict>
-		<key>application-identifier</key><string>Y2QYBG96U4.com.example.fixture</string>
+		<key>application-identifier</key><string>ABCDE12345.com.example.fixture</string>
 		<key>get-task-allow</key><$3/>
 	</dict>
 </dict>

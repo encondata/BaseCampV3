@@ -14,12 +14,17 @@ enum UpdateCheckState: Equatable {
 /// answer (`checkIfDue`; a failed check doesn't count, so the next foreground tries again), and
 /// whenever Settings asks (`checkNow`). One request at a time: a check
 /// asked for while one is out waits for that one. A failed check keeps the last offer for Home.
-/// Later hides the offer on Home until another one comes (in memory: a relaunch shows it again).
+/// Later hides the offer on Home until another version or build comes (in memory: a relaunch shows
+/// it again). Update never opens a kept link: the install link expires 30 minutes after the answer
+/// that carried it, so `freshInstallUrl` asks again first.
 @MainActor @Observable
 final class UpdateChecker {
     static let interval: TimeInterval = 6 * 3600
 
     static let noDevicesUrlMessage = "This kiosk's API address doesn't start with api., so the Devices site can't be found."
+    /// A Devices 401/403: it couldn't verify the kiosk's token with the main API. Says nothing
+    /// about the kiosk session, which stays signed in.
+    static let notConfirmedMessage = "The Devices site couldn't confirm this sign-in. Try again later."
 
     private(set) var state: UpdateCheckState = .idle
     /// When the last check finished (answered or failed), for Settings' Last checked; nil before
@@ -29,10 +34,12 @@ final class UpdateChecker {
     @ObservationIgnored private var lastAnswered: Date?
     let installed: InstalledApp
 
-    /// The last answer's offer, kept through a failed check that follows it.
-    private var lastOffer: UpdateOffer?
-    /// The offer Later hid from Home.
-    private var hidden: UpdateOffer?
+    /// The last answer's offer, kept through a failed check that follows it (Home's card and
+    /// Settings' detail under a failure).
+    private(set) var lastOffer: UpdateOffer?
+    /// What Later hid from Home: the offer's version and build, not the offer itself (its install
+    /// link is new on every answer).
+    private var hidden: LaterKey?
 
     @ObservationIgnored private let api: any DevicesApi
     @ObservationIgnored private let devicesUrl: @MainActor () -> String?
@@ -53,8 +60,19 @@ final class UpdateChecker {
 
     /// The offer Home shows: one with Update, or register first; nil once Later hid it.
     var homeOffer: UpdateOffer? {
-        guard let offer = lastOffer, offer.showsOnHome, offer != hidden else { return nil }
+        guard let offer = lastOffer, offer.showsOnHome, LaterKey(offer) != hidden else { return nil }
         return offer
+    }
+
+    /// Update's tap: checks now (or joins the check already out) and returns the install link
+    /// only when that answer offers one, an `itms-services` link. Otherwise nil, and `state` says
+    /// why (up to date now, not ready, or the failure).
+    func freshInstallUrl() async -> URL? {
+        guard signedIn() else { return nil }
+        await checkNow()
+        guard case .done(.available(_, _, _, _, let url)) = state,
+              url.scheme?.lowercased() == "itms-services" else { return nil }
+        return url
     }
 
     /// The Devices site's host, for copy; nil when the API URL has none.
@@ -82,7 +100,7 @@ final class UpdateChecker {
 
     /// Hides the current offer from Home; Settings still shows it.
     func later() {
-        hidden = lastOffer
+        hidden = lastOffer.flatMap(LaterKey.init)
     }
 
     /// Sign-out: forgets the checks, the offer and Later; a check out drops its answer.
@@ -130,7 +148,23 @@ final class UpdateChecker {
         if let error = error as? DevicesApiError, error == .noDevicesUrl { return Self.noDevicesUrlMessage }
         guard let error = error as? ApiError else { return "The update check didn't finish. Try again." }
         if error.isNetwork { return "Can't reach \(devicesHost ?? "the Devices site")." }
+        if error.status == 401 || error.status == 403 { return Self.notConfirmedMessage }
         if let message = error.detailString("message"), !message.isEmpty { return message }
         return "The Devices site answered \(error.status)."
+    }
+}
+
+/// What Later remembers about the offer it hid: a build by version and build, a register-first
+/// message by its text.
+private enum LaterKey: Equatable {
+    case build(version: String, build: String?)
+    case registerFirst(String)
+
+    init?(_ offer: UpdateOffer) {
+        switch offer {
+        case .available(let version, let build, _, _, _): self = .build(version: version, build: build)
+        case .registerFirst(let message): self = .registerFirst(message)
+        case .upToDate, .waiting: return nil
+        }
     }
 }
