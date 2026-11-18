@@ -62,8 +62,8 @@ SSH_TARGET_RE = re.compile(r"ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*")
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 _BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 _TAG_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
-# Adopted generated secrets other than these shapes: envfile's hand-set rule
-# (optional secrets go through envfile.valid_secret).
+# Adopted secrets: optional ones by envfile.valid_secret, the remaining
+# generated secrets by the hand-set safe characters.
 _SECRET_VALUE_RE = envfile.SECRET_VALUE_RE
 # Adopted required secrets must have the shapes create generates.
 _HEX_RE = re.compile(r"[0-9a-fA-F]{1,1024}")
@@ -754,9 +754,11 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
     """The secrets of an adopted .env, only in shapes that render back
     unchanged: a Fernet key for TOTP, hex for POSTGRES_PASSWORD (a local
     stack's compose file puts it into its database URL unescaped; only the
-    DigitalOcean URL that env_extra builds quotes it), each optional secret's
-    PATCH rule (envfile.valid_secret) and the PATCH rule's safe characters for the rest. A hand-built env may carry secrets Sirdar didn't generate (uat's
-    pepper came from dev), so those are kept as they are, not forced to hex.
+    DigitalOcean URL that env_extra builds quotes it), optional secrets by
+    envfile.valid_secret, the remaining generated secrets by the hand-set safe
+    characters. A hand-built env may carry secrets Sirdar didn't generate
+    (uat's pepper came from dev), so those are kept as they are, not forced to
+    hex.
     An optional secret left at CHANGEME is unset. Anything else raises
     adopt_value_invalid naming the key, never the value."""
     secrets: dict[str, str] = {}

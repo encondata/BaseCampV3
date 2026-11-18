@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     fcm_service_account_file: str = ""
     # The same key as one base64 line (for hosts with no key file). The file
     # wins when both are set.
-    fcm_service_account_b64: str = ""
+    fcm_service_account_b64: SecretStr = SecretStr("")
 
     # ── Email ──────────────────────────────────────────────
     smtp_host: str = ""

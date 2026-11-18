@@ -59,8 +59,9 @@ class FcmClient:
         settings = get_settings()
         path = settings.fcm_service_account_file
         if not path:
-            if settings.fcm_service_account_b64:
-                return cls._from_b64(settings.fcm_service_account_b64)
+            b64 = settings.fcm_service_account_b64.get_secret_value()
+            if b64:
+                return cls._from_b64(b64)
             return None
         try:
             with open(path, encoding="utf-8") as fh:
@@ -158,7 +159,8 @@ class FcmClient:
 
 
 def parse_b64_account(value: str) -> dict:
-    """Decode and validate SS_FCM_SERVICE_ACCOUNT_B64; ValueError when invalid."""
+    """Decode and validate SS_FCM_SERVICE_ACCOUNT_B64; ValueError when invalid.
+    Keep in step with sirdar/api/src/sirdar_api/deploy/envfile.py valid_fcm_key."""
     if len(value) > _MAX_B64 or not _B64_RE.fullmatch(value):
         raise ValueError("invalid")
     account = json.loads(base64.b64decode(value, validate=True))
@@ -176,8 +178,8 @@ def parse_b64_account(value: str) -> dict:
 
 @lru_cache(maxsize=8)
 def b64_account_valid(value: str) -> bool:
-    """Cached validity of a base64 key value (the key text is never kept apart
-    from the cache entry itself)."""
+    """Cached validity of a key value; the cache holds the value in memory only,
+    like Settings does."""
     try:
         parse_b64_account(value)
     except ValueError:
