@@ -4,34 +4,31 @@ import Testing
 
 /// Android HomeScreenTest.kt, as model cases: what the launcher shows is `homeTiles` + `homeBanner`.
 struct HomeModelTests {
-    @Test func incompleteSetupLocksFeatureTiles() {
+    /// Jimmy 2026-11-17: before setup, Home hides every app but Kiosk Setup, the Rolodex (admins)
+    /// and Settings, rather than showing them locked.
+    @Test func incompleteSetupShowsOnlySetupAndSettings() {
         let banner = homeBanner(setupState: .incomplete, devMode: false)
-        #expect(banner?.text == "Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.")
+        #expect(banner?.text == "Kiosk setup is incomplete. Finish Kiosk Setup to see the other apps.")
         #expect(banner?.error == false)
-        let tiles = homeTiles(setupState: .incomplete, devMode: false)
-        #expect(tiles.map(\.feature.id) == FEATURES.map(\.id))
-        #expect(tiles.filter { $0.lockedReason == "Finish Kiosk Setup first." }.count == 6)
-        #expect(tiles.filter(\.available).map(\.feature.id) == [.setup, .settings])
+        #expect(homeTiles(setupState: .incomplete, devMode: false).map(\.feature.id) == [.setup, .settings])
     }
 
     @Test func failedSetupSaysSo() {
         let banner = homeBanner(setupState: .failed, devMode: false)
         #expect(banner?.text == "Kiosk setup failed. Open Kiosk Setup to try again.")
         #expect(banner?.error == true)
-        #expect(homeTiles(setupState: .failed, devMode: false).filter { $0.lockedReason == "Kiosk setup failed — open Kiosk Setup." }.count == 6)
+        #expect(homeTiles(setupState: .failed, devMode: false).map(\.feature.id) == [.setup, .settings])
     }
 
-    @Test func devModeUnlocksWithBanner() {
+    @Test func devModeShowsEveryAppWithBanner() {
         #expect(homeBanner(setupState: .failed, devMode: true)?.text == "Developer mode: all features are available while kiosk setup is failed.")
-        let tiles = homeTiles(setupState: .failed, devMode: true)
-        #expect(tiles.allSatisfy { $0.available })
-        #expect(tiles.allSatisfy { $0.lockedReason == nil })
+        #expect(homeTiles(setupState: .failed, devMode: true).map(\.feature.id) == FEATURES.map(\.id))
     }
 
     @Test func completeSetupHasNoBannerAndNoLocks() {
         #expect(homeBanner(setupState: .complete, devMode: false) == nil)
         #expect(homeBanner(setupState: .complete, devMode: true) == nil)
-        #expect(homeTiles(setupState: .complete, devMode: false).allSatisfy { $0.available })
+        #expect(homeTiles(setupState: .complete, devMode: false).map(\.feature.id) == FEATURES.map(\.id))
     }
 
     @Test func threeColumnsFromAThousandPoints() {
@@ -59,10 +56,9 @@ struct HomeModelTests {
 
     /// An admin's Home has the Rolodex tile (before Settings), usable before Kiosk Setup.
     @Test func adminsSeeTheRolodexTile() {
-        let tiles = homeTiles(setupState: .incomplete, devMode: false, isAdmin: true)
-        #expect(tiles.map(\.feature.id) == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
-        let rolodex = tiles.first { $0.feature.id == .rolodex }
-        #expect(rolodex?.available == true && rolodex?.lockedReason == nil)
+        #expect(homeTiles(setupState: .incomplete, devMode: false, isAdmin: true).map(\.feature.id) == [.setup, .rolodex, .settings])
+        #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: true).map(\.feature.id)
+                == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
         #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: false).map(\.feature.id) == FEATURES.map(\.id))
         #expect(homeTiles(setupState: .complete, devMode: false, stationType: "timeclock", isAdmin: true).count == 3)
     }

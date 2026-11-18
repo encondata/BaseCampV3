@@ -192,7 +192,6 @@ struct StationModeTests {
         let tiles = homeTiles(setupState: .complete, devMode: false, stationType: KioskSetupSelection.timeclockStation)
         #expect(tiles.map(\.feature.title) == ["Time Clock", "Kiosk Setup", "Settings"])
         #expect(tiles.first?.feature == TIMECLOCK_STATION_FEATURE)
-        #expect(tiles.allSatisfy { $0.available })
         #expect(homeTiles(setupState: .complete, devMode: true, stationType: "timeclock").count == 3)
         // a regular kiosk keeps every tile
         #expect(homeTiles(setupState: .complete, devMode: false, stationType: nil).map(\.feature.id) == FEATURES.map(\.id))
