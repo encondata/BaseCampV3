@@ -18,8 +18,12 @@ const POLL_MS = 5_000;
 const POLL_FOR_MS = 10 * 60_000;
 const WARN_WITHIN_MS = 30 * 86_400_000;
 
-/** An iOS card waiting on Apple registration or re-signing. */
-const waiting = (app: AppOut) => app.ios_state?.state === 'registering' || app.ios_state?.state === 'preparing';
+/** An iOS card waiting on Apple registration or re-signing, or on a retry
+ *  of either after a failure. */
+const waiting = (app: AppOut) => {
+  const ios = app.ios_state;
+  return ios?.state === 'registering' || ios?.state === 'preparing' || ios?.retrying === true;
+};
 
 function expiryWarnings(apple: AppleOut, now: number): string[] {
   const soon = (iso: string | null): iso is string => !!iso && Date.parse(iso) - now <= WARN_WITHIN_MS;

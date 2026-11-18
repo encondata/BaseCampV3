@@ -19,13 +19,17 @@ export interface VersionOut {
   is_current: boolean;
 }
 
+/** `failed` is registering the iPhone; `build_failed` is preparing the app. */
 export type IosStateName =
-  'not_set_up' | 'register_first' | 'registering' | 'failed' | 'disabled' | 'preparing' | 'ready';
+  'not_set_up' | 'register_first' | 'registering' | 'failed' | 'disabled' | 'preparing'
+  | 'build_failed' | 'ready';
 
 export interface IosState {
   state: IosStateName;
   message: string;
   install_url?: string;
+  /** failed and build_failed: another try is coming by itself. */
+  retrying?: boolean;
 }
 
 export interface AppOut {

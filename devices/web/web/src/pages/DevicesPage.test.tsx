@@ -116,6 +116,16 @@ describe('DevicesPage', () => {
     expect(calls.filter((c) => c.path === '/api/devices')).toHaveLength(2);
   });
 
+  it('a disabled iPhone Apple never confirmed shows why', async () => {
+    const why = "Apple didn't confirm disabling this iPhone, so Apple still lists it as enabled. "
+      + "It's out of every profile here; disable it in Apple's developer site too.";
+    stubApi({ 'GET /api/devices': { ...listing(new Date().toISOString()), devices: [{ ...OLD, error: why }] } });
+    renderPage();
+    const old = await rowWith('Old iPhone');
+    expect(within(old).getByText('Disabled').className).toBe('chip c-slate');
+    expect(within(old).getByText(why)).toBeTruthy();
+  });
+
   it('an already disabled iPhone has no Disable', async () => {
     stubApi({ 'GET /api/devices': listing(new Date().toISOString()) });
     renderPage();

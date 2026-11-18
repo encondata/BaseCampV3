@@ -79,6 +79,29 @@ describe('AppsPage', () => {
     expect(appsCalls(calls)).toHaveLength(count);
   });
 
+  it.each([
+    ['failed', 'Apple refused this iPhone: try later'],
+    ['build_failed', "This app couldn't be prepared for this iPhone. It will try again in a few minutes."],
+  ])('keeps polling while a %s card will be retried, and stops once it won\'t', async (state, message) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    localStorage.setItem('devices.iosDeviceRef', 'dev-9');
+    let retrying = true;
+    const calls = stubApi({
+      'GET /api/apps': () => json(200, [iosApp({ ios_state: { state, message, retrying } })]),
+    });
+    renderAt('/');
+    await screen.findByText(message);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(appsCalls(calls).length).toBe(3);
+
+    retrying = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const count = appsCalls(calls).length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(appsCalls(calls)).toHaveLength(count);
+  });
+
   it('stops polling after 10 minutes', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     localStorage.setItem('devices.iosDeviceRef', 'dev-9');

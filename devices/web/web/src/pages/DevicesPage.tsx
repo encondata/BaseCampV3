@@ -80,7 +80,7 @@ export default function DevicesPage() {
         day(d.added_at),
         <div className="devices-status-cell">
           <span className={`chip ${color}`}>{label}</span>
-          {d.status === 'failed' && d.error && <span className="cell-sub">{d.error}</span>}
+          {(d.status === 'failed' || d.status === 'disabled') && d.error && <span className="cell-sub">{d.error}</span>}
         </div>,
         <RowActionsMenu actions={actionsFor(d)} />,
       ],

@@ -111,6 +111,35 @@ describe('InstallButton', () => {
     expect((screen.getByRole('button', { name: 'Preparing…' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it.each([
+    ['failed', "Registering with Apple didn't finish. Add this iPhone again to retry."],
+    ['disabled', 'This iPhone was removed from Devices.'],
+  ])('an iPhone in %s gets Add this iPhone again', async (state, message) => {
+    viewer.platform = 'ios';
+    const calls = stubApi({ 'POST /api/enroll': { url: '/enroll/again.mobileconfig' } });
+    render(<InstallButton app={asApp(iosApp({ ios_state: { state, message, retrying: false } }))}
+                          deviceRef="dev-1" onChanged={() => {}} />);
+    expect(screen.getByText(message)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Add this iPhone' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add this iPhone' });
+    await userEvent.type(within(dialog).getByLabelText('Name this iPhone'), "Jimmy's iPhone");
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(goTo).toHaveBeenCalledWith('/enroll/again.mobileconfig'));
+    expect(calls).toEqual([expect.objectContaining({ method: 'POST', path: '/api/enroll' })]);
+  });
+
+  it('a build that failed shows why, with nothing to tap', () => {
+    viewer.platform = 'ios';
+    stubApi({});
+    const why = "This app needs aps-environment, which its App ID doesn't have in Apple's developer site. "
+      + 'Turn it on there, then upload the app again.';
+    render(<InstallButton app={asApp(iosApp({ ios_state: { state: 'build_failed', message: why, retrying: false } }))}
+                          deviceRef="dev-1" onChanged={() => {}} />);
+    expect(screen.getByText(why)).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
   it('an install that comes back preparing refreshes the card', async () => {
     viewer.platform = 'ios';
     stubApi({

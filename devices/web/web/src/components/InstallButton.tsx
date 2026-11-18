@@ -1,8 +1,9 @@
 /** A card's install control, for the device viewing the page:
  *  - an Android app on an Android phone: Install (the APK download);
  *  - an iOS app on an iPhone or iPad: what the phone can do (ios_state):
- *    Add this iPhone, a disabled Preparing… while Apple registration or
- *    re-signing runs, or Install;
+ *    Add this iPhone (not added yet, its registration failed, or it was
+ *    disabled), a disabled Preparing… while Apple registration or
+ *    re-signing runs, or Install; a build that failed shows only why;
  *  - anywhere else: a QR code that opens this page on the phone. */
 import { useState } from 'react';
 
@@ -14,6 +15,9 @@ import { viewerPlatform } from '../lib/platform';
 import DesktopQr from './DesktopQr';
 
 const NAME_MAX = 60;   // the API's limit on device_name
+/** iPhone states that adding it (again) gets past. Re-adding a disabled
+ *  one re-enables it only for someone allowed to (the API decides). */
+const ADDABLE = new Set(['register_first', 'failed', 'disabled']);
 
 function AddIphoneModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
@@ -116,7 +120,7 @@ export default function InstallButton({ app, deviceRef, onChanged }: {
   return (
     <div className="devices-install">
       {ios?.message && <p className="page-hint">{ios.message}</p>}
-      {state === 'register_first' && (
+      {state && ADDABLE.has(state) && (
         <button type="button" className="btn-solid" onClick={() => setAdding(true)}>Add this iPhone</button>
       )}
       {(state === 'registering' || state === 'preparing') && (
