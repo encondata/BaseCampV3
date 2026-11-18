@@ -51,6 +51,7 @@ import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.core.model.PersonalIn
 import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.core.model.PushRegistration
+import com.serversherpa.kiosk.core.model.PushSnooze
 import com.serversherpa.kiosk.core.model.PushTokenIn
 import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.push.PushKey
@@ -279,15 +280,26 @@ class OkHttpKioskApi(
         authed { url(apiUrl("/kiosk/push/registration")).delete() }.use { if (!it.isSuccessful) throw errorFrom(it) }
     }
 
-    /** Never through [authed]: the push key is the only credential, on a client with no cookie jar. */
     override suspend fun updatePushToken(token: String, key: PushKey) {
-        val request = Request.Builder().url(key.baseUrl + "/kiosk/push/registration/token")
-            .put(jsonBody(PushTokenIn.serializer(), PushTokenIn(token)))
-            .header("Authorization", key.header)
-            .build()
-        executeCall(client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        pushKeyCall(key, "/kiosk/push/registration/token") { put(jsonBody(PushTokenIn.serializer(), PushTokenIn(token))) }
+            .use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun pushRead(notificationId: String, key: PushKey) {
+        pushKeyCall(key, "/kiosk/push/notifications/${q(notificationId)}/read") { post(emptyBody) }
+            .use { if (!it.isSuccessful) throw errorFrom(it) }
+    }
+
+    override suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze =
+        parse(pushKeyCall(key, "/kiosk/push/notifications/${q(notificationId)}/snooze") { post(emptyBody) }, PushSnooze.serializer())
+
+    /** Never through [authed]: the push key is the only credential, sent to [key]'s own base URL
+     *  on a client with no cookie jar (no bearer, no refresh cookie, no refresh). */
+    private suspend fun pushKeyCall(key: PushKey, path: String, method: Request.Builder.() -> Request.Builder): Response {
+        val request = Request.Builder().url(key.baseUrl + path).method().header("Authorization", key.header).build()
+        return executeCall(client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
             .let(route) // INTERNET-TEST
-            , request).use { if (!it.isSuccessful) throw errorFrom(it) }
+            , request)
     }
 
     // ── setup & sync ────────────────────────────────────────────────

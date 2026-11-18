@@ -95,6 +95,16 @@ open class FakeKioskApi : KioskApi {
     override suspend fun updatePushToken(token: String, key: PushKey) {
         calls += "updatePushToken"; pushTokenUpdates += token to key; updatePushTokenResult(token, key)
     }
+    var pushReadResult: suspend (String, PushKey) -> Unit = { _, _ -> }
+    var pushSnoozeResult: suspend (String, PushKey) -> PushSnooze = { _, _ -> PushSnooze("2026-11-17T14:37:00+00:00") }
+    /** (notification id, key) of each alert button's call. */
+    val pushActions = ArrayList<Pair<String, PushKey>>()
+    override suspend fun pushRead(notificationId: String, key: PushKey) {
+        calls += "pushRead"; pushActions += notificationId to key; pushReadResult(notificationId, key)
+    }
+    override suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze {
+        calls += "pushSnooze"; pushActions += notificationId to key; return pushSnoozeResult(notificationId, key)
+    }
 
 
     // ── rolodex ─────────────────────────────────────────────────────

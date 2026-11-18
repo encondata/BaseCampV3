@@ -101,4 +101,47 @@ class OkHttpKioskApiPushTest {
             assertTrue("the session is untouched", h.session.accessToken() == "tok1")
         }
     }
+    @Test fun pushReadSendsOnlyThePushKey() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(MockResponse().setResponseCode(204))
+            h.api.pushRead("n-1", PushKey("9b0c", "s3cret", h.server.url("/").toString().trimEnd('/')))
+            val req = h.server.takeRequest()
+            assertEquals("POST", req.method)
+            assertEquals("/kiosk/push/notifications/n-1/read", req.path)
+            assertEquals("PushKey 9b0c.s3cret", req.getHeader("Authorization"))
+            assertNull(req.getHeader("Cookie"))
+            assertEquals(2, h.server.requestCount)      // the sign-in and this: no refresh
+        }
+    }
+
+    @Test fun pushSnoozeReadsSnoozedUntil() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(200, """{"snoozed_until":"2026-11-17T14:37:00+00:00"}"""))
+            val out = h.api.pushSnooze("n-1", PushKey("9b0c", "s3cret", h.server.url("/").toString().trimEnd('/')))
+            assertEquals("2026-11-17T14:37:00+00:00", out.snoozedUntil)
+            val req = h.server.takeRequest()
+            assertEquals("POST", req.method)
+            assertEquals("/kiosk/push/notifications/n-1/snooze", req.path)
+            assertEquals("PushKey 9b0c.s3cret", req.getHeader("Authorization"))
+            assertNull(req.getHeader("Cookie"))
+        }
+    }
+
+    @Test fun pushSnoozeRefusalCarriesTheCode() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(409, """{"detail":{"code":"not_live"}}"""))
+            try {
+                h.api.pushSnooze("n-1", PushKey("9b0c", "s3cret", h.server.url("/").toString().trimEnd('/'))); fail()
+            } catch (e: ApiError) { assertEquals(409, e.status); assertEquals("not_live", e.code) }
+            h.server.enqueue(jsonResponse(401, """{"detail":{"code":"push_key_invalid"}}"""))
+            try {
+                h.api.pushRead("n-1", PushKey("9b0c", "bad", h.server.url("/").toString().trimEnd('/'))); fail()
+            } catch (e: ApiError) { assertEquals(401, e.status); assertEquals("push_key_invalid", e.code) }
+            assertEquals(3, h.server.requestCount)      // no refresh, no retry
+            assertTrue("the session is untouched", h.session.accessToken() == "tok1")
+        }
+    }
 }

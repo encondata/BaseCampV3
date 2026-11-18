@@ -55,6 +55,18 @@
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"
             android:value="false" />
+        <!-- Push messages and token refreshes (data/push/KioskMessagingService.kt). -->
+        <service
+            android:name=".data.push.KioskMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <!-- A push alert's Snooze and Mark read buttons; only the app's own PendingIntents reach it. -->
+        <receiver
+            android:name=".data.push.PushActionReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

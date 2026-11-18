@@ -31,3 +31,7 @@ data class PushRegistration(
 ) {
     override fun toString(): String = "PushRegistration(registrationId=$registrationId)"
 }
+
+/** POST /kiosk/push/notifications/{id}/snooze's answer: when the snooze push goes (always 5 minutes). */
+@Serializable
+data class PushSnooze(@SerialName("snoozed_until") val snoozedUntil: String)

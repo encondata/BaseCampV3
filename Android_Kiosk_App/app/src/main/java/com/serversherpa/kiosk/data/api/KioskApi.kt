@@ -35,6 +35,7 @@ import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.core.model.PushRegistration
+import com.serversherpa.kiosk.core.model.PushSnooze
 import com.serversherpa.kiosk.data.push.PushKey
 import kotlinx.serialization.json.JsonObject
 
@@ -94,6 +95,12 @@ interface KioskApi {
      *  sent to [key]'s base URL: no bearer, no cookie, no refresh, never a session-ended signal.
      *  401 push_key_invalid, 409 token_conflict, 423 read-only, 429 rate_limited. */
     suspend fun updatePushToken(token: String, key: PushKey)
+    /** POST /kiosk/push/notifications/{id}/read with only the push key, like [updatePushToken]: the
+     *  alert's Mark read button (204). 401 push_key_invalid, 404 notification_not_found, 423. */
+    suspend fun pushRead(notificationId: String, key: PushKey)
+    /** POST /kiosk/push/notifications/{id}/snooze with only the push key: the alert's Snooze button.
+     *  401 push_key_invalid, 404 notification_not_found, 409 not_live (read or hidden), 423. */
+    suspend fun pushSnooze(notificationId: String, key: PushKey): PushSnooze
 
     // ── setup & sync ────────────────────────────────────────────────
 

@@ -118,7 +118,8 @@ dependencies {
     implementation(libs.androidx.biometric)
     // MainActivity is a FragmentActivity (BiometricPrompt); never left to whatever appcompat pulls in.
     implementation(libs.androidx.fragment.ktx)
-    // Push notifications. Only data/push/FirebaseFcmTokens.kt touches Firebase; tests use a fake.
+    // Push notifications. Only data/push/FirebaseFcmTokens.kt and the thin KioskMessagingService.kt
+    // touch Firebase; tests use a fake and the logic around them.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     // The RFIDAPI3 .aar is wired in as a raw local artifact (see
