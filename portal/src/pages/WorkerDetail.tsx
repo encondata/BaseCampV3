@@ -1,7 +1,7 @@
 /**
  * WorkerDetail — full page for one worker: /me-style hero (photo, chips,
  * contact strip), worker profile + person details editing, level card,
- * certifications, initiative history, import provenance, notes/files.
+ * certifications, initiative history, notes/files.
  * Chrome mirrors Profile.tsx (hero/panels) + SiteDetail.tsx (back link).
  */
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
@@ -325,23 +325,6 @@ export default function WorkerDetailPage() {
               )}
             </div>
           </div>
-
-          {worker.source_ref && (
-            <div className="panel">
-              <div className="panel-head"><h3>Import provenance</h3></div>
-              <div className="panel-body">
-                <dl className="kv">
-                  <dt>Source</dt><dd>{worker.source}</dd>
-                  <dt>Source ref</dt><dd className="mono">{worker.source_ref}</dd>
-                </dl>
-                {worker.person_notes && (
-                  <p className="set-note" style={{ whiteSpace: 'pre-line', padding: '10px 0 0' }}>
-                    {worker.person_notes}
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
         </div>
 
         <div>

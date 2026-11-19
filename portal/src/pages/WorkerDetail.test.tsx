@@ -134,6 +134,16 @@ it('shows the Learning history panel for the worker', async () => {
   expect((await screen.findByTestId('learning-history')).textContent).toBe('w1:Wes Worker');
 });
 
+it('shows no import provenance, even for an imported worker', async () => {
+  workers.getWorker.mockResolvedValue({
+    ...WORKER, source: 'import', source_ref: 'backup:people/7', person_notes: 'V2 work: Move #4' });
+  renderPage();
+  await screen.findByRole('heading', { level: 1, name: /Wes Worker/ });
+  expect(screen.queryByText('Import provenance')).toBeNull();
+  expect(screen.queryByText('backup:people/7')).toBeNull();
+  expect(screen.queryByText('V2 work: Move #4')).toBeNull();
+});
+
 const chipTexts = (el: Element) =>
   Array.from(el.querySelectorAll('.chip.tag')).map((c) => c.textContent);
 
