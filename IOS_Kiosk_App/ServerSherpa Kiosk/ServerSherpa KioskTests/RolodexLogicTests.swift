@@ -353,4 +353,77 @@ struct RolodexLogicTests {
             #expect(try KioskJSON.decoder.decode(RolodexPatch.self, from: try KioskJSON.encoder.encode(travel)) == travel)
         }
     }
+
+    // MARK: previous jobs (Android WorkerJobsTest)
+
+    private func job(type: String? = "Move", workType: String? = "Lead", site: String? = "NAP11 Las Vegas") -> RolodexJob {
+        RolodexJob(initiativeId: "i1", initiativeName: "NAP11 Hall Migration", typeLabel: type, workTypeLabel: workType, siteWorkedName: site)
+    }
+
+    @Test func jobRowLines() {
+        #expect(RolodexLogic.jobLine(job()) == "Move · Lead · NAP11 Las Vegas")
+        #expect(RolodexLogic.jobLine(job(workType: nil)) == "Move · NAP11 Las Vegas")
+        #expect(RolodexLogic.jobLine(job(site: " ")) == "Move · Lead")
+        #expect(RolodexLogic.jobLine(job(type: nil, site: nil)) == "Lead")
+        #expect(RolodexLogic.jobLine(job(type: "", workType: nil, site: nil)) == nil)
+
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let us = Locale(identifier: "en_US")
+        #expect(RolodexLogic.jobAddedText("2026-10-03T15:00:00Z", timeZone: chicago, locale: us) == "Added Oct 3, 2026")
+        // 2 AM UTC on the 3rd is still the 2nd in Chicago.
+        #expect(RolodexLogic.jobAddedText("2026-10-03T02:00:00Z", timeZone: chicago, locale: us) == "Added Oct 2, 2026")
+        #expect(RolodexLogic.jobAddedText("2026-10-03T02:00:00+00:00", timeZone: TimeZone(identifier: "UTC")!, locale: us) == "Added Oct 3, 2026")
+        #expect(RolodexLogic.jobAddedText("2026-03-02T15:00:00.123456Z", timeZone: chicago, locale: us) == "Added Mar 2, 2026")
+        #expect(RolodexLogic.jobAddedText("2026-10-03T15:00:00Z", timeZone: chicago, locale: Locale(identifier: "en_GB")) == "Added 3 Oct 2026")
+        #expect(RolodexLogic.jobAddedText(nil) == nil)
+        #expect(RolodexLogic.jobAddedText("") == nil)
+        #expect(RolodexLogic.jobAddedText("last week") == nil)
+    }
+
+    @Test func jobsAreNewestFirst() {
+        // The API sends them newest first and the page keeps that order.
+        let a = RolodexJob(initiativeId: "new", addedAt: "2026-10-03T15:00:00Z")
+        let b = RolodexJob(initiativeId: "old", addedAt: "2025-01-01T15:00:00Z")
+        #expect(RolodexLogic.jobsShown([a, b]).map(\.initiativeId) == ["new", "old"])
+        // A page that arrives out of order is sorted newest first; undated jobs go last, ties keep their order.
+        #expect(RolodexLogic.jobsShown([b, a]).map(\.initiativeId) == ["new", "old"])
+        let none = RolodexJob(initiativeId: "none")
+        #expect(RolodexLogic.jobsShown([none, b, a]).map(\.initiativeId) == ["new", "old", "none"])
+    }
+
+    @Test func noJobsSaysSo() {
+        #expect(RolodexLogic.noJobsText == "No jobs yet.")
+    }
+
+    @Test func moreThanFiftySaysShowingTheLatest() {
+        #expect(RolodexLogic.jobsShownText(shown: 50, total: 73) == "Showing the latest 50 of 73 jobs.")
+        #expect(RolodexLogic.jobsShownText(shown: 50, total: 50) == nil)
+        #expect(RolodexLogic.jobsShownText(shown: 3, total: 3) == nil)
+        #expect(RolodexLogic.jobsShownText(shown: 2, total: 0) == nil)
+        #expect(RolodexLogic.jobsShownText(shown: 0, total: 0) == nil)
+    }
+
+    @Test func offlineContactWording() {
+        #expect(RolodexLogic.contactPendingText(loading: false) == "Phone and email need a connection.")
+        #expect(RolodexLogic.contactPendingText(loading: true) == "Loading…")
+        #expect(RolodexLogic.contactPendingText(loading: false, error: nil) == "Phone and email need a connection.")
+        #expect(RolodexLogic.contactPendingText(loading: false, error: "  ") == "Phone and email need a connection.")
+    }
+
+    @Test func aFailedPageLoadSaysWhy() {
+        #expect(RolodexLogic.contactPendingText(loading: false, error: "Something went wrong. Try again.") == "Something went wrong. Try again.")
+        #expect(RolodexLogic.contactPendingText(loading: true, error: "Something went wrong. Try again.") == "Loading…")
+        #expect(RolodexLogic.pageLoadFailed(detailLoaded: false, loading: false, error: "Something went wrong. Try again."))
+        #expect(!RolodexLogic.pageLoadFailed(detailLoaded: false, loading: true, error: "x"))
+        #expect(!RolodexLogic.pageLoadFailed(detailLoaded: true, loading: false, error: "x"))
+        #expect(!RolodexLogic.pageLoadFailed(detailLoaded: false, loading: false, error: nil))
+    }
+
+    @Test func theJobsCardWaitsForThePage() {
+        #expect(RolodexLogic.jobsCard(for: nil) == nil)
+        let loaded = RolodexDetail(row: RolodexRow(personId: "p1"), jobs: [], jobsTotal: 0)
+        let card = RolodexLogic.jobsCard(for: loaded)
+        #expect(card?.jobs.isEmpty == true)
+        #expect(card?.total == 0)
+    }
 }

@@ -31,22 +31,31 @@ func homeColumns(width: CGFloat) -> Int { width >= 1000 ? 3 : 2 }
 /// kiosk/src/pages/Home.tsx: the launcher.
 struct HomeScreen: View {
     @Binding var path: [Route]
+    @Environment(\.container) private var container
     @Environment(\.kioskPalette) private var palette
 
     var body: some View {
-        ScrollView { HomeContent(path: $path) }
+        ScrollView { HomeContent(container: container, path: $path) }
             .background(palette.paper2)
     }
 }
 
-/// The launcher's page body: header, update banner, setup banner, tiles.
+/// The launcher's page body: header, update banner, setup banner, the Time Clock tile's error, tiles.
 struct HomeContent: View {
     @Binding var path: [Route]
     @Environment(KioskPrefs.self) private var prefs
     @Environment(KioskAuth.self) private var auth
     @Environment(\.kioskPalette) private var palette
     @State private var width: CGFloat = 0
-    @State private var leaving = false
+    /// A Time Clock station's tile: its key, then the sign-out. Every tile waits while it runs.
+    @State private var stationTile: StationTileModel
+
+    init(container: AppContainer, path: Binding<[Route]>) {
+        _path = path
+        _stationTile = State(initialValue: StationTileModel(api: container.api, station: container.station,
+                                                            heartbeat: container.heartbeat, auth: container.auth,
+                                                            prefs: container.prefs))
+    }
 
     private var isAdmin: Bool {
         if case .authed(let s) = auth.state { return s.isAdmin }
@@ -63,6 +72,7 @@ struct HomeContent: View {
             PageHeader(eyebrow: "Kiosk", title: "What would you like to do?")
             UpdateBanner()
             if let banner { KioskToast(text: banner.text, error: banner.error) }
+            if let error = stationTile.shownError { KioskToast(text: error, error: true) }
             // A Grid, not a LazyVGrid: every tile in a row takes the row's height.
             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                 ForEach(rows.indices, id: \.self) { r in
@@ -79,7 +89,7 @@ struct HomeContent: View {
     }
 
     private func tileView(_ tile: HomeTile) -> some View {
-        SetupCard(selected: false, enabled: !leaving, action: { open(tile.feature) }) {
+        SetupCard(selected: false, enabled: !stationTile.starting, action: { open(tile.feature) }) {
             FeatureIcon(id: tile.feature.id, tint: palette.accent)
             Text(tile.feature.title).font(KioskType.titleLarge).foregroundStyle(palette.text)
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
@@ -89,11 +99,11 @@ struct HomeContent: View {
         .accessibilityIdentifier(tile.feature == TIMECLOCK_STATION_FEATURE ? "tile-timeclock-station" : "tile-\(tile.feature.id.rawValue)")
     }
 
-    /// A station's Time Clock tile signs out: the guard then rests the station on its Welcome.
+    /// A station's Time Clock tile gets the station key if it is missing, then signs out: the
+    /// guard then rests the station on its Welcome.
     private func open(_ feature: KioskFeature) {
         if feature == TIMECLOCK_STATION_FEATURE {
-            leaving = true
-            Task { await auth.logout() }
+            Task { await stationTile.start() }
         } else {
             path.append(Route.forFeature(feature.id))
         }

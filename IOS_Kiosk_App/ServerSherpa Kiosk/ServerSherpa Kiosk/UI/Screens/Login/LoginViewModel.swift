@@ -67,6 +67,9 @@ final class LoginViewModel {
         didSet {
             error = nil
             moveError = nil
+            // The camera belongs to the Move password view (its errors land on that field), so
+            // leaving the view closes it and coming back never reopens it.
+            if view != .move { scanningMove = false }
             guard view != .biometric else { return }
             cardDeclined = true
             cardPending = false
@@ -74,6 +77,8 @@ final class LoginViewModel {
             bioError = nil
         }
     }
+    /// The Move password view's camera (QR only) is up.
+    var scanningMove = false
     var ssoHint = false
     var supportOpen = false
     /// The screen's Settings sheet (the gear) is up. Like the support card, it holds the auto
@@ -159,6 +164,21 @@ final class LoginViewModel {
             movePassword = ""   // before the message: its didSet clears it
             moveError = Self.moveMessage(for: Self.code(error))
         }
+    }
+
+    /// The Move password field's QR button: the camera, over the Move password view only, and
+    /// not while a sign-in runs.
+    func openMoveScan() {
+        guard view == .move, !busy else { return }
+        scanningMove = true
+    }
+
+    /// A QR code read by the camera is the move password: fill the field with it and sign in.
+    /// An error lands on the field's error line, as for a typed one.
+    func submitScannedMove(_ value: String) async {
+        guard !busy else { return }
+        movePassword = value
+        await submitMove()
     }
 
     /// Read-only / broadcast banners; best effort.

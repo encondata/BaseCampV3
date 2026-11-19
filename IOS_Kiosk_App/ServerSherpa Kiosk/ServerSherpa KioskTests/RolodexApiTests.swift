@@ -122,4 +122,24 @@ struct RolodexApiTests {
         #expect(retry.method == "PUT"); #expect(retry.header("Authorization") == "Bearer tok2")
         #expect(retry.header("Content-Type") == "image/jpeg"); #expect(retry.body == jpeg)
     }
+
+    @Test func workerDetailDecodesJobs() async throws {
+        let h = try await signedIn()
+        let jobs = ##","jobs":[{"initiative_id":"i2","initiative_name":"NAP11 Hall Migration","type_label":"Move","type_color":"#2563eb","status_label":"Active","status_color":"#178a4c","work_type_label":"Lead","site_worked_name":"NAP11 Las Vegas","added_at":"2026-10-03T15:00:00Z"},{"initiative_id":"i1","initiative_name":"Old job"}],"jobs_total":73"##
+        h.server.enqueue(.json(200, String(detailJSON.dropLast()) + jobs + "}"))
+        let d = try await h.api.rolodexWorker(id: "p1")
+        #expect(d.jobs.map(\.initiativeId) == ["i2", "i1"])
+        #expect(d.jobsTotal == 73)
+        let first = d.jobs[0]
+        #expect(first.initiativeName == "NAP11 Hall Migration"); #expect(first.typeLabel == "Move")
+        #expect(first.statusLabel == "Active"); #expect(first.statusColor == "#178a4c")
+        #expect(first.workTypeLabel == "Lead"); #expect(first.siteWorkedName == "NAP11 Las Vegas")
+        #expect(first.addedAt == "2026-10-03T15:00:00Z")
+        #expect(d.jobs[1].statusLabel == ""); #expect(d.jobs[1].typeLabel == nil)
+
+        // An API from before the jobs sends none.
+        h.server.enqueue(.json(200, detailJSON))
+        let old = try await h.api.rolodexWorker(id: "p1")
+        #expect(old.jobs.isEmpty); #expect(old.jobsTotal == 0)
+    }
 }

@@ -55,16 +55,20 @@ private struct CameraPreview: UIViewRepresentable {
 
 /// The camera scanner, full screen. Single publishes the first barcode and
 /// closes; Multi publishes each distinct barcode once and stays open until
-/// Done. Frames are never stored.
+/// Done. Frames are never stored. QR-only (the sign-in screen's move password,
+/// Android `CameraScanSheet(qrOnly = true)`) reads QR codes only, stays in
+/// Single and has no Single/Multi switch.
 struct CameraScanSheet: View {
-    let bus: ScanBus
     let prefs: KioskPrefs
+    let qrOnly: Bool
+    /// Where a read goes: the scan bus for the scanning screens, the caller's own handler for QR-only.
+    let onScan: @MainActor (ScanEvent) -> Void
     let onClose: () -> Void
 
     @State private var mode: CameraMode = .single
     @State private var status = AVCaptureDevice.authorizationStatus(for: .video)
     @State private var torch = false
-    @State private var scanner = CameraScanner()
+    @State private var scanner: CameraScanner
     @State private var session = MultiReadSession()
     @State private var count = 0
     @State private var recent: [String] = []
@@ -74,10 +78,18 @@ struct CameraScanSheet: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.kioskAccent) private var accent
 
+    /// Single and Multi: every read is published on the scan bus.
     init(bus: ScanBus, prefs: KioskPrefs, onClose: @escaping () -> Void) {
-        self.bus = bus
+        self.init(prefs: prefs, qrOnly: false, onScan: { bus.publish($0) }, onClose: onClose)
+    }
+
+    /// The read goes to `onScan` rather than the bus; with `qrOnly` the first QR code read closes the sheet.
+    init(prefs: KioskPrefs, qrOnly: Bool, onScan: @escaping @MainActor (ScanEvent) -> Void, onClose: @escaping () -> Void) {
         self.prefs = prefs
+        self.qrOnly = qrOnly
+        self.onScan = onScan
         self.onClose = onClose
+        _scanner = State(initialValue: CameraScanner(qrOnly: qrOnly))
     }
 
     private var granted: Bool { status == .authorized }
@@ -170,7 +182,15 @@ struct CameraScanSheet: View {
 
     private var bottomPanel: some View {
         VStack(spacing: 10) {
-            Segmented(options: CameraMode.allCases.map { ($0, $0.rawValue) }, selection: $mode)
+            if qrOnly {
+                Text("Point the camera at the move password's QR code.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Segmented(options: CameraMode.allCases.map { ($0, $0.rawValue) }, selection: $mode)
+            }
             if mode == .multi {
                 HStack(spacing: 8) {
                     Text("\(count) scanned")
@@ -223,8 +243,8 @@ struct CameraScanSheet: View {
 
     private func handle(_ value: String, _ symbology: String) {
         if finished || !session.offer(value) { return }
-        bus.publish(ScanEvent(value: value, source: .camera, symbology: symbology))
-        if mode == .single {
+        onScan(ScanEvent(value: value, source: .camera, symbology: symbology))
+        if qrOnly || mode == .single {
             finished = true
             onClose()
         } else {

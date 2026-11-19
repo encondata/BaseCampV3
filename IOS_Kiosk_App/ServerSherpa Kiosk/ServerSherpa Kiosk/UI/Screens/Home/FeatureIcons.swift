@@ -20,6 +20,9 @@ enum FeatureIcons {
     private static let trucks = icon(strokes: [
         "M2 10h19v17H2V10z", "M21 16h7l5 6v5h-12v-11z", svgCircle(12, 30, 3.5), svgCircle(28, 30, 3.5), "M2 27h6.5M15.5 27h9M31.5 27H38",
     ])
+    /// A magnifier over a tag: the tag outline at the back, the lens and handle in front.
+    private static let lookup = icon(strokes: ["M4 5h12l9 9-3 3", "M4 5v12l6 6", svgCircle(22, 22, 7.5), "M27.5 27.5L35 35"],
+                                     fills: [svgCircle(10, 11, 2)])
     private static let labels = icon(strokes: ["M6 6h15l13 13-15 15L6 21V6z"], fills: [svgCircle(14, 14, 2.5)])
     private static let timeclock = icon(strokes: [svgCircle(20, 20, 15), "M20 11v9l7 4"])
     private static let settings = icon(strokes: ["M6 12h20M31 12h3", svgCircle(26, 12, 3.5), "M6 28h9M20 28h14", svgCircle(15, 28, 3.5)])
@@ -36,6 +39,7 @@ enum FeatureIcons {
         case .enroll: enroll
         case .containers: containers
         case .trucks: trucks
+        case .lookup: lookup
         case .labels: labels
         case .timeclock: timeclock
         case .settings: settings

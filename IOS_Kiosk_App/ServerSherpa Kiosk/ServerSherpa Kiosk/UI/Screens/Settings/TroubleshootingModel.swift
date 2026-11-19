@@ -80,6 +80,10 @@ struct AskResult: Identifiable, Equatable, Sendable {
 
     /// The reply's length in bytes (Latin-1: one byte a character).
     var bytes: Int { reply.unicodeScalars.count }
+
+    /// The reply as the card shows it: its control bytes visible, and `~HS`'s front-panel password
+    /// masked (`reply` keeps what the printer sent, which `meaning` was read from).
+    var shownReply: String { visibleBytes(withoutPanelPassword(command: command, reply: reply)) }
 }
 
 /// One speed-test label: its size, and how long it took to send (or why it didn't go).
@@ -123,6 +127,52 @@ let NOTHING_HEARD_TEXT = "No Bluetooth devices heard nearby."
 let SCAN_CUT_SHORT_TEXT = "The scan stopped because the printer was in use. Scan again."
 /// A command box command (a setvar, say) that replied nothing, as it does by design.
 let COMMAND_SENT_TEXT = "Sent, no reply."
+/// A label or format typed in the command box (it starts with `^XA` and asks the printer nothing)
+/// went out as a send.
+let FORMAT_SENT_TEXT = "Sent as a label or format; no reply is read."
+/// A scan something other than the tab ended before its time: another scan took over, or
+/// Bluetooth refused it and was back by the time it ended.
+let SCAN_ENDED_EARLY_TEXT = "The scan stopped early. Scan again."
+/// The scan notes that are information, not trouble.
+private let SCAN_NOTES: Set<String> = [NOTHING_HEARD_TEXT, SCAN_CUT_SHORT_TEXT, SCAN_ENDED_EARLY_TEXT]
+let REPORT_COPIED_TEXT = "Report copied."
+/// Copy or Share couldn't build the report (nothing was copied or shared).
+let REPORT_FAILED_TEXT = "Couldn't build the report. Try again."
+/// The most a copied report carries, in UTF-16 units as Android counts them (Android's limit: it
+/// hands the text to the other app in one binder transaction). The oldest log lines go first.
+/// Share sends a file, so it carries everything.
+let SHARE_MAX_CHARS = 100_000
+
+/// `typed` (the command box's text) is a label or format to send: it starts with `^XA` (after any
+/// whitespace, any case) and holds no host command (`^HH`, `^HW`, `^HZ`, `~HS`, `~HI`…), whose
+/// answer would be lost on the send path.
+func sendsAsFormat(_ typed: String) -> Bool {
+    // `^`, then X and A in either case (setting bit 0x20 lower-cases an ASCII letter).
+    let head = Array(kotlinTrimmed(typed).utf16.prefix(3))
+    guard head.count == 3, head[0] == 0x5E, (head[1] | 0x20) == 0x78, (head[2] | 0x20) == 0x61 else { return false }
+    let units = Array(typed.utf16)
+    return !hasHostCommand(units, prefix: 0x5E) && !hasHostCommand(units, prefix: 0x7E)
+}
+
+/// `units` holds `prefix` (`^` or `~`) then `H` or `h` then a letter: a host command. Read as Kotlin
+/// reads it, one UTF-16 unit at a time (Java's `Character.isLetter`).
+private func hasHostCommand(_ units: [UInt16], prefix: UInt16) -> Bool {
+    guard units.count >= 3 else { return false }
+    for i in 0..<(units.count - 2) where units[i] == prefix && (units[i + 1] == 0x48 || units[i + 1] == 0x68) {
+        if isKotlinLetter(units[i + 2]) { return true }
+    }
+    return false
+}
+
+/// Kotlin's `Char.isLetter` for one UTF-16 unit: an uppercase, lowercase, titlecase, modifier or
+/// other letter. Half of a surrogate pair is none.
+private func isKotlinLetter(_ unit: UInt16) -> Bool {
+    guard let scalar = Unicode.Scalar(unit) else { return false }
+    switch scalar.properties.generalCategory {
+    case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter: return true
+    default: return false
+    }
+}
 
 /// "Device: iPad16,6 (ipad), iPadOS 18.5" and "App: version 1.0 (build 7)": the report's first lines.
 @MainActor func troubleshootingDeviceText() -> String {
@@ -159,7 +209,8 @@ func visibleBytes(_ text: String) -> String {
  - Ask the printer: status, error report, DPI, peeler, serial and the font listing, each with its
    raw reply, its bytes and how long it took; and a free-text command box for admins and
    developers only (a raw command can change printer settings; one that replies nothing, as a
-   setvar does, reads as sent).
+   setvar does, reads as sent; a label or format goes out as a label does, under the guard's
+   send rules).
  - A Bluetooth refusal the crew fixes on the iPad (a printer that forgot this iPad, Bluetooth off or
    not allowed) shows with its buttons (`reachProblem`: Connect, or Open Settings), as on Print
    Labels, in the section whose call met it; the next call replaces it.
@@ -169,9 +220,11 @@ func visibleBytes(_ text: String) -> String {
    sample label through the normal path, so `~JX` goes first. Only the full label may print.
  - Bluetooth scan: every named device nearby with its signal, Zebras flagged ("why can't I find my
    printer?"). It never saves a printer, and Bluetooth starts only when Scan is tapped (never during
-   a speed test, whose KB/s it would lower). A scan a printer call cut short says so.
+   a speed test, whose KB/s it would lower). A scan a printer call cut short says so, and so does
+   one ended early; one Bluetooth refused runs again by itself once Bluetooth is ready.
  - Report: all of the above and the last `LOG_CAP` log lines, merged in time with the Bluetooth
-   link's own events (`ZebraBluetooth.events`), as text to copy or share.
+   link's own events (`ZebraBluetooth.events`), as text to copy (at most `SHARE_MAX_CHARS`) or
+   share (a file), built off the main actor.
 
  Every call to the printer goes through `LockedZebra` with the app's `PrinterLock` and
  `PrinterGuard`, so nothing here interleaves with Print Labels or Printer Setup, and a printer left
@@ -183,6 +236,8 @@ final class TroubleshootingModel {
     nonisolated static let LOG_CAP = 5_000
     nonisolated static let SPEED_SIZES_KB = [10, 25, 50]
     nonisolated static let SPEED_RUN_COUNTS = [1, 3, 5]
+    /// How long building the report may take before "Preparing the report…" shows.
+    nonisolated static let REPORT_NOTICE_AFTER: Duration = .milliseconds(400)
 
     let isAdmin: Bool
     let isDeveloper: Bool
@@ -208,12 +263,23 @@ final class TroubleshootingModel {
     /// What the Bluetooth scan heard, strongest first: nil until a scan starts.
     private(set) var found: [FoundBluetoothPrinter]?
     private(set) var scanning = false
-    /// Under the scan: Bluetooth off or not allowed, or nothing heard.
+    /// Under the scan: Bluetooth off or not allowed, or a note (nothing heard, cut short, ended early).
     private(set) var scanMessage: String?
+    /// The scan's message is trouble (Bluetooth off, not allowed or missing), not a note.
+    var scanMessageIsError: Bool { scanMessage.map { !SCAN_NOTES.contains($0) } ?? false }
     private(set) var logLines: [TroubleLogLine] = []
     /// The last call's Bluetooth refusal the crew fixes on the iPad, with its buttons; nil once a
     /// call gets through or fails any other way.
     private(set) var reachProblem: TroubleReachProblem?
+    /// Copy or Share is building the report (off the main actor).
+    private(set) var reportBuilding = false
+    /// The build has taken `REPORT_NOTICE_AFTER`: "Preparing the report…" shows.
+    private(set) var reportSlow = false
+    /// The last Copy put the report on the pasteboard ("Report copied."); Share or a failed build
+    /// takes the note away.
+    private(set) var reportCopied = false
+    /// The last build failed ("Couldn't build the report. Try again."); the next one clears it.
+    private(set) var reportFailed = false
 
     @ObservationIgnored private let settings: LabelSettingsStore
     @ObservationIgnored private let bluetooth: BluetoothPrinting
@@ -221,24 +287,31 @@ final class TroubleshootingModel {
     @ObservationIgnored private let printerLock: PrinterLock
     @ObservationIgnored private let printerGuard: PrinterGuard
     @ObservationIgnored private let pick: @MainActor () -> LabelPick?
-    @ObservationIgnored private let device: @MainActor () -> String
+    @ObservationIgnored private let device: @Sendable () throws -> String
     @ObservationIgnored private let stopwatch = CallStopwatch()
     @ObservationIgnored private var nextId = 0
     @ObservationIgnored private var stopRequested = false
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     /// Bumped by each scan (and by closing): only the latest one writes when it ends.
     @ObservationIgnored private var scanRun = 0
+    /// A scan met Bluetooth refusing: scan again once it reads ready (while the tab shows).
+    @ObservationIgnored private var rescanWhenReady = false
+    @ObservationIgnored private var followingBluetooth = false
     @ObservationIgnored private var closed = false
+    /// Report builds running (Copy and a share sheet's file can overlap).
+    @ObservationIgnored private var reportBuilds = 0
+    @ObservationIgnored private var reportNotice: Task<Void, Never>?
 
     /// `zebraFor` is a printer the way its connection reaches it (`AppContainer.zebra(for:)` on the
     /// device); every call to it is made under `printerLock` and `printerGuard`. `pick` is the label
     /// builder's template pick (the speed test's label size); `device` names this device and app
-    /// for the report.
+    /// for the report, read wherever the report is written (by default the text
+    /// `troubleshootingDeviceText()` gives now, which doesn't change while the app runs).
     init(settings: LabelSettingsStore, bluetooth: BluetoothPrinting,
          zebraFor: @escaping @MainActor (SavedPrinter) -> SetupZebra,
          printerLock: PrinterLock, printerGuard: PrinterGuard, isAdmin: Bool, isDeveloper: Bool,
          pick: @escaping @MainActor () -> LabelPick? = { nil },
-         device: @escaping @MainActor () -> String = troubleshootingDeviceText) {
+         device: (@Sendable () throws -> String)? = nil) {
         self.settings = settings
         self.bluetooth = bluetooth
         self.zebraFor = zebraFor
@@ -247,7 +320,13 @@ final class TroubleshootingModel {
         self.isAdmin = isAdmin
         self.isDeveloper = isDeveloper
         self.pick = pick
-        self.device = device
+        if let device {
+            self.device = device
+        } else {
+            // Read here, on the main actor: the report is written off it.
+            let text = troubleshootingDeviceText()
+            self.device = { text }
+        }
     }
 
     /// The tab went away: the scan stops, and a speed test stops after the label going out. A query
@@ -255,6 +334,7 @@ final class TroubleshootingModel {
     func close() {
         closed = true
         stopRequested = true
+        rescanWhenReady = false
         if scanning {
             scanRun += 1
             scanTask?.cancel()
@@ -356,7 +436,7 @@ final class TroubleshootingModel {
                 noteReach(nil, from: section)
             } catch {
                 detailsError = troubleText(error, started.printer)
-                log("← ~HI failed: \(String(describing: error))")
+                log("← ~HI failed: \(describe(error))")
                 noteReach(error, from: section)
             }
             running = nil
@@ -368,7 +448,10 @@ final class TroubleshootingModel {
     }
 
     /// The command box (admins and developers): the text as typed with straight quotes and CR LF
-    /// at the end. Its reply has no known end, so it is read until the printer goes quiet.
+    /// at the end. A label or format (`sendsAsFormat`) goes out as a send, on Print Labels' path: a
+    /// cut font refuses it, and one cut off part-way marks the printer for a `~JX`. Anything else,
+    /// a format with a host command included, is a query whose reply has no known end, so it is
+    /// read until the printer goes quiet.
     @discardableResult func sendCommand() -> Task<Void, Never>? {
         guard showsCommandBox else { return nil }
         let typed = commandText
@@ -376,7 +459,35 @@ final class TroubleshootingModel {
             .replacingOccurrences(of: "\u{2018}", with: "'").replacingOccurrences(of: "\u{2019}", with: "'")
         guard !kotlinTrimmed(typed).isEmpty else { return nil }
         let command = typed.hasSuffix("\n") ? typed : typed + "\r\n"
+        if sendsAsFormat(typed) { return sendFormat(command) }
         return runQuery(label: "Command", command: command, complete: { _ in false }, action: .command) { _ in nil }
+    }
+
+    /// `command` (a label or format from the command box) as a send, under the lock and the guard
+    /// (`LockedZebra.send`, the rules of Print Labels' `lockedSender`).
+    private func sendFormat(_ command: String) -> Task<Void, Never>? {
+        guard let started = begin(.command) else { return nil }
+        nextId += 1
+        let id = nextId
+        let at = Date()
+        log("→ Command (sent as a format): \(visibleCommand(command))")
+        return Task {
+            var result = AskResult(id: id, label: "Command", command: command, at: at)
+            do {
+                try await started.zebra.send(command)
+                result.meaning = FORMAT_SENT_TEXT
+                result.milliseconds = stopwatch.milliseconds
+                log("← Command: sent in \(msText(result.milliseconds)) ms")
+                noteReach(nil, from: .command)
+            } catch {
+                result.error = troubleText(error, started.printer)
+                result.milliseconds = stopwatch.milliseconds
+                log("← Command failed after \(msText(result.milliseconds)) ms: \(describe(error))")
+                noteReach(error, from: .command)
+            }
+            asks.append(result)
+            running = nil
+        }
     }
 
     private func runQuery(label: String, command: String, complete: @escaping @Sendable (Data) -> Bool, action: TroubleAction,
@@ -393,7 +504,7 @@ final class TroubleshootingModel {
                 result.reply = reply
                 result.meaning = meaning(reply)
                 result.milliseconds = stopwatch.milliseconds
-                log("← \(label): \(result.bytes) B in \(msText(result.milliseconds)) ms")
+                log("← \(label): \(askSizeText(command: command, bytes: result.bytes, milliseconds: result.milliseconds))")
                 noteReach(nil, from: action)
             } catch is PrinterNoReply where action == .command {
                 // A setvar and most raw commands reply nothing by design: it went out.
@@ -404,7 +515,7 @@ final class TroubleshootingModel {
             } catch {
                 result.error = troubleText(error, started.printer)
                 result.milliseconds = stopwatch.milliseconds
-                log("← \(label) failed after \(msText(result.milliseconds)) ms: \(String(describing: error))")
+                log("← \(label) failed after \(msText(result.milliseconds)) ms: \(describe(error))")
                 noteReach(error, from: action)
             }
             asks.append(result)
@@ -462,7 +573,7 @@ final class TroubleshootingModel {
                 noteReach(nil, from: .speed)
             } catch {
                 speedRows.append(SpeedRow(id: id, run: run, targetKb: kb, bytes: bytes, error: troubleText(error, started.printer)))
-                log("Run \(run) failed: \(String(describing: error))")
+                log("Run \(run) failed: \(describe(error))")
                 noteReach(error, from: .speed)
                 return
             }
@@ -493,7 +604,7 @@ final class TroubleshootingModel {
             } catch {
                 cutSendMessage = troubleText(error, started.printer)
                 cutSendError = true
-                log("Cut-send test failed: \(String(describing: error))")
+                log("Cut-send test failed: \(describe(error))")
                 noteReach(error, from: .cutSend)
             }
             running = nil
@@ -502,12 +613,48 @@ final class TroubleshootingModel {
 
     // MARK: Bluetooth scan
 
-    /// Lists every named device nearby, strongest first, until the scan ends (30 s of a ready
-    /// Bluetooth, Stop, Bluetooth refused, or a printer call taking the radio, which it then says).
-    /// "Nothing heard" only after the full 30 s or Stop. The first scan asks iOS for Bluetooth
-    /// permission. Nothing is saved, and no scan starts during a speed test (it shares the radio
-    /// with the label's acknowledgments and would lower its KB/s).
+    /// Scan (tapped): lists every named device nearby, strongest first, until the scan ends (30 s
+    /// of a ready Bluetooth, Stop, Bluetooth refused, a printer call taking the radio, or something
+    /// else ending it early, which it then says). "Nothing heard" only after the full 30 s or Stop.
+    /// The first scan asks iOS for Bluetooth permission. One Bluetooth refused (off, not allowed)
+    /// runs again by itself once Bluetooth is ready, while the tab shows (`appResumed` checks too).
+    /// Nothing is saved, and no scan starts during a speed test (it shares the radio with the
+    /// label's acknowledgments and would lower its KB/s).
     func scan() {
+        guard !scanning, !closed else { return }
+        rescanWhenReady = false
+        startScan()
+    }
+
+    /// The app is back in front (from Settings, say): a scan Bluetooth refused runs now if
+    /// Bluetooth reads ready. (Bluetooth's own state change starts it too; it runs once.)
+    func appResumed() { bluetoothMayBeReady() }
+
+    /// A scan Bluetooth refused runs again once Bluetooth reads ready (once, and only while the
+    /// tab shows).
+    private func bluetoothMayBeReady() {
+        guard rescanWhenReady, !closed, bluetooth.availability == .ready else { return }
+        rescanWhenReady = false
+        startScan()
+    }
+
+    /// Follows Bluetooth's state (Observation) while a refused scan waits for it.
+    private func followBluetooth() {
+        guard !followingBluetooth else { return }
+        followingBluetooth = true
+        withObservationTracking { _ = bluetooth.availability } onChange: { [weak self] in
+            // onChange runs before the new state is set: read it on the next main-actor turn.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.followingBluetooth = false
+                self.bluetoothMayBeReady()
+                if self.rescanWhenReady { self.followBluetooth() }
+            }
+        }
+    }
+
+    /// Starts the scan unless one runs, the tab is away, or a speed test runs.
+    private func startScan() {
         guard !scanning, !closed, running != .speed else { return }
         scanRun += 1
         let run = scanRun
@@ -524,11 +671,16 @@ final class TroubleshootingModel {
             let devices = found ?? []
             if let text = bluetoothUnavailableText(bluetooth.availability) {
                 scanMessage = text
+                rescanWhenReady = true
+                followBluetooth()
             } else {
                 switch bluetooth.lastScanEnd {
                 case .interrupted?: scanMessage = SCAN_CUT_SHORT_TEXT
+                // Another scan took over, or Bluetooth refused it and is back already.
+                case .replaced?, .refused?: scanMessage = SCAN_ENDED_EARLY_TEXT
                 case .finished?, .stopped?: if devices.isEmpty { scanMessage = NOTHING_HEARD_TEXT }
-                case .closed?, .refused?, .replaced?, nil: break
+                // The app went to the background (or signed out): nothing to say.
+                case .closed?, nil: break
                 }
             }
             log("Bluetooth scan ended: \(devices.count) named devices, \(devices.filter(\.isZebra).count) Zebra"
@@ -539,105 +691,87 @@ final class TroubleshootingModel {
 
     func stopScan() { bluetooth.stopScan() }
 
-    /// "D8J224508535 · -52 dBm · Zebra": a device the scan heard, for the log and the report.
-    private static func scanLine(_ d: FoundBluetoothPrinter) -> String {
-        "\(d.name) · \(d.rssi) dBm\(d.isZebra ? " · Zebra" : "")\(d.advertisesZebra ? " (advertises Zebra)" : "")"
+    /// "D8J224508535 · -52 dBm · Zebra": a device the scan heard, for the log and the report. A device
+    /// that isn't a Zebra goes by its signal alone: its name is often a person's ("Jimmy's AirPods").
+    /// The tab itself still lists every device by name.
+    nonisolated fileprivate static func scanLine(_ d: FoundBluetoothPrinter) -> String {
+        d.isZebra ? "\(d.name) · \(d.rssi) dBm · Zebra\(d.advertisesZebra ? " (advertises Zebra)" : "")" : "Other device · \(d.rssi) dBm"
     }
 
     // MARK: Report
 
-    /// Everything the tab found, as the text Copy and Share send: this device and app, the saved
-    /// printer, its connection and details, every ask with its reply, the speed rows, the Cut-send
-    /// test, the Bluetooth scan, then the log: the tab's lines and the Bluetooth link's events
-    /// ("Bluetooth: …"), in time order. Shared as `printer-report-<yyyyMMdd-HHmmss>.txt`.
-    func report(now: Date = Date()) -> (name: String, text: String) {
-        let c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
-        let name = String(format: "printer-report-%04d%02d%02d-%02d%02d%02d.txt",
-                          c.year ?? 0, c.month ?? 0, c.day ?? 0, c.hour ?? 0, c.minute ?? 0, c.second ?? 0)
-        var out: [String] = []
-        out.append("ServerSherpa Kiosk · Printer troubleshooting report")
-        out.append("Generated \(ISO8601DateFormatter().string(from: now)) (\(TimeZone.current.identifier))")
-        out.append(device())
+    /// Everything the tab found, as the text Copy and Share send (`TroubleshootingReportDraft`
+    /// says what): read now, written here. Past `maxChars` the oldest log lines are left out (it
+    /// says how many). Throws when the report can't be built.
+    func report(now: Date = Date(), maxChars: Int = .max) throws -> TroubleshootingReport {
+        try reportDraft(now: now).report(maxChars: maxChars)
+    }
 
-        out.append("")
-        out.append("== Saved printer ==")
-        out.append(printer.map(printerSummary) ?? "None set up")
+    /// What the report says, read off the tab now (values and arrays: quick).
+    func reportDraft(now: Date = Date()) -> TroubleshootingReportDraft {
+        TroubleshootingReportDraft(
+            now: now, device: device, printer: printer, connectionLines: connectionLines,
+            hostIdLines: hostId == nil ? nil : hostIdLines, hostIdMilliseconds: hostIdMilliseconds,
+            detailsError: detailsError, deviceInfoLines: printer?.isBluetooth == true ? deviceInfoLines : nil,
+            asks: asks, speedSize: speedSize, speedRows: speedRows, speedAverage: speedAverage,
+            cutSendMessage: cutSendMessage, found: found, scanning: scanning, scanMessage: scanMessage,
+            logLines: logLines, events: bluetooth.events)
+    }
 
-        out.append("")
-        out.append("== Connection ==")
-        out.append(contentsOf: connectionLines.map { "\($0.label): \($0.value)" })
-
-        out.append("")
-        out.append("== Printer details ==")
-        if hostId != nil {
-            out.append("~HI (\(msText(hostIdMilliseconds)) ms):")
-            out.append(contentsOf: hostIdLines.map { "  \($0.label): \($0.value)" })
-        } else {
-            out.append("~HI: \(detailsError ?? "not asked")")
+    /// Copy: the report, at most `SHARE_MAX_CHARS`, built off the main actor, then handed to
+    /// `paste` ("Report copied."). Nil, and nothing happens, while a build runs. One that fails
+    /// says so and pastes nothing.
+    @discardableResult func copyReport(_ paste: @escaping @MainActor (String) -> Void) -> Task<Void, Never>? {
+        guard !reportBuilding else { return nil }
+        let build = buildReport { try $0.report(maxChars: SHARE_MAX_CHARS).text }
+        return Task {
+            guard let text = try? await build.value else { return }
+            paste(text)
+            reportCopied = true
         }
-        if printer?.isBluetooth == true {
-            let info = deviceInfoLines
-            out.append(info.isEmpty ? "Device Information: not read (the link hasn't been up to this printer)" : "Device Information:")
-            out.append(contentsOf: info.map { "  \($0.label): \($0.value)" })
-        }
+    }
 
-        out.append("")
-        out.append("== Ask the printer (\(asks.count)) ==")
-        for ask in asks {
-            out.append("[\(clockText(ask.at))] \(ask.label) · command \(visibleCommand(ask.command))")
-            out.append("  \(ask.bytes) B in \(msText(ask.milliseconds)) ms")
-            if let meaning = ask.meaning { out.append("  Meaning: \(meaning)") }
-            if let error = ask.error { out.append("  Error: \(error)") }
-            if !ask.reply.isEmpty {
-                out.append("  Reply:")
-                for line in visibleBytes(ask.reply).split(separator: "\n", omittingEmptySubsequences: false) {
-                    out.append("    \(line)")
+    /// Share: the whole report as `printer-report-<yyyyMMdd-HHmmss>.txt` in the temporary folder,
+    /// built and written off the main actor (a share sheet asks for it). It carries everything:
+    /// a file has no share limit. One that fails says so on the tab and throws.
+    func reportFile() async throws -> URL {
+        reportCopied = false
+        return try await buildReport { try writeReportFile($0.report()) }.value
+    }
+
+    /// Builds from what the tab shows now, with `write` off the main actor. "Preparing the report…"
+    /// shows once building has taken `REPORT_NOTICE_AFTER`; a failure says so.
+    private func buildReport<T: Sendable>(_ write: @escaping @Sendable (TroubleshootingReportDraft) throws -> T) -> Task<T, Error> {
+        reportBuilds += 1
+        reportBuilding = true
+        reportFailed = false
+        if reportNotice == nil {
+            reportNotice = Task { [weak self] in
+                try? await Task.sleep(for: Self.REPORT_NOTICE_AFTER)
+                guard let self, !Task.isCancelled, self.reportBuilds > 0 else { return }
+                self.reportSlow = true
+            }
+        }
+        let draft = reportDraft()
+        let work = Task.detached(priority: .userInitiated) { try write(draft) }
+        return Task {
+            defer {
+                reportBuilds -= 1
+                if reportBuilds == 0 {
+                    reportNotice?.cancel()
+                    reportNotice = nil
+                    reportBuilding = false
+                    reportSlow = false
                 }
             }
-        }
-
-        out.append("")
-        out.append("== Speed test (\(speedRows.count) labels) ==")
-        if let size = speedSize { out.append("Label: \(size.label) at \(size.dpi) dpi") }
-        out.append("run | KB | bytes | seconds | KB/s")
-        for row in speedRows {
-            if let error = row.error {
-                out.append("\(row.run) | \(row.targetKb) | \(row.bytes) | failed: \(error)")
-            } else {
-                out.append("\(row.run) | \(row.targetKb) | \(row.bytes) | \(decimal(row.seconds)) | \(decimal(row.kbPerSecond))")
+            do {
+                return try await work.value
+            } catch {
+                reportCopied = false
+                reportFailed = true
+                throw error
             }
         }
-        if let average = speedAverage {
-            let count = speedRows.compactMap(\.kbPerSecond).count
-            out.append("Average: \(decimal(average)) KB/s over \(count) label\(count == 1 ? "" : "s")")
-        }
-
-        if let message = cutSendMessage {
-            out.append("")
-            out.append("== Cut-send test ==")
-            out.append(message)
-        }
-
-        out.append("")
-        out.append("== Bluetooth scan ==")
-        if let found {
-            out.append("\(found.count) named device\(found.count == 1 ? "" : "s"), strongest first\(scanning ? " (still scanning)" : "")")
-            out.append(contentsOf: found.map { "  \(Self.scanLine($0))" })
-            if let message = scanMessage { out.append(message) }
-        } else {
-            out.append("Not run")
-        }
-
-        out.append("")
-        let events = bluetooth.events
-        out.append("== Log (\(logLines.count) lines; the last \(Self.LOG_CAP) are kept) and Bluetooth link events "
-                   + "(\(events.count); the last \(ZebraBluetooth.EVENT_CAP) are kept) ==")
-        let merged = (logLines + events.map { TroubleLogLine(at: $0.at, text: "Bluetooth: \($0.text)") })
-            .enumerated()
-            .sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
-            .map(\.element)
-        out.append(contentsOf: merged.map { "\(clockText($0.at, millis: true))  \($0.text)" })
-        return (name, out.joined(separator: "\n") + "\n")
     }
 
     /// Adds a line to the log the report carries, keeping the last `LOG_CAP`.
@@ -687,8 +821,10 @@ final class TroubleshootingModel {
     }
 
     /// What a failed call says: the app's words for what a crew can act on (unreachable, Local
-    /// Network or Bluetooth refused, a printer that forgot this iPad, a cut font), else the error's.
-    /// A `~JX` clear that failed reads as its cause: the call itself never went out.
+    /// Network or Bluetooth refused, a printer that forgot this iPad, a cut font), the app's own
+    /// printer messages, and for anything else only its kind: a stray error's message could carry
+    /// anything, and this text goes in the shared report. A `~JX` clear that failed reads as its
+    /// cause: the call itself never went out.
     private func troubleText(_ error: Error, _ printer: SavedPrinter) -> String {
         if let clear = error as? PrinterClearFailed { return troubleText(clear.cause, printer) }
         if error is PrinterNoReply { return "No reply." }
@@ -697,9 +833,214 @@ final class TroubleshootingModel {
         if let text = bluetoothRefusal(error)?.errorDescription { return text }
         if error is PrinterUnreachable || error is BluetoothPrinterNotFound { return printerUnreachableText(printer) }
         if error is PrinterTimeout { return "The printer didn't take it in time." }
-        return (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        if let own = error as? PrinterError, let text = own.errorDescription { return text }
+        return "Something went wrong (\(errorKind(error)))."
     }
 }
+
+/// The Troubleshooting report: its file name and text.
+struct TroubleshootingReport: Equatable, Sendable {
+    var name: String
+    var text: String
+}
+
+/**
+ What the Troubleshooting report says, read off the tab in one main-actor turn (values and arrays,
+ quick to copy). `report(maxChars:)` writes it, the slow part (every reply made visible, every line
+ masked), and runs anywhere, so Copy and Share run it off the main actor.
+
+ The report: this device and app, the saved printer, its connection and details, every ask with
+ its reply, the speed rows, the Cut-send test, the Bluetooth scan, then the log: the tab's lines
+ and the Bluetooth link's events ("Bluetooth: …"), in time order. Named
+ `printer-report-<yyyyMMdd-HHmmss>.txt`.
+
+ What the tab hears is cleaned on the way out: a failure says only the app's own words or its kind
+ (`troubleText`, `describe`), every line has its secret-looking values masked (`redactSecrets`),
+ the reply to a secret setting goes whole, `~HS`'s front-panel password is `****`, and a Bluetooth
+ device that isn't a Zebra goes by its signal alone.
+ */
+struct TroubleshootingReportDraft: Sendable {
+    var now: Date
+    /// This device and app; it can fail, and then so does the report.
+    var device: @Sendable () throws -> String
+    var printer: SavedPrinter?
+    var connectionLines: [DetailLine]
+    /// `~HI`'s answer; nil until one came.
+    var hostIdLines: [DetailLine]?
+    var hostIdMilliseconds: Int?
+    var detailsError: String?
+    /// A Bluetooth printer's Device Information (empty when not read); nil for a network printer.
+    var deviceInfoLines: [DetailLine]?
+    var asks: [AskResult]
+    var speedSize: AlignmentSize?
+    var speedRows: [SpeedRow]
+    var speedAverage: Double?
+    var cutSendMessage: String?
+    var found: [FoundBluetoothPrinter]?
+    var scanning: Bool
+    var scanMessage: String?
+    var logLines: [TroubleLogLine]
+    var events: [BluetoothLinkEvent]
+
+    /// The report, at most `maxChars` UTF-16 units: past it the oldest log lines are left out (it
+    /// says how many), and a report too long even without them is cut (it says where).
+    func report(maxChars: Int = .max) throws -> TroubleshootingReport {
+        let c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
+        let name = String(format: "printer-report-%04d%02d%02d-%02d%02d%02d.txt",
+                          c.year ?? 0, c.month ?? 0, c.day ?? 0, c.hour ?? 0, c.minute ?? 0, c.second ?? 0)
+        var out: [String] = []
+        out.append("ServerSherpa Kiosk · Printer troubleshooting report")
+        out.append("Generated \(ISO8601DateFormatter().string(from: now)) (\(TimeZone.current.identifier))")
+        out.append(contentsOf: try device().split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+
+        out.append("")
+        out.append("== Saved printer ==")
+        out.append(printer.map(printerSummary) ?? "None set up")
+
+        out.append("")
+        out.append("== Connection ==")
+        out.append(contentsOf: connectionLines.map { "\($0.label): \($0.value)" })
+
+        out.append("")
+        out.append("== Printer details ==")
+        if let hostIdLines {
+            out.append("~HI (\(msText(hostIdMilliseconds)) ms):")
+            out.append(contentsOf: hostIdLines.map { "  \($0.label): \($0.value)" })
+        } else {
+            out.append("~HI: \(detailsError ?? "not asked")")
+        }
+        if let info = deviceInfoLines {
+            out.append(info.isEmpty ? "Device Information: not read (the link hasn't been up to this printer)" : "Device Information:")
+            out.append(contentsOf: info.map { "  \($0.label): \($0.value)" })
+        }
+
+        out.append("")
+        out.append("== Ask the printer (\(asks.count)) ==")
+        for ask in asks {
+            out.append("[\(clockText(ask.at))] \(ask.label) · command \(visibleCommand(ask.command))")
+            out.append("  \(askSizeText(command: ask.command, bytes: ask.bytes, milliseconds: ask.milliseconds))")
+            if let meaning = ask.meaning { out.append("  Meaning: \(meaning)") }
+            if let error = ask.error { out.append("  Error: \(error)") }
+            if !ask.reply.isEmpty {
+                out.append("  Reply:")
+                if asksForASecret(ask.command) {
+                    out.append("    [redacted: the reply to a secret setting]")
+                } else {
+                    for line in ask.shownReply.split(separator: "\n", omittingEmptySubsequences: false) {
+                        out.append("    \(line)")
+                    }
+                }
+            }
+        }
+
+        out.append("")
+        out.append("== Speed test (\(speedRows.count) labels) ==")
+        if let size = speedSize { out.append("Label: \(size.label) at \(size.dpi) dpi") }
+        out.append("run | KB | bytes | seconds | KB/s")
+        for row in speedRows {
+            if let error = row.error {
+                out.append("\(row.run) | \(row.targetKb) | \(row.bytes) | failed: \(error)")
+            } else {
+                out.append("\(row.run) | \(row.targetKb) | \(row.bytes) | \(decimal(row.seconds)) | \(decimal(row.kbPerSecond))")
+            }
+        }
+        if let average = speedAverage {
+            let count = speedRows.compactMap(\.kbPerSecond).count
+            out.append("Average: \(decimal(average)) KB/s over \(count) label\(count == 1 ? "" : "s")")
+        }
+
+        if let message = cutSendMessage {
+            out.append("")
+            out.append("== Cut-send test ==")
+            out.append(message)
+        }
+
+        out.append("")
+        out.append("== Bluetooth scan ==")
+        if let found {
+            out.append("\(found.count) named device\(found.count == 1 ? "" : "s"), strongest first\(scanning ? " (still scanning)" : "")")
+            out.append(contentsOf: found.map { "  \(TroubleshootingModel.scanLine($0))" })
+            if found.contains(where: { !$0.isZebra }) { out.append("Devices that aren't Zebras are listed by signal only.") }
+            if let message = scanMessage { out.append(message) }
+        } else {
+            out.append("Not run")
+        }
+
+        out.append("")
+        out.append("== Log (\(logLines.count) lines; the last \(TroubleshootingModel.LOG_CAP) are kept) and Bluetooth link events "
+                   + "(\(events.count); the last \(ZebraBluetooth.EVENT_CAP) are kept) ==")
+        let merged = (logLines + events.map { TroubleLogLine(at: $0.at, text: "Bluetooth: \($0.text)") })
+            .enumerated()
+            .sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
+            .map(\.element)
+        let head = out.map { redactSecrets($0) }
+        let logs = merged.map { redactSecrets("\(clockText($0.at, millis: true))  \($0.text)") }
+        return TroubleshootingReport(name: name, text: fitReport(head: head, logs: logs, maxChars: maxChars))
+    }
+}
+
+/// `head` and as many of the newest `logs` as fit in `maxChars` UTF-16 units (as Android counts
+/// characters); one line says how many were left out. A head too long on its own is cut, saying
+/// so (never inside a character: one split there would be left out whole).
+private func fitReport(head: [String], logs: [String], maxChars: Int) -> String {
+    let top = head.joined(separator: "\n") + "\n"
+    let all = top + logs.map { $0 + "\n" }.joined()
+    if all.utf16.count <= maxChars { return all }
+    let noteRoom = "(\(logs.count) older log lines left out to fit the share limit)\n".utf16.count
+    var room = maxChars - top.utf16.count - noteRoom
+    var kept = 0
+    for line in logs.reversed() {
+        let length = line.utf16.count + 1
+        if length > room { break }
+        room -= length
+        kept += 1
+    }
+    let text = top + "(\(logs.count - kept) older log lines left out to fit the share limit)\n"
+        + logs.suffix(kept).map { $0 + "\n" }.joined()
+    if text.utf16.count <= maxChars { return text }
+    // The replies alone are too long: cut them, saying so.
+    let cut = "\n(the report was cut here to fit the share limit)\n"
+    return utf16Prefix(text, max(0, maxChars - cut.utf16.count)) + cut
+}
+
+/// The longest start of `text` that is at most `units` UTF-16 units and ends between characters'
+/// scalars (Kotlin's `take` would split a surrogate pair; this leaves the pair out).
+private func utf16Prefix(_ text: String, _ units: Int) -> String {
+    var count = 0
+    var end = text.unicodeScalars.startIndex
+    for index in text.unicodeScalars.indices {
+        let width = text.unicodeScalars[index].utf16.count
+        if count + width > units { break }
+        count += width
+        end = text.unicodeScalars.index(after: index)
+    }
+    return String(text.unicodeScalars[..<end])
+}
+
+/// `report` as `printer-report-<stamp>.txt` in the temporary folder, for Share.
+private func writeReportFile(_ report: TroubleshootingReport) throws -> URL {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("printer-report", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let url = dir.appendingPathComponent(report.name)
+    try Data(report.text.utf8).write(to: url, options: .atomic)
+    return url
+}
+
+/// What the log says about `error`: its kind, and its message only when it is the app's own
+/// printer words (for its cause too): any other message could carry anything.
+private func describe(_ error: Error) -> String {
+    let own = error is PrinterError || error is PrinterNeedsRestart
+    let said = own ? ((error as? LocalizedError)?.errorDescription).map { ": \($0)" } ?? "" : ""
+    var cause = ""
+    if let clear = error as? PrinterClearFailed {
+        let causeSaid = clear.cause is PrinterError ? ((clear.cause as? LocalizedError)?.errorDescription).map { ": \($0)" } ?? "" : ""
+        cause = " (cause \(errorKind(clear.cause))\(causeSaid))"
+    }
+    return errorKind(error) + said + cause
+}
+
+/// `error`'s type name ("PrinterTimeout"): what a failure that isn't the app's own says about itself.
+private func errorKind(_ error: Error) -> String { String(describing: type(of: error)) }
 
 /// A call the tab started: the printer, and the way to it under the lock and the guard.
 private struct Started {
@@ -763,6 +1104,12 @@ private func clockText(_ date: Date, millis: Bool = false) -> String {
 }
 
 private func msText(_ ms: Int?) -> String { ms.map(String.init) ?? "?" }
+
+/// An ask's size and time, for the report and the log: "12 B in 30 ms". The reply to a secret
+/// setting (`asksForASecret`) gives its time only, since its size would give away the secret's length.
+func askSizeText(command: String, bytes: Int, milliseconds: Int?) -> String {
+    asksForASecret(command) ? "\(msText(milliseconds)) ms (size hidden: a secret setting)" : "\(bytes) B in \(msText(milliseconds)) ms"
+}
 
 /// "3.90", or "-" when there's no value.
 private func decimal(_ value: Double?) -> String { value.map { String(format: "%.2f", $0) } ?? "-" }

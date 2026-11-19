@@ -5,6 +5,32 @@ enum CameraPosition: String {
     case back, front
 }
 
+/// Clear Setup memory (Android `SetupClearRecord`), under `ss.kiosk.setupClear` with the web
+/// kiosk's and Android's JSON shape: all three fields are always written.
+struct SetupClearRecord: Codable, Equatable, Sendable {
+    /// The portal's Clear Setup id this kiosk applied.
+    var id: String
+    /// The portal has the acknowledgment: a beat carried it and the reply stopped asking.
+    var acked: Bool
+    /// Kiosk Setup's "An administrator cleared…" banner is up; it goes when setup completes.
+    var notice: Bool
+
+    init(id: String, acked: Bool = false, notice: Bool = false) {
+        self.id = id
+        self.acked = acked
+        self.notice = notice
+    }
+
+    enum CodingKeys: String, CodingKey { case id, acked, notice }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        acked = try c.decodeIfPresent(Bool.self, forKey: .acked) ?? false
+        notice = try c.decodeIfPresent(Bool.self, forKey: .notice) ?? false
+    }
+}
+
 /// Every kiosk-local value the web kiosk kept in localStorage. Keys keep the
 /// web's `ss.kiosk.*` names. Each property is stored (so Observation tracks
 /// it), loaded in `init`, and written back to `defaults` in its `didSet`.
@@ -24,6 +50,8 @@ final class KioskPrefs {
         static let cameraPosition = "ss.kiosk.cameraPosition"
         static let labels = "ss.kiosk.labels"
         static let biometric = "ss.kiosk.biometric"
+        static let setupClear = "ss.kiosk.setupClear"
+        static let signInMethod = "ss.kiosk.signInMethod"
     }
 
     nonisolated static let printerStopsKey = "ss.kiosk.printerStops"
@@ -55,12 +83,28 @@ final class KioskPrefs {
     var portalUrl: String? { didSet { Self.store(portalUrl, Key.portalUrl, defaults) } }
     var kioskName: String? { didSet { Self.store(kioskName, Key.name, defaults) } }
     var cameraPosition: CameraPosition { didSet { defaults.set(cameraPosition.rawValue, forKey: Key.cameraPosition) } }
+    /// How the person signed in here last (Android `ss.kiosk.signInMethod`: password, link or
+    /// biometric), written by each sign-in. A session restored from the cookie is that same
+    /// sign-in, so its sign-in beat reports this. Nil when unknown (never set, or a value this app
+    /// doesn't know): the beat then sends no method rather than a guess.
+    var signInMethod: LoginMethod? { didSet { Self.store(signInMethod?.rawValue, Key.signInMethod, defaults) } }
     /// The saved printer, offsets and peel/tear choice; defaults when nothing (or nothing
     /// readable) is saved. The label kind lives in `setupSelection`.
     private(set) var labels: LabelOptions {
         didSet {
             if let data = try? KioskJSON.encoder.encode(labels), let s = String(data: data, encoding: .utf8) {
                 defaults.set(s, forKey: Key.labels)
+            }
+        }
+    }
+    /// The last Clear Setup applied here; written only through the Clear Setup functions below.
+    /// Unreadable JSON reads as nil.
+    private(set) var setupClear: SetupClearRecord? {
+        didSet {
+            if let setupClear, let data = try? KioskJSON.encoder.encode(setupClear), let s = String(data: data, encoding: .utf8) {
+                defaults.set(s, forKey: Key.setupClear)
+            } else {
+                defaults.removeObject(forKey: Key.setupClear)
             }
         }
     }
@@ -77,6 +121,9 @@ final class KioskPrefs {
         biometric = defaults.string(forKey: Key.biometric)
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? KioskJSON.decoder.decode(BiometricEnrollment.self, from: $0) }
+        setupClear = defaults.string(forKey: Key.setupClear)
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? KioskJSON.decoder.decode(SetupClearRecord.self, from: $0) }
         appearance = parseAppearance(defaults.string(forKey: Key.appearance))
         sound = parseSoundSettings(defaults.string(forKey: Key.sound))
         devMode = defaults.bool(forKey: Key.devMode)
@@ -84,6 +131,7 @@ final class KioskPrefs {
         portalUrl = defaults.string(forKey: Key.portalUrl)
         kioskName = defaults.string(forKey: Key.name)
         cameraPosition = defaults.string(forKey: Key.cameraPosition).flatMap(CameraPosition.init(rawValue:)) ?? .back
+        signInMethod = defaults.string(forKey: Key.signInMethod).flatMap(LoginMethod.init(rawValue:))
         labels = defaults.string(forKey: Key.labels)
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? KioskJSON.decoder.decode(LabelOptions.self, from: $0) } ?? LabelOptions()
@@ -92,6 +140,41 @@ final class KioskPrefs {
             if let v = defaults.string(forKey: id.storageKey) { cps[id.storageKey] = v }
         }
         checkpoints = cps
+    }
+
+    // MARK: Clear Setup
+
+    /// Applies a Clear Setup id not applied before: drops the saved setup, marks setup
+    /// incomplete and raises the notice, in one main-actor step, so nothing ever sees half of
+    /// it. True only the first time for an id.
+    @discardableResult
+    func applySetupClear(_ id: String) -> Bool {
+        guard setupClear?.id != id else { return false }
+        setupSelection = nil
+        setupState = .incomplete
+        setupClear = SetupClearRecord(id: id, acked: false, notice: true)
+        return true
+    }
+
+    /// The applied id the next beat should acknowledge, or nil.
+    func pendingSetupClearAck() -> String? {
+        guard let r = setupClear, !r.acked else { return nil }
+        return r.id
+    }
+
+    /// The ack has landed only when THIS beat carried it (`sentAck`) and its reply stopped
+    /// asking for it (`replyId` is nil or a newer id).
+    func settleSetupClearAck(sentAck: String?, replyId: String?) {
+        guard var r = setupClear, !r.acked, sentAck == r.id, replyId != r.id else { return }
+        r.acked = true
+        setupClear = r
+    }
+
+    /// Kiosk Setup completed: the "An administrator cleared…" banner goes away.
+    func dismissSetupClearNotice() {
+        guard var r = setupClear, r.notice else { return }
+        r.notice = false
+        setupClear = r
     }
 
     /// The stored key, or the id's default when unset or blank.

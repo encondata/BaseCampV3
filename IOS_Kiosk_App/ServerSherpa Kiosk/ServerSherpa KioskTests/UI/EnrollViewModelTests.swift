@@ -115,6 +115,61 @@ struct EnrollViewModelTests {
         #expect(vm.error == "That tag has characters we can't store — letters and numbers only.")
     }
 
+    /// Ruling 13 (the web's gate, Android `submitTagRefusesTheAssetsOwnBarcodeBeforePadding`): an
+    /// asset ID scanned at the tag step gets the barcode sentence, not the letters-and-numbers one
+    /// padding would give "A-1", and nothing reaches the portal.
+    @Test func anAssetIdAtTheTagStepIsRefusedNotPadded() async throws {
+        let vm = try await build()
+        await vm.onScan("A-1")
+        await vm.submitTag("A-1")
+        #expect(vm.error == "That's this asset's own asset ID, not an RFID tag.")
+        await vm.submitTag("a-2")
+        #expect(vm.error == "That's the asset ID for Tagged, not an RFID tag.")
+        #expect(api.calls.filter { $0 == "rfid" }.isEmpty)
+        #expect(vm.asset?.id == "a1")                              // stays on step two
+        #expect(vm.tagValue == "")
+        #expect(try await store.assets().first { $0.id == "a1" }?.rfid == nil)
+    }
+
+    /// "SN1" is letters and numbers, so padding would store it as a tag: the raw check runs first.
+    @Test func aSerialAtTheTagStepIsRefusedNotPadded() async throws {
+        let vm = try await build()
+        await vm.onScan("A-1")
+        vm.setTagValue("SN1")
+        await vm.submitTag("SN1")
+        #expect(vm.error == "That's this asset's own serial, not an RFID tag.")
+        await vm.submitTag(" SN2 ")
+        #expect(vm.error == "That's the serial for Tagged, not an RFID tag.")
+        #expect(api.calls.filter { $0 == "rfid" }.isEmpty)
+        #expect(vm.enrollments.isEmpty)
+        #expect(vm.asset?.id == "a1")
+        #expect(vm.tagValue == "")
+        #expect(try await store.assets().first { $0.id == "a1" }?.rfid == nil)
+    }
+
+    /// The scan path (a camera or keyboard-scanner read at step two) goes through the same gate.
+    @Test func aScannedBarcodeAtTheTagStepIsRefusedToo() async throws {
+        let vm = try await build()
+        await vm.onScan("A-1")
+        await vm.onScan("SN1")
+        #expect(vm.error == "That's this asset's own serial, not an RFID tag.")
+        #expect(vm.asset?.id == "a1")
+        #expect(api.calls.filter { $0 == "rfid" }.isEmpty)
+    }
+
+    /// After a refusal the same asset still takes a real tag, padded as before.
+    @Test func aRealTagStillEnrolls() async throws {
+        let vm = try await build()
+        await vm.onScan("A-1")
+        await vm.submitTag("SN1")
+        #expect(vm.error == "That's this asset's own serial, not an RFID tag.")
+        await vm.submitTag("100349")
+        #expect(api.calls.filter { $0 == "rfid" }.count == 1)
+        #expect(vm.asset == nil)                                   // back to step one
+        #expect(vm.toast == "Enrolled Rack → 100349")
+        #expect(try await store.assets().first { $0.id == "a1" }?.rfid == "000000000000000000100349")
+    }
+
     @Test func everySaveErrorHasItsCopy() {
         #expect(saveErrorText(ApiError(status: 409, code: "rfid_in_use")) == "That tag is already on another asset.")
         #expect(saveErrorText(ApiError(status: 422, code: "bad_rfid")) == "That tag has characters we can't store — letters and numbers only.")

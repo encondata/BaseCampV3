@@ -358,6 +358,22 @@ final class URLSessionKioskApi: KioskApi {
         try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/timeclock/clock-out"), post: body) })
     }
 
+    // MARK: Asset Lookup
+
+    func lookupAssets(serial: String, value: String) async throws -> KioskLookupResult {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/assets/lookup?serial=\(Self.q(serial))&q=\(Self.q(value))")) })
+    }
+
+    func assetDetail(serial: String, assetId: String) async throws -> KioskAssetDetail {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/assets/\(Self.q(assetId))?serial=\(Self.q(serial))")) })
+    }
+
+    func assetScans(serial: String, assetId: String, limit: Int) async throws -> [AssetScanRow] {
+        try Self.parse(await authed {
+            try Self.request(Self.url("\($0)/kiosk/assets/\(Self.q(assetId))/scans?serial=\(Self.q(serial))&limit=\(limit)"))
+        })
+    }
+
     // MARK: Time Clock station
 
     func issueStationKey(serial: String) async throws -> String {

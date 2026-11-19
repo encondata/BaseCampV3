@@ -36,7 +36,7 @@ struct StationApiTests {
         let other = StubServer()
         let url = MutableBox(h.base)
         let station = TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "ios-1" }, apiUrl: { url.value })
-        station.storeKey("k3y")
+        station.storeKey("k3y", issuedBy: h.base)
         let creds = try #require(station.credentials())
         url.value = other.baseURL                              // saved in between
         h.server.enqueue(.json(200, #"{"generated_at":"g","people":[]}"#))

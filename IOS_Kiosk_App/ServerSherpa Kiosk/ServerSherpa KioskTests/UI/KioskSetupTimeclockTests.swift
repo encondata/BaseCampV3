@@ -28,7 +28,7 @@ struct KioskSetupTimeclockTests {
         let store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         sync = Sync(api: api, store: store)
         auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: identity, prefs: prefs)
-        heartbeat = Heartbeat(api: api, identity: identity, version: "1", rawInfo: { [:] })
+        heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: "1", rawInfo: { [:] })
         let identity = self.identity
         station = TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { identity.current.serial }, apiUrl: { TEST_API_URL })
         let options = Self.options
@@ -188,6 +188,65 @@ struct KioskSetupTimeclockTests {
         #expect(!vm.saving)
         #expect(keyStored == nil)
         #expect(prefs.setupSelection?.isTimeclockStation == true)        // the setup itself saved
+        if case .authed = auth.state {} else { Issue.record("signed out on a failed key") }
+    }
+
+    /// A cleared kiosk set up again as a Time Clock station: the banner goes once the setup
+    /// saves (Android), even when the key then fails to arrive.
+    @Test func aTimeClockSetupDismissesTheClearNotice() async {
+        api.stationKeyResult = { _ in throw ApiError(status: 409, code: "setup_clear_pending") }
+        #expect(prefs.applySetupClear("c9"))
+        let vm = makeVM()
+        #expect(vm.showsClearNotice)
+        await vm.load()
+        vm.pickKind(.timeclock); vm.pickNoMove()
+        await vm.finishTimeclock(siteId: nil)
+        #expect(prefs.setupState == .complete)
+        #expect(!vm.showsClearNotice)
+        #expect(prefs.setupClear?.notice == false)
+        #expect(vm.keyError == "setup_clear_pending")
+    }
+
+    /// A Clear Setup that lands while the new station's key is on its way: the wizard starts over,
+    /// the key is dropped (it belongs to a Time Clock station this kiosk no longer is) and the
+    /// person stays signed in to run Kiosk Setup again.
+    @Test func aClearSetupDuringTheKeyIssueDropsTheKeyAndKeepsTheSession() async {
+        let hold = HoldGate()
+        api.stationKeyResult = { _ in await hold.wait(); return "k3y" }
+        let vm = makeVM()
+        await vm.load()
+        vm.pickKind(.timeclock); vm.pickNoMove()
+        let finish = Task { await vm.finishTimeclock(siteId: nil) }
+        #expect(await waitUntil { api.calls.contains("issueStationKey") })
+        #expect(prefs.setupSelection?.isTimeclockStation == true)        // the setup saved first
+        prefs.applySetupClear("clear-1")
+        station.clearKey()                                               // what the container does as the clear lands
+        #expect(await waitUntil { vm.step == .type })                    // the wizard started over
+        await hold.open()
+        await finish.value
+        #expect(keyStored == nil)
+        #expect(!station.hasKey)
+        #expect(vm.step == .type)                                        // not the summary
+        #expect(vm.keyError == nil)
+        #expect(!vm.saving)
+        if case .authed = auth.state {} else { Issue.record("signed out by a setup that was cleared") }
+    }
+
+    /// The same Clear Setup, and the key then fails: no key error is left for the wizard that
+    /// started over.
+    @Test func aClearSetupDuringAFailedKeyIssueLeavesNoKeyError() async {
+        let hold = HoldGate()
+        api.stationKeyResult = { _ in await hold.wait(); throw ApiError(status: 403, code: "not_signed_in_here") }
+        let vm = makeVM()
+        await vm.load()
+        vm.pickKind(.timeclock); vm.pickNoMove()
+        let finish = Task { await vm.finishTimeclock(siteId: nil) }
+        #expect(await waitUntil { api.calls.contains("issueStationKey") })
+        prefs.applySetupClear("clear-1")
+        await hold.open()
+        await finish.value
+        #expect(vm.keyError == nil)
+        #expect(keyStored == nil)
         if case .authed = auth.state {} else { Issue.record("signed out on a failed key") }
     }
 

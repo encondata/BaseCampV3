@@ -13,7 +13,16 @@ struct ServerSherpa_KioskApp: App {
     var body: some Scene {
         WindowGroup {
             if let container {
+                #if DEBUG
+                // `-uiTestAssetLookup <mode>`: Asset Lookup's layout on sample answers (no server).
+                if let sample = AssetLookupSampleMode.fromLaunch {
+                    AssetLookupSampleHost(mode: sample).appContainer(container)
+                } else {
+                    RootView().appContainer(container)
+                }
+                #else
                 RootView().appContainer(container)
+                #endif
             } else {
                 Color.clear
             }

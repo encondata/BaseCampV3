@@ -14,28 +14,38 @@ struct ScanInput<Trailing: View>: View {
     var clearOnSubmit: Bool = true
     /// A screen that keeps the text bumps this to empty the box itself.
     var resetToken: Int = 0
+    /// The box's text when the screen holds it (Asset Lookup puts a missed value back); nil keeps
+    /// it inside the box.
+    var text: Binding<String>?
+    /// With `text`: bump this to select the whole text, so the next scanner burst replaces it
+    /// rather than appending to it (the web's `focusInput(true)`).
+    var selectToken: Int = 0
     let onSubmit: (String) -> Void
     /// Reports every change of the box's text (RFID Enroll previews the padded tag from it).
     var onTextChange: ((String) -> Void)?
     @ViewBuilder let trailing: () -> Trailing
 
-    @State private var text = ""
+    @State private var ownText = ""
     @FocusState private var focused: Bool
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.kioskPalette) private var palette
 
     init(placeholder: String, enabled: Bool = true, keepFocus: Bool = true, clearOnSubmit: Bool = true, resetToken: Int = 0,
+         text: Binding<String>? = nil, selectToken: Int = 0,
          onSubmit: @escaping (String) -> Void, @ViewBuilder trailing: @escaping () -> Trailing) {
         self.placeholder = placeholder
         self.enabled = enabled
         self.keepFocus = keepFocus
         self.clearOnSubmit = clearOnSubmit
         self.resetToken = resetToken
+        self.text = text
+        self.selectToken = selectToken
         self.onSubmit = onSubmit
         self.trailing = trailing
     }
 
     private var wantsFocus: Bool { enabled && keepFocus }
+    private var boxText: Binding<String> { text ?? $ownText }
 
     func onTextChange(_ handler: @escaping (String) -> Void) -> Self {
         var copy = self
@@ -45,7 +55,7 @@ struct ScanInput<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            TextField(placeholder, text: $text)
+            TextField(placeholder, text: boxText)
                 .font(KioskType.bodyLarge)
                 .focused($focused)
                 .textInputAutocapitalization(.never)
@@ -53,11 +63,18 @@ struct ScanInput<Trailing: View>: View {
                 .keyboardType(.asciiCapable)
                 .submitLabel(.done)
                 .disabled(!enabled)
-                .onChange(of: text) { _, new in onTextChange?(new) }
-                .onChange(of: resetToken) { _, _ in text = "" }
+                .onChange(of: boxText.wrappedValue) { _, new in onTextChange?(new) }
+                .onChange(of: resetToken) { _, _ in boxText.wrappedValue = "" }
+                .onChange(of: selectToken) { _, _ in
+                    guard wantsFocus else { return }
+                    focused = true
+                    // UIKit's select-all on the focused field, once the new text is in it. (A SwiftUI
+                    // selection binding goes stale when the text changes under it, and traps.)
+                    DispatchQueue.main.async { if focused { FirstResponder.selectAll() } }
+                }
                 .onSubmit {
-                    let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if clearOnSubmit { text = "" }
+                    let value = boxText.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if clearOnSubmit { boxText.wrappedValue = "" }
                     if !value.isEmpty { onSubmit(value) }
                     if wantsFocus { focused = true }
                 }
@@ -117,6 +134,11 @@ enum FirstResponder {
     }
 
     fileprivate static func capture(_ responder: UIResponder) { found = responder }
+
+    /// Selects all of the focused field's text, so the next typing replaces it.
+    static func selectAll() {
+        UIApplication.shared.sendAction(#selector(UIResponder.selectAll(_:)), to: nil, from: nil, for: nil)
+    }
 }
 
 extension UIResponder {

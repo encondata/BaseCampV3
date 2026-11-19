@@ -148,21 +148,9 @@ struct RolodexStatusChip: View {
     let label: String
     let color: String?
     var dot = true
-    @Environment(\.kioskPalette) private var palette
 
     var body: some View {
-        let tint = rolodexColor(color) ?? rolodexStatusTone(key).text
-        HStack(spacing: 6) {
-            if dot { Circle().fill(tint).frame(width: 6, height: 6) }
-            Text(label.isEmpty ? key.capitalized : label)
-                .font(KioskType.sans(12, .semibold))
-                .foregroundStyle(palette.isDark ? palette.text : tint)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 9).padding(.vertical, 3)
-        .background(tint.opacity(0.12), in: Capsule())
-        .overlay(Capsule().stroke(tint.opacity(0.35), lineWidth: 1))
-        .fixedSize()
+        ColorChip(text: label.isEmpty ? key.capitalized : label, color: hexColor(color) ?? rolodexStatusTone(key).text, dot: dot)
     }
 }
 
@@ -176,10 +164,3 @@ func rolodexStatusTone(_ key: String) -> ChipTone {
     }
 }
 
-/// `#rrggbb` (the server's status and level colors); nil for anything else.
-func rolodexColor(_ hex: String?) -> Color? {
-    guard var text = hex?.trimmingCharacters(in: .whitespaces) else { return nil }
-    if text.hasPrefix("#") { text.removeFirst() }
-    guard text.count == 6, text.allSatisfy(\.isHexDigit), let value = UInt32(text, radix: 16) else { return nil }
-    return Color(hex: value)
-}

@@ -92,7 +92,7 @@ final class AppContainer {
         let stationKeys = StationKeyStore(secrets: secrets)
         let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
         let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs, station: station)
-        let heartbeat = Heartbeat(api: api, identity: identity, version: config.kioskVersion)
+        let heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: config.kioskVersion)
         let store = KioskStore(modelContainer: modelContainer)
 
         self.prefs = prefs
@@ -179,6 +179,7 @@ final class AppContainer {
         }
         // A session that ended while the app was closed takes the Rolodex's offline copy with it.
         auth.onRestoreFailed = { rolodex.clear() }
+        Self.dropStationKeyOnSetupClear(heartbeat: heartbeat, station: station)
         Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
         Self.followSavedPrinter(settings: labelSettings, bluetooth: bluetooth)
     }
@@ -213,6 +214,12 @@ final class AppContainer {
                 if let adopted = adoptingLinkedIdentifier(now.printer, linked: now.link) { settings.setPrinter(adopted) }
             }
         }
+    }
+
+    /// Clear Setup from the portal revokes a Time Clock station's key there, so it goes here too,
+    /// the moment the heartbeat applies the clear (the setup itself goes in `applySetupClear`).
+    static func dropStationKeyOnSetupClear(heartbeat: Heartbeat, station: TimeclockStation) {
+        heartbeat.onSetupCleared = { _ in station.clearKey() }
     }
 
     /// The saved setup selection's move or site changing (Kiosk Setup saving another one, a

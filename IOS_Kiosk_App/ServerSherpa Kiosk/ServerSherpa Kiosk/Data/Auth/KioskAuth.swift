@@ -31,12 +31,11 @@ final class KioskAuth {
 
     private(set) var state: AuthState = .loading
 
-    /// Set only by login()/moveLogin()/completePair(), never by a cookie restore,
-    /// so the API can auto-register the kiosk and record how the person signed in.
+    /// Set only by login()/moveLogin()/completePair()/signInWithBiometric(), never by a cookie
+    /// restore, so the API can auto-register the kiosk and record how the person signed in. Each
+    /// of them also records the method in `KioskPrefs.signInMethod`, which outlives a relaunch: a
+    /// restored session's sign-in beat (a station key's retry) reports the same method.
     @ObservationIgnored private var pendingSignIn: LoginMethod?
-    /// How the person signed in on this kiosk (nil after a cookie restore): a later sign-in beat
-    /// (Kiosk Setup's station key retry) reports the same method.
-    @ObservationIgnored private(set) var lastSignIn: LoginMethod?
     /// The live session's sign-in: login() records the typed email. Move logins, pairs and cookie
     /// restores leave it nil, and so do logout and endSession.
     private(set) var currentSignIn: CurrentSignIn?
@@ -78,8 +77,7 @@ final class KioskAuth {
 
     func login(email: String, password: String) async throws {
         let data = try await api.login(email: email, password: password)
-        pendingSignIn = .password
-        lastSignIn = .password
+        recordSignIn(.password)
         currentSignIn = CurrentSignIn(method: .password, email: email)
         apply(data)
     }
@@ -88,8 +86,7 @@ final class KioskAuth {
     /// sign-in (no current sign-in, so nothing offers enrollment from it).
     func moveLogin(password: String) async throws {
         let data = try await api.moveLogin(password: password)
-        pendingSignIn = .password
-        lastSignIn = .password
+        recordSignIn(.password)
         currentSignIn = nil
         apply(data)
     }
@@ -98,16 +95,14 @@ final class KioskAuth {
     /// refresh cookie, then sign in.
     func completePair(_ data: SessionData, cookie: PairCookie? = nil) async {
         await refresher.adopt(data, cookie: cookie)
-        pendingSignIn = .link
-        lastSignIn = .link
+        recordSignIn(.link)
         currentSignIn = nil
         apply(data)
     }
 
     /// A biometric sign-in: the API layer already stored the session and refresh cookie.
     func signInWithBiometric(_ data: SessionData) {
-        pendingSignIn = .biometric
-        lastSignIn = .biometric
+        recordSignIn(.biometric)
         currentSignIn = CurrentSignIn(method: .biometric, email: nil)
         apply(data)
     }
@@ -136,6 +131,14 @@ final class KioskAuth {
         state = .anon
     }
 
+    #if DEBUG
+    /// Debug builds only (`-uiTestAssetLookup`): shows `session` as signed in, for the shell's
+    /// layout on sample data. Nothing is stored, nothing is sent, and nothing else is applied.
+    func showSampleSessionForUITest(_ session: SessionData) {
+        state = .authed(session)
+    }
+    #endif
+
     func can(_ resource: String, _ action: String) -> Bool {
         guard case .authed(let s) = state else { return computeCan(nil, resource, action) }
         return computeCan(s.perms, resource, action)
@@ -152,6 +155,12 @@ final class KioskAuth {
     func takePendingSignIn() -> LoginMethod? {
         defer { pendingSignIn = nil }
         return pendingSignIn
+    }
+
+    /// A sign-in made here (not a restore): pending for the heartbeat, and kept across launches.
+    private func recordSignIn(_ method: LoginMethod) {
+        pendingSignIn = method
+        prefs.signInMethod = method
     }
 
     /// Enters `.authed`. A move session for a different initiative than the

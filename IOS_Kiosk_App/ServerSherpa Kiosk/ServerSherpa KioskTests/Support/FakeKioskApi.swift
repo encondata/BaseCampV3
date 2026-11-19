@@ -39,11 +39,23 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var imageGate: (@Sendable (String) async -> Void)?
     var pollGate: (@Sendable () async -> Void)?
     var signOutGate: (@Sendable () async -> Void)?
+    /// When set, `heartbeat` awaits this after the server's answer is made and before handing it
+    /// back (an answer held on its way to the kiosk).
+    var heartbeatGate: (@Sendable () async -> Void)?
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var imageResult: @Sendable (String) throws -> Data = { _ in throw unset }
     var stationKeyResult: @Sendable (String) async throws -> String = { _ in throw unset }
+
+    // Asset Lookup. Unset, each throws Android's fake answer (404 not_found). Their calls are
+    // recorded as "lookupAssets:<value>", "assetDetail:<id>" and "assetScans:<id>" (as Android's).
+    var lookupAssetsResult: @Sendable (String, String) async throws -> KioskLookupResult = { _, _ in throw ApiError(status: 404, code: "not_found") }
+    var assetDetailResult: @Sendable (String, String) async throws -> KioskAssetDetail = { _, _ in throw ApiError(status: 404, code: "not_found") }
+    var assetScansResult: @Sendable (String, String, Int) async throws -> [AssetScanRow] = { _, _, _ in throw ApiError(status: 404, code: "not_found") }
+    /// When set, every Asset Lookup call awaits this (with its recorded name) before answering:
+    /// holds a lookup, open or scan-history read in flight.
+    var lookupGate: (@Sendable (String) async -> Void)?
 
     // Rolodex. Options default to empty and duplicates to no matches; the rest throw `unset`.
     var rolodexWorkersResult: @Sendable () async throws -> RolodexList = { throw unset }
@@ -80,6 +92,9 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
 
     var calls: [String] { lock.lock(); defer { lock.unlock() }; return _calls }
     var heartbeats: [HeartbeatIn] { lock.lock(); defer { lock.unlock() }; return _heartbeats }
+    /// Heartbeat answers handed back to the caller (answered or thrown).
+    var heartbeatsAnswered: Int { lock.lock(); defer { lock.unlock() }; return _heartbeatsAnswered }
+    private var _heartbeatsAnswered = 0
     /// Every body `postScans` was called with, in order.
     var scanBatches: [KioskScanBatchIn] { lock.lock(); defer { lock.unlock() }; return _scanBatches }
 
@@ -113,7 +128,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func pollPair(code: String, pollToken: String) async throws -> PairPoll { record("poll"); await pollGate?(); return try pollResult() }
     func heartbeat(_ body: HeartbeatIn) async throws -> HeartbeatResult {
         lock.lock(); _calls.append("heartbeat"); _heartbeats.append(body); lock.unlock()
-        return try heartbeatResult(body)
+        let answer = Result { try heartbeatResult(body) }
+        await heartbeatGate?()
+        lock.withLock { _heartbeatsAnswered += 1 }
+        return try answer.get()
     }
     func signOut(serial: String, credentials: SignOutCredentials) async { record("signOut"); await signOutGate?() }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
@@ -147,6 +165,18 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); await clockInGate?(); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
     func issueStationKey(serial: String) async throws -> String { record("issueStationKey"); return try await stationKeyResult(serial) }
+    func lookupAssets(serial: String, value: String) async throws -> KioskLookupResult {
+        let name = "lookupAssets:\(value)"
+        record(name); await lookupGate?(name); return try await lookupAssetsResult(serial, value)
+    }
+    func assetDetail(serial: String, assetId: String) async throws -> KioskAssetDetail {
+        let name = "assetDetail:\(assetId)"
+        record(name); await lookupGate?(name); return try await assetDetailResult(serial, assetId)
+    }
+    func assetScans(serial: String, assetId: String, limit: Int) async throws -> [AssetScanRow] {
+        let name = "assetScans:\(assetId)"
+        record(name); await lookupGate?(name); return try await assetScansResult(serial, assetId, limit)
+    }
     func rolodexWorkers() async throws -> RolodexList {
         record("rolodexWorkers"); await rolodexGate?("rolodexWorkers"); return try await rolodexWorkersResult()
     }
@@ -225,10 +255,11 @@ final class FakeRefresher: SessionRefresher, @unchecked Sendable {
     func emitSessionEnded() { continuation.yield() }
 }
 
-func fakeSession(roles: [String] = ["worker"], maxRank: Int = 20, mustChange: Bool = false, kioskMove: KioskMove? = nil) -> SessionData {
+func fakeSession(roles: [String] = ["worker"], maxRank: Int = 20, mustChange: Bool = false, kioskMove: KioskMove? = nil,
+                 personId: String = "p1") -> SessionData {
     SessionData(
         accessToken: "tok", expiresIn: 900, sessionExpiresAt: "2026-09-16T00:00:00Z",
-        person: PersonOut(id: "p1", firstName: "Tina", lastName: "T", displayName: "Tina T"),
+        person: PersonOut(id: personId, firstName: "Tina", lastName: "T", displayName: "Tina T"),
         roles: roles, mustChangePassword: mustChange, perms: ["kiosk": ["view": true]], maxRank: maxRank, kioskMove: kioskMove
     )
 }

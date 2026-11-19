@@ -24,6 +24,14 @@ enum EnrollTagIssue: Sendable {
     case tagUsedThisSession
     /// The synced roster says the tag belongs to another asset.
     case tagOnAnotherAsset
+    /// The value scanned as a tag is this asset's own asset ID (its barcode label).
+    case ownAssetId
+    /// The value scanned as a tag is this asset's own serial.
+    case ownSerial
+    /// The value scanned as a tag is another asset's asset ID.
+    case otherAssetId
+    /// The value scanned as a tag is another asset's serial.
+    case otherSerial
 }
 
 struct EnrollTagVerdict: Equatable, Sendable {
@@ -37,7 +45,32 @@ func enrollTagText(_ verdict: EnrollTagVerdict) -> String {
     case .sameTagOnThisAsset: return "That tag is already on this asset."
     case .tagUsedThisSession: return "You just enrolled that tag on \(holder). Scan a different tag."
     case .tagOnAnotherAsset: return "That tag is on \(holder). Scan a different tag."
+    // The web kiosk's words (Android SledWords: plain text, no sled involved).
+    case .ownAssetId: return "That's this asset's own asset ID, not an RFID tag."
+    case .ownSerial: return "That's this asset's own serial, not an RFID tag."
+    case .otherAssetId: return "That's the asset ID for \(holder), not an RFID tag."
+    case .otherSerial: return "That's the serial for \(holder), not an RFID tag."
     }
+}
+
+/// The web kiosk's first check (`kiosk/src/lib/enrollGate.ts`, ruling 13): a value scanned at
+/// the tag step that is a roster asset's asset ID or serial is a barcode, not a tag. Checked on
+/// the raw value, before padding, as the web does. Nil when there is no roster (`index` nil) or
+/// no match; else the match, as this asset's own or another's (holder: its name, else its asset
+/// ID). `checkEnrollTag` runs after this, on the padded tag.
+func checkEnrollRaw<A: ScanAsset>(index: ScanIndex<A>?, target: A, raw: String) -> EnrollTagVerdict? {
+    guard let index, let hit = matchAssetOrSerial(index, raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+    let own = hit.asset.id == target.id
+    let issue: EnrollTagIssue = switch hit.kind {
+    case .serial: own ? .ownSerial : .otherSerial
+    case .assetId, .rfid: own ? .ownAssetId : .otherAssetId
+    }
+    return EnrollTagVerdict(issue: issue, holder: own ? nil : nonBlank(hit.asset.name) ?? nonBlank(hit.asset.assetId))
+}
+
+private func nonBlank(_ value: String?) -> String? {
+    guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return value
 }
 
 /// What this session already did to an asset, if anything.

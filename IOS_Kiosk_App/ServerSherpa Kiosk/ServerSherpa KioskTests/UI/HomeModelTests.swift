@@ -58,9 +58,24 @@ struct HomeModelTests {
     @Test func adminsSeeTheRolodexTile() {
         #expect(homeTiles(setupState: .incomplete, devMode: false, isAdmin: true).map(\.feature.id) == [.setup, .rolodex, .settings])
         #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: true).map(\.feature.id)
-                == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
+                == [.setup, .scan, .enroll, .containers, .trucks, .lookup, .labels, .timeclock, .rolodex, .settings])
         #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: false).map(\.feature.id) == FEATURES.map(\.id))
         #expect(homeTiles(setupState: .complete, devMode: false, stationType: "timeclock", isAdmin: true).count == 3)
+    }
+
+    /// Asset Lookup is a move tile: hidden until Kiosk Setup is done (iOS's Home rule), then after
+    /// Trucks for everyone; developer mode shows it; a Time Clock station's Home never does.
+    @Test func lookupTileShowsOnlyOnceSetupIsDone() {
+        for admin in [false, true] {
+            #expect(!homeTiles(setupState: .incomplete, devMode: false, isAdmin: admin).map(\.feature.id).contains(.lookup))
+            #expect(!homeTiles(setupState: .failed, devMode: false, isAdmin: admin).map(\.feature.id).contains(.lookup))
+            let done = homeTiles(setupState: .complete, devMode: false, isAdmin: admin).map(\.feature.id)
+            #expect(done.firstIndex(of: .lookup) == done.firstIndex(of: .trucks).map { $0 + 1 })
+        }
+        #expect(homeTiles(setupState: .incomplete, devMode: true).map(\.feature.id).contains(.lookup))
+        #expect(!homeTiles(setupState: .complete, devMode: false, stationType: "timeclock", isAdmin: true)
+            .map(\.feature.id).contains(.lookup))
+        #expect(Route.forFeature(.lookup) == .lookup)
     }
 
     @Test func routesMapFromFeatures() {

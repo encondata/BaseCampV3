@@ -38,6 +38,8 @@ private struct KioskSetupBody: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 PageHeader(eyebrow: "Kiosk · Setup", title: "Kiosk setup")
+                // Raised when a Clear Setup from the portal is applied; it goes when setup completes.
+                if vm.showsClearNotice { KioskToast(text: KioskSetupViewModel.clearNotice) }
                 if vm.step == .summary { summary } else { wizard }
             }
             .padding(16)
