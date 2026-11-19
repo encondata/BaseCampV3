@@ -245,6 +245,18 @@ it('an asset scan resolves through to its container and says so on the row', asy
   expect(await screen.findByText('via asset Rack 4 switch')).toBeTruthy();
 });
 
+it("an asset's tag read without its padding sends the asset's stored tag", async () => {
+  await replaceAll('assets', [{ ...SWITCH, rfid: '0'.repeat(20) + 'BEEF' }, LOOSE]);
+  render_();
+  await pickTruck('TRUCK-1');
+  await scan('BEEF');
+
+  await waitFor(() => expect(api.postTruckContainer).toHaveBeenCalledTimes(1));
+  expect(api.postTruckContainer.mock.calls[0][0]).toMatchObject({
+    container_id: 'c-1', scanned_value: '0'.repeat(20) + 'BEEF', scan_type: 'rfid',
+  });
+});
+
 it('an asset in no container is refused on the kiosk, and nothing is sent', async () => {
   render_();
   await pickTruck('TRUCK-1');
@@ -276,8 +288,9 @@ it('a moved_from answer shows the note on that row', async () => {
   await scan('100348');                     // the crate's tag without its padding
 
   expect(await screen.findByText('moved from TRUCK-2')).toBeTruthy();
+  // The crate's stored tag goes out, not the short form read: the server's RFID match is exact.
   expect(api.postTruckContainer.mock.calls[0][0]).toMatchObject({
-    container_id: 'c-1', scan_type: 'rfid',
+    container_id: 'c-1', scanned_value: '0'.repeat(18) + '100348', scan_type: 'rfid',
   });
 });
 

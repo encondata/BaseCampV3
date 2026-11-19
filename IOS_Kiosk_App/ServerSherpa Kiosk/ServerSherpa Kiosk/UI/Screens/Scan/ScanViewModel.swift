@@ -126,7 +126,7 @@ final class ScanViewModel {
             sound?.play(.notFound)
         }
         await outbox.enqueue(EnqueueInput(
-            scannedValue: value, scanType: hit.map { scanTypeFor($0.kind) } ?? "barcode",
+            scannedValue: hit.map { sentScanValue($0, value) } ?? value, scanType: hit.map { scanTypeFor($0.kind) } ?? "barcode",
             asset: hit?.asset.outboxAsset, siteId: sel.siteId, initiativeId: sel.initiativeId, scanStatus: sel.scanStatus))
     }
 

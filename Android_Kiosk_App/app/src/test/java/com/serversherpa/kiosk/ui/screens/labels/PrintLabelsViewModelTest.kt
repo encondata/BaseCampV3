@@ -158,6 +158,16 @@ class PrintLabelsViewModelTest {
         return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync, started, failWith)
     }
 
+    @Test fun aLabelFoundByItsTagValueRecordsTheStoredTagAsAnRfidScan() = runTest {
+        // Sent as a barcode "100348", the portal matched another asset whose asset ID is 100348.
+        val h = harness("p-tag")
+        h.vm.onScan("100348"); settle()
+        assertEquals(1, h.sent.size)
+        val row = h.outbox.snapshot.value.rows.single()
+        assertEquals("000000000000000000100348", row.scannedValue); assertEquals("rfid", row.scanType)
+        assertEquals("labeled", row.scanStatus); assertEquals("a1", row.asset?.id)
+    }
+
     @Test fun aScannedAssetIdPrintsItsStoredLabelWithTheSendSettingsAndRecordsOneLabeledScan() = runTest {
         val h = harness("p1")
         h.vm.onScan("a-1"); settle()
