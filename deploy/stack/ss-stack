@@ -17,7 +17,18 @@
 #   ss-stack admin   <env-dir> <args…>      serversherpa bootstrap-admin in the running api
 #                                           container; stdin (a password) passes through
 #   ss-stack seed    <env-dir> [--learning] starter content in the running api container: label
-#                                           fonts and templates (--learning: the Learning space too)
+#                                           fonts and templates, and the Learning space when learn runs
+#   ss-stack has-data <env-dir> [--server]  exit 0: this host's database has ServerSherpa's tables;
+#                                           3: no data yet; 4: the database is shared or elsewhere
+#                                           (--server: a data VM answers 0 or 3 for its own database)
+#   ss-stack accepts <env-dir> <file>       exit 0 when this commit can run a database at the
+#                                           revision in <file> (up migrates it); 3 when it can't
+#   ss-stack verify-dump <env-dir> <file>   check that <file> is a complete pg_dump archive
+#   ss-stack clear-sessions <env-dir>       sign everyone out (a copy's sessions belong to its source)
+#   ss-stack export-objects <env-dir> <out.tar>
+#                                           every object of the bucket into one tar (deploy/stack/objects.py)
+#   ss-stack import-objects <env-dir> <in.tar>
+#                                           put a tar's objects into the bucket (same keys replaced)
 #
 # <env-dir> holds the environment's .env (see env.example) and backups/.
 # With STACK_EXTERNAL_DATA=1 (DigitalOcean) the database is a managed
@@ -25,7 +36,10 @@
 # stacks don't run (mailpit does), and the database commands use one-off
 # postgres containers. With STACK_CADDY=1 the proxy stack (Caddy) runs last.
 # With STACK_DB_PUBLISH=1 (a LAN Blue/Green data VM) the db stack listens on
-# the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here).
+# the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here), and
+# the data VM runs only the db and storage stacks: down, ps and restore leave
+# api, web, devices and status alone, so a data VM's .env may leave the app secrets
+# (SS_JWT_SECRET and the rest) empty, as Slipway's data server does.
 # STACK_DB_SSLMODE=disable: the external database is a LAN data VM (no TLS).
 # STACK_APPS lists the optional apps that run (wiki, kiosk, learn, status, devices,
 # mailpit; "none" for none); without it every app runs, devices only once its
@@ -33,7 +47,8 @@
 # wiki (its documents render there). The devices service gets its own
 # database, serversherpa_devices, created on the environment's database
 # server the first time it runs.
-# Sirdar's deploy pipeline runs exactly these commands over SSH.
+# Slipway (slipway.yml) and Sirdar's deploy pipeline run exactly these
+# commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
 umask 077
@@ -50,7 +65,8 @@ cleanup() { if (( ${#CLEANUP[@]} )); then rm -f -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '6,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+# The usage text is the header's command list: from line 6 to the first bare "#".
+usage() { sed -n '6,/^#$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -225,8 +241,23 @@ if external && [[ -z $(env_value SPACES_SECRET_KEY) ]]; then
   export SPACES_SECRET_KEY=unused-external-data
 fi
 
-if external; then STACKS=(storage api web devices status); else STACKS=(db storage api web devices status); fi
+# A data VM (STACK_DB_PUBLISH=1) runs only the database and the object store:
+# its app servers are other hosts, and the api and web compose files refuse
+# the empty app secrets its .env may have (${SS_JWT_SECRET:?} and others).
+if external; then
+  STACKS=(storage api web devices status)
+elif lan_db; then
+  STACKS=(db storage)
+else
+  STACKS=(db storage api web devices status)
+fi
 if caddy; then STACKS+=(proxy); fi
+# Whether a stack is one of this host's STACKS.
+in_stacks() {
+  local s
+  for s in "${STACKS[@]}"; do [[ $s == "$1" ]] && return 0; done
+  return 1
+}
 
 dc() {  # dc <stack> <compose args…>
   local stack=$1; shift
@@ -382,6 +413,60 @@ dump_db() {
   fi
 }
 
+# objects.py (export or import) in a one-off container of this release's api
+# image, which has boto3, on the environment's network. It reaches the
+# bucket the API uses: the bucket at SS_SPACES_ENDPOINT when the .env names
+# one (Spaces on a droplet, or a data VM's SeaweedFS), else this host's
+# SeaweedFS. Only the file's folder is mounted (read-only for an import),
+# and the container runs as this user, so an owner-only folder is still
+# readable. Every S3 setting reaches docker through the environment: argv
+# holds names only, never the key or the secret.
+objects_run() {  # objects_run export|import <file>
+  local action=$1 file=$2 dir name endpoint key secret bucket region style tag image ro=""
+  dir=$(cd "$(dirname "$file")" 2>/dev/null && pwd) || die "no such folder: $(dirname "$file")"
+  name=$(basename "$file")
+  endpoint=$(env_value SS_SPACES_ENDPOINT)
+  if [[ -n $endpoint ]]; then
+    key=$(env_value SS_SPACES_ACCESS_KEY)
+    key=${key:-serversherpa}
+    secret=$(env_value SS_SPACES_SECRET_KEY)
+    [[ -n $secret ]] || secret=$(env_value SPACES_SECRET_KEY)
+  elif external; then
+    die "STACK_EXTERNAL_DATA=1 keeps the objects in the bucket at SS_SPACES_ENDPOINT, which isn't set"
+  else
+    # SeaweedFS's fixed key (storage/compose.yml)
+    endpoint=http://seaweedfs:8333
+    key=serversherpa
+    secret=$(env_value SPACES_SECRET_KEY)
+  fi
+  [[ -n $secret ]] || die "no secret key for the object store (SS_SPACES_SECRET_KEY or SPACES_SECRET_KEY)"
+  bucket=$(env_value SS_SPACES_BUCKET)
+  region=$(env_value SS_SPACES_REGION)
+  style=$(env_value SS_SPACES_USE_PATH_STYLE)
+  tag=$(env_value STACK_IMAGE_TAG)
+  [[ -n $tag ]] || die "STACK_IMAGE_TAG isn't set, so there is no api image to run"
+  image=$(env_value STACK_API_IMAGE)
+  image="${image:-serversherpa-api}:$tag"
+  if [[ $action == import ]]; then ro=":ro"; fi
+  ensure_network
+  SS_OBJECTS_ENDPOINT=$endpoint SS_OBJECTS_KEY_ID=$key SS_OBJECTS_SECRET=$secret \
+  SS_OBJECTS_BUCKET=${bucket:-serversherpa} SS_OBJECTS_REGION=${region:-us-east-1} \
+  SS_OBJECTS_PATH_STYLE=${style:-true} \
+    docker run --rm --network "$NETWORK" --user "$(id -u):$(id -g)" -e HOME=/tmp \
+      -e SS_OBJECTS_ENDPOINT -e SS_OBJECTS_KEY_ID -e SS_OBJECTS_SECRET -e SS_OBJECTS_BUCKET \
+      -e SS_OBJECTS_REGION -e SS_OBJECTS_PATH_STYLE \
+      -v "$STACK_DIR/objects.py:/objects.py:ro" -v "$dir:/work$ro" \
+      "$image" python /objects.py "$action" "/work/$name" </dev/null
+}
+
+# Leading and trailing blanks (a newline after a revision) dropped.
+trim() {
+  local v=$1
+  v=${v#"${v%%[![:space:]]*}"}
+  v=${v%"${v##*[![:space:]]}"}
+  printf '%s' "$v"
+}
+
 case $cmd in
   build)
     [[ $# -eq 0 ]] || usage
@@ -464,11 +549,15 @@ case $cmd in
     ensure_network
     # nothing may write while the database is replaced: stop the writers
     # (stopping a stack that isn't running is a no-op), keep the database up.
-    # This stops writers only on this droplet (this host). On DigitalOcean
-    # two slots share one managed database, so Sirdar (phase 7b) restores
-    # only while no slot has run a deploy (pipeline: seed_not_allowed; an
-    # added slot's first deploy never seeds): no other slot is writing.
-    for s in status web api; do dc "$s" stop </dev/null; done
+    # This stops writers only on this host, and only the app stacks it runs
+    # (STACKS): a data VM runs none, so it stops nothing here. Its writers are
+    # the app servers elsewhere, which Slipway stops before a restore. On
+    # DigitalOcean two slots share one managed database, so Sirdar (phase 7b)
+    # restores only while no slot has run a deploy (pipeline: seed_not_allowed;
+    # an added slot's first deploy never seeds): no other slot is writing.
+    for s in status web api; do
+      if in_stacks "$s"; then dc "$s" stop </dev/null; fi
+    done
     if ! external; then dc db up -d "${WAIT[@]}" </dev/null; fi
     # an empty schema, never pg_restore --clean: tables a newer migration
     # created aren't in the dump, and --clean would leave them behind
@@ -553,15 +642,139 @@ case $cmd in
     dc api exec -T api serversherpa bootstrap-admin "$@"
     ;;
   seed)
-    # Starter content (Sirdar's step 20): label fonts and templates and, with
-    # --learning, the wiki Learning space. Each command is idempotent; the
-    # first that fails stops here with its exit code.
+    # Starter content (Sirdar's step 20; Slipway's commands.seed): label fonts
+    # and templates and the wiki Learning space, which is seeded when the
+    # learning site runs (STACK_APPS lists learn, or every app runs) or with
+    # --learning. Each command is idempotent; the first that fails stops here
+    # with its exit code.
     learning=0
     if [[ ${1:-} == --learning ]]; then learning=1; shift; fi
     [[ $# -eq 0 ]] || usage
+    if app_on learn; then learning=1; fi
     dc api exec -T api serversherpa seed-label-fonts
     dc api exec -T api serversherpa seed-label-templates
     if (( learning )); then dc api exec -T api serversherpa learning-seed; fi
+    ;;
+  has-data)
+    # Whether this environment already has data (Slipway's commands.has_data,
+    # asked before a backup, a reset or seeding a new instance):
+    #   0  this host's database has ServerSherpa's tables
+    #   3  no data yet: no database volume, or a database with no tables
+    #   4  the database isn't this host's alone: a managed or LAN data VM
+    #      database (STACK_EXTERNAL_DATA, STACK_DB_HOST), or this host is a
+    #      data VM that app servers elsewhere write to (STACK_DB_PUBLISH).
+    #      Slipway still backs it up but won't restore over or reset it.
+    # --server: this host is the data server of a Slipway environment
+    # (slipway.yml's data.server.commands.has_data), which stops the app
+    # servers itself before it restores or resets. A data VM then answers 0
+    # or 3 for its own database instead of 4. Without --server a data VM still
+    # answers 4, so a single instance on a hand-made data VM never restores
+    # over the app servers' database. --server changes nothing else: a
+    # database outside this host is still 4.
+    # Docker or Postgres not answering is an error (exit 1), never "no data".
+    server=""
+    if [[ ${1:-} == --server ]]; then server=1; shift; fi
+    [[ $# -eq 0 ]] || usage
+    if external || [[ -n $(env_value STACK_DB_HOST) ]]; then
+      echo "The database is outside this host (STACK_EXTERNAL_DATA or STACK_DB_HOST is set)."
+      exit 4
+    fi
+    if lan_db && [[ -z $server ]]; then
+      echo "This host is a data VM: app servers on other hosts use its database (STACK_DB_PUBLISH=1)."
+      exit 4
+    fi
+    volume="ss-$STACK_ENV-db_pgdata"
+    volumes=$(docker volume ls -q </dev/null) || die "couldn't list Docker's volumes (is Docker running?)"
+    if ! grep -Fxq -- "$volume" <<<"$volumes"; then
+      echo "No data yet: there is no volume $volume."
+      exit 3
+    fi
+    # The volume is there: start its database (never anything else) and ask it.
+    # A data VM's database starts with db/lan.yml, which mounts pg_hba.conf:
+    # write it first (as data does), so a new environment folder over an old
+    # volume never mounts a missing file.
+    if lan_db; then write_hba; fi
+    ensure_network
+    dc db up -d "${WAIT[@]}" </dev/null
+    tables=$(pg_local psql -v ON_ERROR_STOP=1 -tAc \
+      "SELECT to_regclass('public.alembic_version') IS NOT NULL" </dev/null) \
+      || die "couldn't ask the database in $volume whether it has tables"
+    if [[ $(trim "$tables") == t ]]; then
+      echo "The database in $volume has ServerSherpa's tables."
+      exit 0
+    fi
+    echo "No data yet: the database in $volume has no tables."
+    exit 3
+    ;;
+  accepts)
+    # Whether this commit can run a database at the revision in <file> (one
+    # line, as ss-stack revision prints it; Slipway's commands.accepts):
+    # 0 when this commit has that migration (up then migrates the data
+    # forward), 3 when it doesn't, with the reason on the last line. This is
+    # a membership test, not "<= the newest": a dump from another branch has
+    # a number this commit may have no migration for. Needs no database.
+    [[ $# -eq 1 ]] || usage
+    [[ -f $1 && -r $1 ]] || die "no such revision file: $1"
+    versions="$STACK_DIR/../../api/migrations/versions"
+    [[ -d $versions ]] || die "this checkout has no api/migrations/versions"
+    rev=$(trim "$(head -c 200 -- "$1")")
+    if [[ ! $rev =~ ^[0-9]{1,8}$ ]]; then
+      shown=$(printf '%s' "$rev" | LC_ALL=C tr -c 'A-Za-z0-9._-' '?' | cut -c 1-40)
+      echo "'$shown' isn't a ServerSherpa migration number"
+      exit 3
+    fi
+    if compgen -G "$versions/${rev}_*.py" >/dev/null; then
+      echo "This commit has migration $rev."
+      exit 0
+    fi
+    echo "This commit has no migration $rev: the data is newer than this commit, or from another branch; deploy a commit that has it"
+    exit 3
+    ;;
+  verify-dump)
+    # Whether <file> is a complete pg_dump custom-format archive (Slipway's
+    # commands.verify_dump). pg_restore reads every entry and writes the
+    # script to /dev/null, in a container with no network: a cut-off file
+    # fails here (pg_restore --list reads only the table of contents at the
+    # start, so it passes one). Nothing is changed.
+    [[ $# -eq 1 ]] || usage
+    [[ -f $1 && -r $1 ]] || die "no such dump file: $1"
+    docker run --rm -i --network none "$PG_IMAGE" pg_restore -f /dev/null < "$1" \
+      || die "$1 isn't a complete pg_dump archive"
+    echo "$1 is a complete pg_dump archive."
+    ;;
+  clear-sessions)
+    # Sign everyone out (Slipway's commands.after_import, after another
+    # environment's data was restored here): the copy's sessions and
+    # remembered browsers belong to its source. restore --clear-sessions
+    # does the same as part of a restore.
+    [[ $# -eq 0 ]] || usage
+    # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?}
+    if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
+    psql_run "$CLEAR_SESSIONS" || die "couldn't clear the sessions"
+    echo "Signed everyone out: the sessions and remembered browsers of the copy are gone."
+    ;;
+  export-objects)
+    # Every object of the environment's bucket into one tar at <out.tar>
+    # (Slipway's commands.export_files; format serversherpa-objects-v1, see
+    # objects.py). objects.py writes <out.tar>.partial and renames it once
+    # complete; as in pgdump, a signal becomes an exit, so the EXIT trap
+    # removes a partial left behind.
+    [[ $# -eq 1 ]] || usage
+    [[ ! -e $1 && ! -L $1 ]] || die "$1 already exists"
+    CLEANUP+=("$1.partial")
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # objects.py says why on stderr when it fails; its exit code is ss-stack's
+    objects_run export "$1"
+    ;;
+  import-objects)
+    # Put every object of <in.tar> into the environment's bucket (Slipway's
+    # commands.import_files). An object with the same key is replaced; the
+    # bucket's other objects are kept.
+    [[ $# -eq 1 ]] || usage
+    [[ -f $1 && -r $1 ]] || die "no such objects file: $1"
+    objects_run import "$1"
     ;;
   *)
     usage
