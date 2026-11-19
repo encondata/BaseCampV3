@@ -1,10 +1,12 @@
 import Foundation
+import Observation
 @testable import ServerSherpa_Kiosk
 
 /// Bluetooth as the screens see it (`BluetoothPrinting`): its state, a scan the test feeds
 /// (`hear`), a connect that answers with the printer's Device Information (`info`, by identifier)
-/// or throws (and can be held), and the link it reports.
-@MainActor
+/// or throws (and can be held), and the link it reports. Observable, as `ZebraBluetooth` is, so a
+/// screen following Bluetooth's state hears the test change it.
+@MainActor @Observable
 final class FakeBluetoothPrinting: BluetoothPrinting {
     var availability = BluetoothAvailability.ready
     private(set) var link = BluetoothLinkInfo()

@@ -126,6 +126,17 @@ it('matches a serial and a padded EPC the same way, and sends what the setup cho
   });
 });
 
+it('a tag scanned without its padding sends the stored tag, so the server matches it', async () => {
+  const input = await renderScan();
+  await userEvent.type(input, '100348{Enter}');
+  await screen.findByRole('row', { name: /Rack 4 switch/ });
+
+  await waitFor(() => expect(api.postScans).toHaveBeenCalled());
+  expect(api.postScans.mock.calls[0][0].scans[0]).toMatchObject({
+    scanned_value: '000000000000100348', scan_type: 'rfid', asset_id: 'a-1',
+  });
+});
+
 it('an unknown value flashes the not-found color and lists it as No match', async () => {
   const input = await renderScan();
   await userEvent.type(input, 'nope123{Enter}');

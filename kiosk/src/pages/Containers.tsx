@@ -57,7 +57,7 @@ import { flash } from '../lib/flash';
 import { getIdentity, uuid } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
-import { buildScanIndex, matchScan, scanTypeFor, type ScanAsset } from '../lib/scanMatch';
+import { buildScanIndex, matchScan, scanTypeFor, sentScanValue, type ScanAsset } from '../lib/scanMatch';
 import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 
@@ -344,7 +344,7 @@ export default function Containers() {
       serial: getIdentity().serial,
       asset_id: asset.id,
       action,
-      scanned_value: raw,
+      scanned_value: sentScanValue(raw, hit.kind, asset.rfid),
       scan_type: scanTypeFor(hit.kind),
       scan_status: action === 'pack' ? packStatus : unpackStatus,
       client_scan_id: uuid(),

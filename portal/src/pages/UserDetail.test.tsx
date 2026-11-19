@@ -139,8 +139,9 @@ it('renders the hero, three tabs, and the Profile panels', async () => {
   expect(screen.getByRole('tab', { name: 'Access' })).toBeTruthy();
   expect(screen.getByRole('tab', { name: 'History' })).toBeTruthy();
   expect(screen.getByText('BADGE-1')).toBeTruthy();
-  expect(screen.getByText('Imported from V2')).toBeTruthy();
-  expect(screen.getByText('v2:people:42')).toBeTruthy();
+  // Import provenance is no longer shown, even for an imported person.
+  expect(screen.queryByText('Imported from V2')).toBeNull();
+  expect(screen.queryByText('v2:people:42')).toBeNull();
   expect(screen.getByText('change required')).toBeTruthy();
   // memberships
   expect(screen.getByText('Cabling').className).toContain('chip');

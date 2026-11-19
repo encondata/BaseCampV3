@@ -6,6 +6,8 @@ enum Route: Hashable {
     case setup
     case settings(SettingsTabId?)
     case scan, enroll, timeclock, containers, trucks, labels
+    /// Asset Lookup (read-only).
+    case lookup
     /// Under the Label Printing tile: Print Labels and Printer Setup.
     case labelsPrint, labelsPrinter
     /// The Rolodex (admins): the list, with the worker page beside it on a wide screen.
@@ -23,6 +25,7 @@ enum Route: Hashable {
         case .enroll: .enroll
         case .containers: .containers
         case .trucks: .trucks
+        case .lookup: .lookup
         case .labels: .labels
         case .timeclock: .timeclock
         case .troubleshooting: .troubleshooting
@@ -40,6 +43,7 @@ enum Route: Hashable {
         case .timeclock: .timeclock
         case .containers: .containers
         case .trucks: .trucks
+        case .lookup: .lookup
         case .labels, .labelsPrint, .labelsPrinter: .labels
         case .rolodex, .rolodexWorker: .rolodex
         case .troubleshooting, .troubleshootingTopic: .troubleshooting

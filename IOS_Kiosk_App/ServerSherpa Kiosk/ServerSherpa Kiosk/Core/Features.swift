@@ -1,7 +1,7 @@
 import Foundation
 
 enum FeatureId: String, CaseIterable, Sendable {
-    case setup, scan, enroll, containers, trucks, labels, timeclock, troubleshooting, settings, rolodex
+    case setup, scan, enroll, containers, trucks, lookup, labels, timeclock, troubleshooting, settings, rolodex
 }
 
 /// One launcher tile / route. `placeholder` features open the generic
@@ -15,6 +15,11 @@ struct KioskFeature: Equatable, Identifiable, Sendable {
     var alwaysAvailable: Bool = false
 }
 
+/// Asset Lookup (Android's Features.kt): scan or type an asset tag, serial, RFID or name and see
+/// the device. A move tile, so Home hides it until Kiosk Setup is done. It sits after Trucks.
+let LOOKUP_FEATURE = KioskFeature(id: .lookup, route: "lookup", title: "Asset Lookup",
+                                  blurb: "Scan an asset to see what it is and where it goes.")
+
 /// Same order and copy as kiosk/src/lib/features.ts, except Label Printing: asset labels only here.
 let FEATURES: [KioskFeature] = [
     KioskFeature(id: .setup, route: "setup", title: "Kiosk Setup", blurb: "Set up this kiosk for a move.", alwaysAvailable: true),
@@ -22,6 +27,7 @@ let FEATURES: [KioskFeature] = [
     KioskFeature(id: .enroll, route: "enroll", title: "RFID Enroll", blurb: "Scan an asset, then scan its RFID tag."),
     KioskFeature(id: .containers, route: "containers", title: "Containers", blurb: "Pack and unpack containers by scanning.", placeholder: true),
     KioskFeature(id: .trucks, route: "trucks", title: "Trucks", blurb: "Load and unload trucks by scanning.", placeholder: true),
+    LOOKUP_FEATURE,
     KioskFeature(id: .labels, route: "labels", title: "Label Printing", blurb: "Print asset labels."),
     KioskFeature(id: .timeclock, route: "timeclock", title: "Timeclock", blurb: "Clock in and out of a move."),
     // The bundled hardware guides: no move needed, so usable before Kiosk Setup is complete.
@@ -30,9 +36,10 @@ let FEATURES: [KioskFeature] = [
     KioskFeature(id: .settings, route: "settings", title: "Settings", blurb: "Appearance, sound, devices, and more.", alwaysAvailable: true),
 ]
 
-/// The Time Clock station's Home tile (web `TIMECLOCK_STATION_FEATURE`): signs the person out,
-/// which lands the station on its Welcome screen. Not in FEATURES: only a Time Clock station's
-/// Home shows it, first. It shares the Timeclock icon.
+/// The Time Clock station's Home tile (web `TIMECLOCK_STATION_FEATURE`): gets the station key if
+/// it is missing, then signs the person out, which lands the station on its Welcome screen
+/// (`StationTileModel`). Not in FEATURES: only a Time Clock station's Home shows it, first. It
+/// shares the Timeclock icon.
 let TIMECLOCK_STATION_FEATURE = KioskFeature(id: .timeclock, route: "timeclock/station", title: "Time Clock",
                                              blurb: "Start the time clock for workers.")
 

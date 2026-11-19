@@ -187,4 +187,41 @@ struct URLSessionKioskApiEndpointsTests {
         h.server.enqueue(.fail())
         await #expect(throws: ApiError.network()) { try await h.api.labelFontContent(id: "f1", initiativeId: "i1") }
     }
+
+    /// Android `assetLookupPaths`: the three Asset Lookup GETs, `serial` and `q` encoded, signed in.
+    @Test func assetLookupPaths() async throws {
+        let h = try await signedIn()
+        h.server.enqueue(.json(200, #"{"matches":[{"id":"a1","asset_tag":"T-1","matched":["name"]}],"truncated":false}"#))
+        #expect(try await h.api.lookupAssets(serial: "K 1", value: "a/b c").matches.map(\.id) == ["a1"])
+        var req = try #require(h.server.takeRequest())
+        #expect(req.path == "/kiosk/assets/lookup?serial=K%201&q=a%2Fb%20c"); #expect(req.method == "GET")
+        #expect(req.header("Authorization") == "Bearer tok1")
+
+        h.server.enqueue(.json(200, #"{"id":"a1","asset_tag":"T-1","routes":[],"full":null}"#))
+        #expect(try await h.api.assetDetail(serial: "K 1", assetId: "a1").id == "a1")
+        req = try #require(h.server.takeRequest())
+        #expect(req.path == "/kiosk/assets/a1?serial=K%201"); #expect(req.method == "GET")
+        #expect(req.header("Authorization") == "Bearer tok1")
+
+        h.server.enqueue(.json(200, #"[{"id":"s1","scanned_at":"2026-11-10T09:00:00Z"}]"#))
+        #expect(try await h.api.assetScans(serial: "K 1", assetId: "a1", limit: 50).count == 1)
+        req = try #require(h.server.takeRequest())
+        #expect(req.path == "/kiosk/assets/a1/scans?serial=K%201&limit=50"); #expect(req.method == "GET")
+        #expect(req.header("Authorization") == "Bearer tok1")
+    }
+
+    /// Their errors keep the server's code: a forbidden scan history, an unknown asset, the network.
+    @Test func assetLookupErrorsKeepTheirCode() async throws {
+        let h = try await signedIn()
+        h.server.enqueue(.json(403, #"{"detail":{"code":"forbidden"}}"#))
+        await #expect(throws: ApiError(status: 403, code: "forbidden", detail: ["code": "forbidden"])) {
+            try await h.api.assetScans(serial: "K1", assetId: "a1", limit: 50)
+        }
+        h.server.enqueue(.json(404, #"{"detail":{"code":"asset_not_found"}}"#))
+        await #expect(throws: ApiError(status: 404, code: "asset_not_found", detail: ["code": "asset_not_found"])) {
+            try await h.api.assetDetail(serial: "K1", assetId: "zz")
+        }
+        h.server.enqueue(.fail())
+        await #expect(throws: ApiError.network()) { try await h.api.lookupAssets(serial: "K1", value: "x") }
+    }
 }

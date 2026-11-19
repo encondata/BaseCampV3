@@ -97,11 +97,33 @@ final class TimeclockStation {
         return (base, key, serial())
     }
 
-    /// A freshly issued key (Kiosk Setup's Time Clock finish), bound to the current API origin.
-    func storeKey(_ key: String) {
-        keys.put(key, origin: apiOrigin(apiUrl()))
+    /// A freshly issued key, bound to `origin`: the API origin it was issued by, read before the
+    /// call that issued it (`issueKey`), never at store time.
+    func storeKey(_ key: String, origin: String?) {
+        keys.put(key, origin: origin)
         hasKey = keys.get() != nil
         registrationPaused = false
+    }
+
+    /// Issues this kiosk's key under the signed-in session (`POST /kiosk/station-key`) and stores
+    /// it bound to the API origin it was asked of, read before the call so a URL saved meanwhile
+    /// can't adopt it (Android `issueAndStore`). Kiosk Setup's Time Clock finish and the station's
+    /// Home tile both use it.
+    ///
+    /// The portal issues the key only to the person its device row says is signed in here, which
+    /// a sign-in heartbeat records: on 403 `not_signed_in_here`, `signInBeat` sends one and the
+    /// issue is tried once more. Throws the issue's error, and nothing is stored then.
+    func issueKey(api: KioskApi, signInBeat: @MainActor () async -> Void) async throws {
+        let origin = apiOrigin(apiUrl())
+        let serial = serial()
+        let key: String
+        do {
+            key = try await api.issueStationKey(serial: serial)
+        } catch let error as ApiError where error.status == 403 && error.code == "not_signed_in_here" {
+            await signInBeat()
+            key = try await api.issueStationKey(serial: serial)
+        }
+        storeKey(key, origin: origin)
     }
 
     /// The API URL is about to change to `newUrl` (Settings › This Kiosk, signed in or not): a

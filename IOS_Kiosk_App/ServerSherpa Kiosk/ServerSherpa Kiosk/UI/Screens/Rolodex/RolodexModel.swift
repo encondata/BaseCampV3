@@ -125,6 +125,8 @@ final class RolodexModel {
     private(set) var detailLoading = false
     /// Why the page's details didn't load.
     private(set) var detailError: String?
+    /// The full-screen photo viewer is open (tap the photo on the worker page).
+    private(set) var viewingPhoto = false
     /// The Edit form, as typed; nil when not editing.
     var editing: RolodexEdit?
     private(set) var saving = false
@@ -240,6 +242,7 @@ final class RolodexModel {
         }
         if id == nil && selectedId == nil { return }
         selectedId = id
+        viewingPhoto = false
         detail = nil
         detailError = nil
         detailLoading = false
@@ -425,6 +428,7 @@ final class RolodexModel {
         loading = false
         options = RolodexOptions()
         selectedId = nil
+        viewingPhoto = false
         detail = nil
         detailLoading = false
         detailError = nil
@@ -615,6 +619,15 @@ final class RolodexModel {
         guard canEdit, let detail else { return }
         photo.start(for: detail)
     }
+
+    /// Tapping the photo shows it large, once it has loaded (`photoShown`); with initials only
+    /// (no photo, or one that hasn't loaded) a tap does nothing.
+    func openPhotoViewer(photoShown: Bool) {
+        guard photoShown, let row = shownRow, row.hasPhoto else { return }
+        viewingPhoto = true
+    }
+
+    func closePhotoViewer() { viewingPhoto = false }
 
     /// "+ New" works with a list from the server (not the offline copy) for a signed-in admin,
     /// and not while an Edit form is open (Cancel or Save first, ruling S18).

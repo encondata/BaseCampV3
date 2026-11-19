@@ -45,6 +45,21 @@ struct ScanMatchTests {
         #expect(scanTypeFor(.serial) == "barcode")
     }
 
+    @Test func anRfidMatchSendsTheStoredTagAndEverythingElseSendsTheValueAsScanned() throws {
+        let rack = KioskAssetRow(id: "r1", assetId: "A-1", rfid: "000000000000000000100348", serialNumber: "SN-1")
+        let index = buildScanIndex([rack])
+        // The portal's RFID match is exact, so a label's short form must go out as the full tag.
+        let tag = try #require(matchScan(index, "100348"))
+        #expect(sentScanValue(tag, "100348") == "000000000000000000100348")
+        let serial = try #require(matchScan(index, "SN-1"))
+        #expect(sentScanValue(serial, "SN-1") == "SN-1")
+        let id = try #require(matchScan(index, "a-1"))
+        #expect(sentScanValue(id, "a-1") == "a-1")
+        // A tag match with no stored tag can't happen, but never send an empty value.
+        let untagged = KioskAssetRow(id: "r2", assetId: "A-2", rfid: "  ")
+        #expect(sentScanValue(ScanMatch(kind: .rfid, asset: untagged), "100348") == "100348")
+    }
+
     @Test func syncedAssetRowIsAScanAsset() {
         let row = KioskAssetRow(id: "r1", assetId: "A-1", rfid: "000000000000000000100348")
         let index = buildScanIndex([row])

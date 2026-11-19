@@ -69,7 +69,7 @@ struct KioskAuthTests {
         try await h.auth.login(email: "tina@example.com", password: "pw")
         try await h.auth.moveLogin(password: "move")
         #expect(h.auth.currentSignIn == nil)
-        #expect(h.auth.lastSignIn == .password)   // the heartbeat still reports "password"
+        #expect(h.prefs.signInMethod == .password)   // the heartbeat still reports "password"
         #expect(h.auth.takePendingSignIn() == .password)
     }
 
@@ -107,8 +107,56 @@ struct KioskAuthTests {
         h.auth.signInWithBiometric(fakeSession())
         #expect(h.auth.takePendingSignIn() == .biometric)
         #expect(h.auth.currentSignIn?.method == .biometric)
-        #expect(h.auth.lastSignIn == .biometric)
+        #expect(h.prefs.signInMethod == .biometric)
         if case .authed = h.auth.state {} else { Issue.record("expected authed") }
+    }
+
+    /// Each sign-in records how it was made, for a later sign-in beat (Android
+    /// `ss.kiosk.signInMethod`); a move password counts as "password".
+    @Test func everySignInRecordsItsMethod() async throws {
+        let h = Harness()
+        #expect(h.prefs.signInMethod == nil)
+        h.api.loginResult = { fakeSession() }
+        h.api.moveLoginResult = { _ in fakeSession() }
+        try await h.auth.login(email: "a@b.c", password: "pw")
+        #expect(h.prefs.signInMethod == .password)
+        await h.auth.completePair(fakeSession())
+        #expect(h.prefs.signInMethod == .link)
+        h.auth.signInWithBiometric(fakeSession())
+        #expect(h.prefs.signInMethod == .biometric)
+        try await h.auth.moveLogin(password: "move")
+        #expect(h.prefs.signInMethod == .password)
+        await h.auth.logout()
+        h.refresher.refreshResult = { nil }
+        await h.auth.restore()
+        #expect(h.prefs.signInMethod == .password)   // a sign-out or a failed restore is no sign-in
+    }
+
+    /// A session restored from the cookie after a relaunch is the sign-in that made it: its
+    /// sign-in beat (a station key's retry) reports that method, not a guessed "password".
+    @Test func theSignInMethodSurvivesARelaunch() async {
+        let defaults = freshDefaults()
+        let secrets = MemorySecretStore()
+        let api = FakeKioskApi()
+        do {
+            let prefs = KioskPrefs(defaults: defaults)
+            let auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: Identity(prefs: prefs, secrets: secrets), prefs: prefs)
+            await auth.completePair(fakeSession())
+        }
+        // the app was relaunched: a new instance over the same defaults restores the session
+        let prefs = KioskPrefs(defaults: defaults)
+        let identity = Identity(prefs: prefs, secrets: secrets)
+        let refresher = FakeRefresher()
+        refresher.refreshResult = { fakeSession() }
+        let auth = KioskAuth(api: api, refresher: refresher, identity: identity, prefs: prefs)
+        await auth.restore()
+        #expect(auth.takePendingSignIn() == nil)          // a restore is not a new sign-in
+        #expect(prefs.signInMethod == .link)
+        let heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: "1", rawInfo: { [:] })
+        await heartbeat.signInNow()
+        #expect(api.heartbeats.count == 1)
+        #expect(api.heartbeats[0].signIn == true)
+        #expect(api.heartbeats[0].loginMethod == "link")
     }
 
     @Test func loginFailurePropagatesAndStaysPut() async {

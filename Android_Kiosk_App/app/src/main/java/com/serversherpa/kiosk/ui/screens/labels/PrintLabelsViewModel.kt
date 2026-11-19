@@ -23,6 +23,7 @@ import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.outbox.EnqueueInput
 import com.serversherpa.kiosk.core.scan.ScanIndex
 import com.serversherpa.kiosk.core.scan.buildScanIndex
+import com.serversherpa.kiosk.core.scan.labelScan
 import com.serversherpa.kiosk.core.scan.matchLabelScan
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
 import com.serversherpa.kiosk.core.settings.hslToArgb
@@ -134,8 +135,11 @@ class PrintLabelsViewModel(
             val sel = setup ?: throw IllegalStateException("no setup selection")
             val siteId = sel.siteId ?: throw IllegalStateException("no site in the setup selection")
             val initiativeId = sel.initiativeId ?: throw IllegalStateException("no move in the setup selection")
+            // A label found by its tag's value records the stored tag as an RFID scan. Sent as a
+            // barcode, the portal's full match read "100348" as another asset's asset ID.
+            val sent = labelScan(asset, scannedValue)
             outbox.enqueue(EnqueueInput(
-                scannedValue = scannedValue, scanType = "barcode", asset = asset.toOutboxAsset(),
+                scannedValue = sent.value, scanType = sent.type, asset = asset.toOutboxAsset(),
                 siteId = siteId, initiativeId = initiativeId, scanStatus = LABELED,
             ))
         }

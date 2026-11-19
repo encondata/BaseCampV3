@@ -60,6 +60,9 @@ func setupSummaryText(_ sel: KioskSetupSelection) -> String {
 /// - a Time Clock station: Move (with a **No move** card) → Site (the move's sites, or every
 ///   site plus **No site** without a move). Picking the site saves the setup, issues the station
 ///   key and signs the person out, which lands the kiosk on the station's Welcome.
+///
+/// After a Clear Setup from the portal the screen shows `clearNotice` until setup completes, and
+/// a summary or wizard already open starts over at step 1 (Android `KioskSetupViewModel`).
 @MainActor @Observable
 final class KioskSetupViewModel {
     enum Step { case type, move, site, scanType, labels, summary }
@@ -74,6 +77,8 @@ final class KioskSetupViewModel {
     ]
     /// The Time Clock path's No move card.
     static let noMoveBlurb = "Punches are filed under no move and sorted out later in the portal."
+    /// The banner after a Clear Setup from the portal (Android `KioskSetupScreen`).
+    static let clearNotice = "An administrator cleared this kiosk's setup. Run Kiosk Setup to continue."
 
     /// The last step's cards: the label kind, its title and its one-line description.
     static let labelKindChoices: [(kind: LabelKind, title: String, blurb: String)] = [
@@ -110,6 +115,8 @@ final class KioskSetupViewModel {
     @ObservationIgnored private let auth: KioskAuth
     @ObservationIgnored private let heartbeat: Heartbeat
     @ObservationIgnored private let station: TimeclockStation
+    /// Whether the saved setup was complete when last looked at (`savedSetupChanged`).
+    @ObservationIgnored private var wasSetUp: Bool
 
     init(api: KioskApi, identity: Identity, prefs: KioskPrefs, sync: Sync, auth: KioskAuth, heartbeat: Heartbeat, station: TimeclockStation) {
         self.api = api
@@ -119,8 +126,58 @@ final class KioskSetupViewModel {
         self.auth = auth
         self.heartbeat = heartbeat
         self.station = station
-        step = prefs.setupSelection != nil && prefs.setupState.isComplete ? .summary : .type
+        let setUp = prefs.setupSelection != nil && prefs.setupState.isComplete
+        step = setUp ? .summary : .type
+        wasSetUp = setUp
+        followSavedSetup()
     }
+
+    /// Not just the first read: the saved setup can be dropped while the screen is open (a Clear
+    /// Setup from the portal, a move-password sign-in for another move). On the summary there is
+    /// then nothing to show; in "Change setup" the choices belong to a setup that no longer
+    /// exists. Either way the wizard starts over at step 1 and loads the moves.
+    private func followSavedSetup() {
+        withObservationTracking {
+            _ = prefs.setupSelection
+            _ = prefs.setupState
+        } onChange: { [weak self] in
+            // onChange runs before the new value is set: look on the next main-actor turn.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.savedSetupChanged()
+                self.followSavedSetup()
+            }
+        }
+    }
+
+    private func savedSetupChanged() {
+        let hasSelection = prefs.setupSelection != nil
+        let setUp = hasSelection && prefs.setupState.isComplete
+        let dropped = wasSetUp && !setUp && !hasSelection
+        wasSetUp = setUp
+        if step == .summary {
+            if !setUp { restartWizard() }
+        } else if dropped {
+            // A save only ever writes a selection and then .complete, so it never looks like a
+            // drop: only a cleared selection restarts an open wizard.
+            restartWizard()
+        }
+    }
+
+    /// The wizard at its first step with nothing chosen, its options loading again.
+    private func restartWizard() {
+        kind = nil
+        initiativeId = ""; siteId = ""; scanStatus = ""
+        noMove = false; noSite = false
+        labelKind = .top
+        saveError = nil
+        keyError = nil
+        step = .type
+        Task { await load() }
+    }
+
+    /// Kiosk Setup's Clear Setup banner: from the clear until setup completes.
+    var showsClearNotice: Bool { prefs.setupClear?.notice == true }
 
     /// What this kiosk is set up for (the summary's subject).
     var selection: KioskSetupSelection? { prefs.setupSelection }
@@ -268,6 +325,7 @@ final class KioskSetupViewModel {
                                             scanLabel: r.scanStatusLabel ?? "", labelKind: kind.wire)
             prefs.setupSelection = saved
             prefs.setupState = .complete
+            prefs.dismissSetupClearNotice()   // set up again: the "administrator cleared" banner goes
             station.clearKey()
             saving = false
             step = .summary
@@ -284,7 +342,8 @@ final class KioskSetupViewModel {
     /// person out so the kiosk rests on its Welcome. There is no move data to download.
     ///
     /// A failed save keeps the wizard on Site (`saveError`). A key that could not be issued
-    /// keeps the saved setup and the session (`keyError`); picking the site again retries.
+    /// keeps the saved setup and the session (`keyError`); picking the site again retries. A
+    /// Clear Setup that lands while the key is on its way drops the key and signs nobody out.
     func finishTimeclock(siteId site: String?) async {
         guard !saving else { return }
         siteId = site ?? ""
@@ -299,6 +358,7 @@ final class KioskSetupViewModel {
             prefs.setupSelection = .timeclock(initiativeId: r.initiativeId, initiativeName: r.initiativeName, siteId: r.siteId,
                                               siteName: r.siteName, siteRole: r.siteRole)
             prefs.setupState = .complete
+            prefs.dismissSetupClearNotice()
         } catch {
             if !prefs.setupState.isComplete { prefs.setupState = .failed }
             saving = false
@@ -306,28 +366,24 @@ final class KioskSetupViewModel {
             return
         }
         do {
-            station.storeKey(try await issueStationKey(serial: serial))
+            try await station.issueKey(api: api, signInBeat: { await heartbeat.signInNow() })
         } catch {
             saving = false
-            keyError = (error as? ApiError)?.code ?? "unknown_error"
+            if isTimeclockStation { keyError = (error as? ApiError)?.code ?? "unknown_error" }
             return
         }
         saving = false
+        // A Clear Setup landed while the key was on its way (the wizard has started over): the key
+        // belongs to a Time Clock station this kiosk no longer is, so it goes, and nobody is signed out.
+        guard isTimeclockStation else {
+            station.clearKey()
+            return
+        }
         step = .summary
         await auth.logout()
     }
 
-    /// `POST /kiosk/station-key`. The portal issues it only to the person it last saw sign in
-    /// here (a sign-in heartbeat stamps that): on 403 `not_signed_in_here`, one sign-in beat
-    /// and one retry.
-    private func issueStationKey(serial: String) async throws -> String {
-        do {
-            return try await api.issueStationKey(serial: serial)
-        } catch let error as ApiError where error.status == 403 && error.code == "not_signed_in_here" {
-            await heartbeat.signInNow(auth.lastSignIn ?? .password)
-            return try await api.issueStationKey(serial: serial)
-        }
-    }
+    private var isTimeclockStation: Bool { prefs.setupSelection?.isTimeclockStation == true }
 
     func syncAgain() {
         if let sel = selection { sync.run(initiativeId: sel.initiativeId, initiativeName: sel.initiativeName) }

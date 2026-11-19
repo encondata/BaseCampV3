@@ -120,6 +120,64 @@ struct RolodexList: Codable, Equatable, Sendable {
     }
 }
 
+/// One of the worker page's "Previous jobs": an initiative the worker was added to. The labels and
+/// colors are the portal's vocabulary (an unmapped key reads as itself).
+struct RolodexJob: Codable, Equatable, Sendable, Identifiable {
+    var initiativeId: String
+    var initiativeName: String
+    var typeLabel: String?
+    var typeColor: String?
+    var statusLabel: String
+    var statusColor: String?
+    /// Nil when the worker had no work type on it.
+    var workTypeLabel: String?
+    /// Nil when no site worked was recorded.
+    var siteWorkedName: String?
+    /// When the worker was added to the initiative (ISO 8601 with an offset).
+    var addedAt: String?
+
+    var id: String { initiativeId }
+
+    enum CodingKeys: String, CodingKey {
+        case initiativeId = "initiative_id"
+        case initiativeName = "initiative_name"
+        case typeLabel = "type_label"
+        case typeColor = "type_color"
+        case statusLabel = "status_label"
+        case statusColor = "status_color"
+        case workTypeLabel = "work_type_label"
+        case siteWorkedName = "site_worked_name"
+        case addedAt = "added_at"
+    }
+
+    init(initiativeId: String, initiativeName: String = "", typeLabel: String? = nil, typeColor: String? = nil,
+         statusLabel: String = "", statusColor: String? = nil, workTypeLabel: String? = nil, siteWorkedName: String? = nil,
+         addedAt: String? = nil) {
+        self.initiativeId = initiativeId
+        self.initiativeName = initiativeName
+        self.typeLabel = typeLabel
+        self.typeColor = typeColor
+        self.statusLabel = statusLabel
+        self.statusColor = statusColor
+        self.workTypeLabel = workTypeLabel
+        self.siteWorkedName = siteWorkedName
+        self.addedAt = addedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(initiativeId: try c.decode(String.self, forKey: .initiativeId),
+                  initiativeName: try c.decodeIfPresent(String.self, forKey: .initiativeName) ?? "",
+                  typeLabel: try c.decodeIfPresent(String.self, forKey: .typeLabel),
+                  typeColor: try c.decodeIfPresent(String.self, forKey: .typeColor),
+                  statusLabel: try c.decodeIfPresent(String.self, forKey: .statusLabel) ?? "",
+                  statusColor: try c.decodeIfPresent(String.self, forKey: .statusColor),
+                  workTypeLabel: try c.decodeIfPresent(String.self, forKey: .workTypeLabel),
+                  siteWorkedName: try c.decodeIfPresent(String.self, forKey: .siteWorkedName),
+                  addedAt: try c.decodeIfPresent(String.self, forKey: .addedAt))
+    }
+}
+
 /// `GET /kiosk/rolodex/workers/{id}` (and the answer to create and edit): the row's
 /// fields plus contact details and what the signed-in admin may change.
 struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
@@ -143,7 +201,7 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
     var hasAccount: Bool
     var email: String?
     var phone: String?
-    /// Shown as "Employee ID" (read-only here).
+    /// The Employee ID; not shown on the worker page (Jimmy, 2026-10-22), as on Android.
     var externalId: String?
     var statusNote: String?
     /// Will travel: nil is "Not set"; false (No) is a real answer. Worker page only, never the list row.
@@ -156,6 +214,10 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
     var editBlockReason: String?
     /// `self`, `rank_too_low` or nil.
     var statusBlockReason: String?
+    /// The worker's previous jobs, newest first: the latest 50. An API from before them sends none.
+    var jobs: [RolodexJob] = []
+    /// How many previous jobs the worker has in all (`jobs` holds at most the latest 50); 0 from an older API.
+    var jobsTotal = 0
 
     var id: String { personId }
 
@@ -186,10 +248,13 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
         case canChangeStatus = "can_change_status"
         case editBlockReason = "edit_block_reason"
         case statusBlockReason = "status_block_reason"
+        case jobs
+        case jobsTotal = "jobs_total"
     }
 
     init(row: RolodexRow, email: String? = nil, phone: String? = nil, externalId: String? = nil, statusNote: String? = nil,
-         willTravel: Bool? = nil, travelRegion: String? = nil, travelRestrictions: String? = nil, canEdit: Bool = false, canChangeStatus: Bool = false, editBlockReason: String? = nil, statusBlockReason: String? = nil) {
+         willTravel: Bool? = nil, travelRegion: String? = nil, travelRestrictions: String? = nil, canEdit: Bool = false, canChangeStatus: Bool = false, editBlockReason: String? = nil, statusBlockReason: String? = nil,
+         jobs: [RolodexJob] = [], jobsTotal: Int = 0) {
         personId = row.personId
         firstName = row.firstName
         lastName = row.lastName
@@ -219,6 +284,8 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
         self.canChangeStatus = canChangeStatus
         self.editBlockReason = editBlockReason
         self.statusBlockReason = statusBlockReason
+        self.jobs = jobs
+        self.jobsTotal = jobsTotal
     }
 
     init(from decoder: Decoder) throws {
@@ -236,6 +303,8 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
         canChangeStatus = try c.decodeIfPresent(Bool.self, forKey: .canChangeStatus) ?? false
         editBlockReason = try c.decodeIfPresent(String.self, forKey: .editBlockReason)
         statusBlockReason = try c.decodeIfPresent(String.self, forKey: .statusBlockReason)
+        jobs = try c.decodeIfPresent([RolodexJob].self, forKey: .jobs) ?? []
+        jobsTotal = try c.decodeIfPresent(Int.self, forKey: .jobsTotal) ?? 0
     }
 
     /// The list row for this worker (no email or phone).

@@ -58,4 +58,23 @@ class ScanMatchTest {
         assertEquals("barcode", scanTypeFor(ScanMatchKind.ASSET_ID))
         assertEquals("barcode", scanTypeFor(ScanMatchKind.SERIAL))
     }
+
+    @Test fun anRfidMatchSendsTheStoredTagAndEverythingElseSendsTheValueAsScanned() {
+        // The portal's RFID match is exact, so a label's short form must go out as the full tag.
+        assertEquals(SentScan("000000000000000000100348", "rfid"), sentScan(matchScan(index, "100348")!!, "100348"))
+        assertEquals(SentScan("a-100", "barcode"), sentScan(matchScan(index, "a-100")!!, "a-100"))
+        assertEquals(SentScan("SN-2", "barcode"), sentScan(matchScan(index, "SN-2")!!, "SN-2"))
+        // A tag match with no stored tag can't happen, but never send an empty value.
+        assertEquals(SentScan("100348", "rfid"), sentScan(ScanMatch(ScanMatchKind.RFID, server), "100348"))
+    }
+
+    @Test fun aPrintedLabelSendsWhatItMatchedOnInMatchLabelScansOrder() {
+        // Asset ID and serial go out as scanned barcodes; a tag's value goes out as the stored tag.
+        assertEquals(SentScan("a-100", "barcode"), labelScan(rack, "a-100"))
+        assertEquals(SentScan("SN-1", "barcode"), labelScan(rack, "SN-1"))
+        assertEquals(SentScan("000000000000000000100348", "rfid"), labelScan(rack, "100348"))
+        // A value that is this asset's ID and (padded) its tag is still the asset ID.
+        val both = A("5", "777777", "Both", rfid = "000000000000000000777777")
+        assertEquals(SentScan("777777", "barcode"), labelScan(both, "777777"))
+    }
 }

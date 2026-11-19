@@ -10,7 +10,7 @@ import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.core.scan.ScanIndex
 import com.serversherpa.kiosk.core.scan.buildScanIndex
 import com.serversherpa.kiosk.core.scan.matchScan
-import com.serversherpa.kiosk.core.scan.scanTypeFor
+import com.serversherpa.kiosk.core.scan.sentScan
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
 import com.serversherpa.kiosk.core.settings.hslToArgb
 import com.serversherpa.kiosk.data.db.AssetEntity
@@ -111,10 +111,11 @@ class ScanViewModel(
         val hit = matchScan(idx, value)
         if (hit != null) { flash.flash(hslToArgb(a.goodScan), a.flashMs); sound?.play(ScanSoundKind.GOOD) }
         else { flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND) }
+        val sent = hit?.let { sentScan(it, value) }
         scope.launch {
             try {
                 outbox.enqueue(EnqueueInput(
-                    scannedValue = value, scanType = hit?.let { scanTypeFor(it.kind) } ?: "barcode",
+                    scannedValue = sent?.value ?: value, scanType = sent?.type ?: "barcode",
                     asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId, initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
                 ))
                 _state.update { it.copy(storageError = null) }
@@ -173,7 +174,8 @@ class ScanViewModel(
                 val hit = matchScan(idx, value)
                 if (hit != null) matched++
                 EnqueueInput(
-                    scannedValue = value, scanType = "rfid",
+                    // A matched tag goes out as the stored tag, however the sled padded it.
+                    scannedValue = hit?.let { sentScan(it, value).value } ?: value, scanType = "rfid",
                     asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId,
                     initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
                 )

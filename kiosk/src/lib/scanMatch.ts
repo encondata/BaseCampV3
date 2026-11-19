@@ -15,7 +15,9 @@
  * padding. Everything is upper-cased, so case never decides a match.
  *
  * The match is informational as far as the API is concerned: the server
- * re-matches `scanned_value` from scratch. What it decides here is what
+ * re-matches `scanned_value` from scratch. Its RFID match is exact, so an
+ * RFID match here sends the stored tag (`sentScanValue`), never the
+ * short form a label's barcode carries. What it decides here is what
  * the operator sees (green or red, and which asset) and whether the
  * scan is worth sending at all.
  */
@@ -104,6 +106,16 @@ export function matchAssetOrSerial(index: ScanIndex, raw: string): ScanMatch | n
   const bySerial = index.bySerial.get(plain);
   if (bySerial) return { kind: 'serial', asset: bySerial };
   return null;
+}
+
+/** What a matched scan sends as `scanned_value`. An RFID match sends the
+ *  record's stored tag, not the value as read: this kiosk ignores leading
+ *  zeros, the server's RFID match does not, so a label's short form
+ *  (`100348`) would match here and never there. Anything else is sent
+ *  exactly as scanned, for the server to re-match. */
+export function sentScanValue(raw: string, kind: string, storedTag: string | null | undefined): string {
+  const tag = storedTag?.trim();
+  return kind === 'rfid' && tag ? tag : raw;
 }
 
 /** What the ingest endpoint's `scan_type` should say. The vocabulary

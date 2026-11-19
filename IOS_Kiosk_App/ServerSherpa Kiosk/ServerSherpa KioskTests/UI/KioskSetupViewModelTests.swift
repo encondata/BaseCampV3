@@ -29,7 +29,7 @@ struct KioskSetupViewModelTests {
 
     private func makeVM() -> KioskSetupViewModel {
         KioskSetupViewModel(api: api, identity: identity, prefs: prefs, sync: sync, auth: auth,
-                            heartbeat: Heartbeat(api: api, identity: identity, version: "1", rawInfo: { [:] }),
+                            heartbeat: Heartbeat(api: api, identity: identity, prefs: prefs, version: "1", rawInfo: { [:] }),
                             station: TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "SER" }, apiUrl: { TEST_API_URL }))
     }
 
@@ -130,6 +130,76 @@ struct KioskSetupViewModelTests {
         #expect(vm.step == .summary)
         #expect(prefs.setupSelection?.siteName == "Origin")
         #expect(api.calls.filter { $0 == "setupOptions" }.count == 1)
+    }
+
+    // MARK: Clear Setup (Android KioskSetupViewModelTest)
+
+    private var setupOptionsLoads: Int { api.calls.filter { $0 == "setupOptions" }.count }
+
+    /// A Clear Setup landing while the summary shows opens the wizard at step 1 and loads the
+    /// moves, rather than leaving an empty summary.
+    @Test func aClearLandingOnTheSummaryOpensTheWizardAndLoadsTheMoves() async {
+        saved()
+        let vm = makeVM()
+        #expect(vm.step == .summary)
+        #expect(setupOptionsLoads == 0)
+        #expect(prefs.applySetupClear("c1"))
+        await waitUntil { vm.options != nil }
+        #expect(vm.step == .type)
+        #expect(vm.kind == nil)
+        #expect(vm.initiativeId == "")
+        #expect(setupOptionsLoads == 1)
+    }
+
+    /// "Change setup" is open (on its last step) when a Clear Setup lands: the wizard starts over
+    /// at step 1 with nothing chosen and reloads the moves.
+    @Test func anOpenWizardRestartsAtStepOne() async {
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move A", siteId: "s2", siteName: "Dest", siteRole: "destination",
+                                                   scanStatus: "pre_stage", scanLabel: "Pre-stage", labelKind: "front")
+        prefs.setupState = .complete
+        let vm = makeVM()
+        vm.changeSetup()
+        await waitUntil { vm.options != nil }
+        #expect(vm.kind == .regular)                         // the saved choices, preselected
+        vm.pickKind(.regular); vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
+        #expect(vm.step == .labels)
+        #expect(setupOptionsLoads == 1)
+        #expect(prefs.applySetupClear("c3"))
+        await waitUntil { setupOptionsLoads == 2 }
+        #expect(vm.step == .type)
+        #expect(vm.stepHeader == "STEP 1 · TYPE")
+        #expect(vm.kind == nil)
+        #expect(vm.initiativeId == "" && vm.siteId == "" && vm.scanStatus == "")
+        #expect(!vm.noMove && !vm.noSite)
+        #expect(vm.labelKind == .top)
+        #expect(!vm.canCancel)                               // no saved setup to go back to
+        await waitUntil { vm.options != nil }
+        #expect(vm.options != nil)
+    }
+
+    /// The banner shows from the clear until setup completes again (Android dismisses it on
+    /// finish), then stays down; a screen opened after the clear shows it too.
+    @Test func theBannerShowsAfterAClearAndGoesAwayLikeAndroid() async {
+        #expect(KioskSetupViewModel.clearNotice == "An administrator cleared this kiosk's setup. Run Kiosk Setup to continue.")
+        let before = makeVM()
+        #expect(!before.showsClearNotice)
+        #expect(prefs.applySetupClear("c2"))
+        #expect(before.showsClearNotice)
+        acceptSetup()
+        let vm = makeVM()                                    // the redirect opens a fresh screen
+        #expect(vm.showsClearNotice)
+        #expect(vm.step == .type)
+        await vm.load()
+        #expect(setupOptionsLoads == 1)
+        vm.pickKind(.regular); vm.pickMove("i1"); vm.pickSite("s2"); vm.pickScanType("pre_stage")
+        #expect(vm.showsClearNotice)                         // still up while the wizard runs
+        await vm.finish(.top)
+        #expect(prefs.setupState == .complete)
+        #expect(!vm.showsClearNotice)
+        #expect(prefs.setupClear == SetupClearRecord(id: "c2", acked: false, notice: false))
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(vm.step == .summary)                         // the new setup's summary, not reopened
+        #expect(setupOptionsLoads == 1)
     }
 
     @Test func stepHeaderCountsFiveSteps() async {

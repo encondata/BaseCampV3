@@ -297,8 +297,9 @@ it('an RFID scan of an asset is a legitimate way to name it here', async () => {
   await scanAsset('ABCD');
 
   await waitFor(() => expect(api.postContainerAsset).toHaveBeenCalledTimes(1));
+  // The stored tag goes out, not the short form read: the server's RFID match is exact.
   expect(api.postContainerAsset.mock.calls[0][0]).toMatchObject({
-    asset_id: 'a-2', scanned_value: 'ABCD', scan_type: 'rfid',
+    asset_id: 'a-2', scanned_value: '0'.repeat(20) + 'ABCD', scan_type: 'rfid',
   });
 });
 
