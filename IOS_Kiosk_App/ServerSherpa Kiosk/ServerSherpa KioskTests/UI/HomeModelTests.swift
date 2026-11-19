@@ -5,19 +5,19 @@ import Testing
 /// Android HomeScreenTest.kt, as model cases: what the launcher shows is `homeTiles` + `homeBanner`.
 struct HomeModelTests {
     /// Jimmy 2026-11-17: before setup, Home hides every app but Kiosk Setup, the Rolodex (admins)
-    /// and Settings, rather than showing them locked.
-    @Test func incompleteSetupShowsOnlySetupAndSettings() {
+    /// and Settings, rather than showing them locked. Troubleshooting stays too (2026-11-19).
+    @Test func incompleteSetupShowsOnlySetupTroubleshootingAndSettings() {
         let banner = homeBanner(setupState: .incomplete, devMode: false)
         #expect(banner?.text == "Kiosk setup is incomplete. Finish Kiosk Setup to see the other apps.")
         #expect(banner?.error == false)
-        #expect(homeTiles(setupState: .incomplete, devMode: false).map(\.feature.id) == [.setup, .settings])
+        #expect(homeTiles(setupState: .incomplete, devMode: false).map(\.feature.id) == [.setup, .troubleshooting, .settings])
     }
 
     @Test func failedSetupSaysSo() {
         let banner = homeBanner(setupState: .failed, devMode: false)
         #expect(banner?.text == "Kiosk setup failed. Open Kiosk Setup to try again.")
         #expect(banner?.error == true)
-        #expect(homeTiles(setupState: .failed, devMode: false).map(\.feature.id) == [.setup, .settings])
+        #expect(homeTiles(setupState: .failed, devMode: false).map(\.feature.id) == [.setup, .troubleshooting, .settings])
     }
 
     @Test func devModeShowsEveryAppWithBanner() {
@@ -56,11 +56,11 @@ struct HomeModelTests {
 
     /// An admin's Home has the Rolodex tile (before Settings), usable before Kiosk Setup.
     @Test func adminsSeeTheRolodexTile() {
-        #expect(homeTiles(setupState: .incomplete, devMode: false, isAdmin: true).map(\.feature.id) == [.setup, .rolodex, .settings])
+        #expect(homeTiles(setupState: .incomplete, devMode: false, isAdmin: true).map(\.feature.id) == [.setup, .rolodex, .troubleshooting, .settings])
         #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: true).map(\.feature.id)
-                == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
+                == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .troubleshooting, .settings])
         #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: false).map(\.feature.id) == FEATURES.map(\.id))
-        #expect(homeTiles(setupState: .complete, devMode: false, stationType: "timeclock", isAdmin: true).count == 3)
+        #expect(homeTiles(setupState: .complete, devMode: false, stationType: "timeclock", isAdmin: true).count == 4)
     }
 
     @Test func routesMapFromFeatures() {

@@ -1,7 +1,7 @@
 import Foundation
 
 enum FeatureId: String, CaseIterable, Sendable {
-    case setup, scan, enroll, containers, trucks, labels, timeclock, settings, rolodex
+    case setup, scan, enroll, containers, trucks, labels, timeclock, troubleshooting, settings, rolodex
 }
 
 /// One launcher tile / route. `placeholder` features open the generic
@@ -24,6 +24,9 @@ let FEATURES: [KioskFeature] = [
     KioskFeature(id: .trucks, route: "trucks", title: "Trucks", blurb: "Load and unload trucks by scanning.", placeholder: true),
     KioskFeature(id: .labels, route: "labels", title: "Label Printing", blurb: "Print asset labels."),
     KioskFeature(id: .timeclock, route: "timeclock", title: "Timeclock", blurb: "Clock in and out of a move."),
+    // The bundled hardware guides: no move needed, so usable before Kiosk Setup is complete.
+    KioskFeature(id: .troubleshooting, route: "troubleshooting", title: "Troubleshooting",
+                 blurb: "Fix common problems with kiosk hardware.", alwaysAvailable: true),
     KioskFeature(id: .settings, route: "settings", title: "Settings", blurb: "Appearance, sound, devices, and more.", alwaysAvailable: true),
 ]
 
@@ -42,15 +45,17 @@ let ROLODEX_FEATURE = KioskFeature(id: .rolodex, route: "rolodex", title: "Rolod
 /// Every feature a route can open (`feature(_:)` finds the Rolodex too).
 private let ALL_FEATURES = FEATURES + [ROLODEX_FEATURE]
 
-/// What Home shows (web `homeFeatures`): a Time Clock station only Time Clock, Kiosk Setup and
-/// Settings (web `STATION_TILES.timeclock`; Jimmy owns these lists); any other kiosk every feature.
-/// An admin's full kiosk Home (no station type) adds the Rolodex before Settings; a station Home
-/// never shows it.
+/// What Home shows (web `homeFeatures`): a Time Clock station only Time Clock, Kiosk Setup,
+/// Troubleshooting and Settings (web `STATION_TILES.timeclock`; Jimmy owns these lists); any other
+/// kiosk every feature. An admin's full kiosk Home (no station type) adds the Rolodex before
+/// Troubleshooting and Settings; a station Home never shows it.
 func homeFeatures(stationType: String?, isAdmin: Bool = false) -> [KioskFeature] {
-    if stationType == "timeclock" { return [TIMECLOCK_STATION_FEATURE, feature(.setup), feature(.settings)] }
+    if stationType == "timeclock" {
+        return [TIMECLOCK_STATION_FEATURE, feature(.setup), feature(.troubleshooting), feature(.settings)]
+    }
     guard isAdmin, stationType?.isEmpty ?? true else { return FEATURES }
     var features = FEATURES
-    features.insert(ROLODEX_FEATURE, at: features.firstIndex { $0.id == .settings } ?? features.endIndex)
+    features.insert(ROLODEX_FEATURE, at: features.firstIndex { $0.id == .troubleshooting } ?? features.endIndex)
     return features
 }
 

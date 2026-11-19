@@ -4,7 +4,7 @@ import Foundation
 
 /// The Time Clock station on iOS (Android StationModeTest): it rests on Welcome signed out,
 /// survives a relaunch, drops a revoked key to the waiting copy, pauses on a lapsed
-/// registration, takes the gear to sign-in and back, and shows three Home tiles.
+/// registration, takes the gear to sign-in and back, and shows four Home tiles.
 @MainActor
 struct StationModeTests {
     private let secrets = MemorySecretStore()
@@ -188,14 +188,14 @@ struct StationModeTests {
         c.onBackground()
     }
 
-    @Test func stationHomeShowsThreeTiles() {
+    @Test func stationHomeShowsFourTiles() {
         let tiles = homeTiles(setupState: .complete, devMode: false, stationType: KioskSetupSelection.timeclockStation)
-        #expect(tiles.map(\.feature.title) == ["Time Clock", "Kiosk Setup", "Settings"])
+        #expect(tiles.map(\.feature.title) == ["Time Clock", "Kiosk Setup", "Troubleshooting", "Settings"])
         #expect(tiles.first?.feature == TIMECLOCK_STATION_FEATURE)
-        #expect(homeTiles(setupState: .complete, devMode: true, stationType: "timeclock").count == 3)
+        #expect(homeTiles(setupState: .complete, devMode: true, stationType: "timeclock").count == 4)
         // a regular kiosk keeps every tile
         #expect(homeTiles(setupState: .complete, devMode: false, stationType: nil).map(\.feature.id) == FEATURES.map(\.id))
-        #expect(homeFeatures(stationType: "timeclock").map(\.title) == ["Time Clock", "Kiosk Setup", "Settings"])
+        #expect(homeFeatures(stationType: "timeclock").map(\.title) == ["Time Clock", "Kiosk Setup", "Troubleshooting", "Settings"])
     }
 
     // MARK: the station backend
