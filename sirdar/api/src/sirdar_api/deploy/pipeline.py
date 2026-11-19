@@ -830,7 +830,9 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         # with this context, before any step writes the .env.
         try:
             await environments.ensure_devices_secrets(db, settings, env)
-        except environments.EnvError:                # secrets_key_missing
+        except environments.EnvError as e:
+            if e.code != "secrets_key_missing":
+                raise
             raise PrepareError("SIRDAR_SECRETS_KEY isn't set, so Sirdar can't make this "
                                "environment's devices secrets.") from None
     secrets = await _load_secrets(db, env.id, settings)

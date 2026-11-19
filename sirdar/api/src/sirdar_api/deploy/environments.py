@@ -218,7 +218,8 @@ async def ensure_devices_secrets(db: AsyncSession, settings: Settings, env: Envi
     unreadable. Refuses with secrets_key_missing when one must be made and
     the vault isn't configured."""
     await db.flush()                        # rows added in this session count as stored
-    missing = [k for k in envfile.DEVICES_SECRETS if k not in await secret_keys_of(db, env.id)]
+    stored = await secret_keys_of(db, env.id)
+    missing = [k for k in envfile.DEVICES_SECRETS if k not in stored]
     if not missing:
         return
     if not vault.is_configured(settings):

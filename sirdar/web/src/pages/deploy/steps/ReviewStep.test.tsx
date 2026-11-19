@@ -28,9 +28,9 @@ it('lists every choice and never a secret', () => {
 });
 
 it('Publish off is shown; apps that are off are left out', () => {
-  renderStep({ publish: false, apps: { wiki: false, kiosk: true, learn: false, status: true, mailpit: true } });
+  renderStep({ publish: false, apps: { wiki: false, kiosk: true, learn: false, status: true, devices: true, mailpit: true } });
   expect(screen.getByText('Set up by hand')).toBeTruthy();
-  expect(screen.getByText('API, Portal, Kiosk, Status page, Mailpit')).toBeTruthy();
+  expect(screen.getByText('API, Portal, Kiosk, Status page, Devices, Mailpit')).toBeTruthy();
 });
 
 it('a snapshot start names the snapshot and has no first admin', () => {
@@ -79,7 +79,7 @@ it('a snapshot start has no Seed starter content row', () => {
 });
 
 it('kiosk signing digests are counted while the kiosk runs', () => {
-  const apps = { wiki: true, kiosk: true, learn: false, status: true, mailpit: true };
+  const apps = { wiki: true, kiosk: true, learn: false, status: true, devices: true, mailpit: true };
   renderStep({ apps, digests: `${D1}\n${D2}\n${D1}` });
   expect(screen.getByText('Kiosk signing digests').nextElementSibling?.textContent).toBe('2');
   cleanup();

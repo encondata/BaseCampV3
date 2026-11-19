@@ -33,8 +33,19 @@ stack that owns iPhone installs, for a stack with no Apple settings);
   so the portal shows no Devices link. An existing `.env` keeps working.
 - A `STACK_APPS` that lists `devices`: `ss-stack up` refuses to start
   without both, naming the missing ones.
-- A `STACK_APPS` without `devices` (Sirdar writes one today): neither is
-  needed.
+- A `STACK_APPS` without `devices`: neither is needed.
+
+Sirdar always writes an explicit `STACK_APPS`, in the order
+`wiki,kiosk,learn,status,devices,mailpit`. A new environment runs devices:
+Sirdar makes both secrets when it creates the environment and writes them
+into the `.env`. An environment created before then keeps its app list
+(without devices) until Devices is turned on in its Settings › Apps & mail;
+Sirdar makes the secrets then, once, and never replaces a stored
+`DEVICES_SECRET_KEY`. Sirdar doesn't manage `DEVICES_IOS_OWNER_URL`: a stack
+without Apple settings shows "Apple settings aren't set up yet." Rendering
+for a checkout whose `ss-stack` predates devices (Roll back, Restore backup,
+or an Update to an older ref) leaves devices out of `STACK_APPS` for that
+deploy, as it does learn for a checkout older than the learning site.
 
 With devices off, the API's internal devices endpoints stay off too.
 `ss-stack dump` also dumps the devices database, when it exists, to
@@ -63,7 +74,15 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
   when `SS_DATABASE_SSL=require` and, like the main API, verifies the
   server against `SS_DATABASE_CA_B64` when it is set. The devices bucket
   may have its own Spaces key (`DEVICES_SPACES_ACCESS_KEY` /
-  `DEVICES_SPACES_SECRET_KEY`; without them, the main `SS_SPACES_*` key);
+  `DEVICES_SPACES_SECRET_KEY`; without them, the main `SS_SPACES_*` key).
+  Sirdar gives each DigitalOcean environment that runs devices its own
+  bucket, `<main bucket>-devices`, with its own Spaces key (readwrite on
+  that bucket only; the main key's grants never change) and CORS for
+  `https://devices.<domain>`, and writes `DEVICES_SPACES_BUCKET` and that
+  key into the `.env`. It makes `serversherpa_devices` on the managed
+  cluster and writes `DEVICES_DATABASE_URL` (a LAN Blue/Green app VM gets
+  one too, for its data VM). Snapshot bundles leave the devices database
+  out: its Apple secrets belong to one stack;
 - dumps and restores through a one-off `postgres:16-alpine` container
   against the managed database (`PGSSLMODE=require`, the password from
   `POSTGRES_PASSWORD`, passed through the environment and never on a

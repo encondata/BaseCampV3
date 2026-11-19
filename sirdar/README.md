@@ -869,6 +869,11 @@ DigitalOcean account. Each one gets:
   open to the internet. The app connects over the VPC and checks the cluster's
   own certificate (`SS_DATABASE_CA_B64` in the droplet's `.env`);
 - a Spaces bucket and a Spaces key scoped to that bucket;
+- while Devices runs, a second bucket, `<main bucket>-devices` (cut to stay
+  within 63 characters), with its own Spaces key `ss-<env>-devices` (readwrite
+  on that bucket only; the main key is never changed) and CORS for
+  `https://devices.<domain>` (migration 0021 stores that key), and the
+  `serversherpa_devices` database on the cluster;
 - a load balancer `ss-<env>-lb` (HTTPS 443 and HTTP 80 to the droplet's port
   80, health check `/healthz`) and its Let's Encrypt certificate, which covers
   the running apps' names and, outside production, the bare base domain;
@@ -936,10 +941,10 @@ the other slot is the instant way back.
 **Delete.** Sirdar takes a snapshot (`<env>-before-delete-<UTC stamp>`) on a
 droplet first, then removes the DNS records, the load balancer, the
 certificates, the firewall, the droplets, the database, the Spaces keys, the
-bucket and the VPC. It forgets each one as it goes, so a retry carries on where
-it stopped. Production must be marked **retiring** and have no active slot
-first, and Delete asks for the environment's name and the phrase
-`delete production <name>`. A retry asks again.
+buckets (the devices one too) and the VPC. It forgets each one as it goes, so a
+retry carries on where it stopped. Production must be marked **retiring** and
+have no active slot first, and Delete asks for the environment's name and the
+phrase `delete production <name>`. A retry asks again.
 
 **Out of scope** for now: V2 production on DigitalOcean (a later cutover gets
 its own plan), Reset on DigitalOcean, separate api and web droplets per slot,
@@ -963,12 +968,26 @@ traffic graph) and whose Snapshots tab lists the snapshots.
 - **Types:** Production, Development, UAT (stored as `beta`) and Custom.
   Production always runs on DigitalOcean, Blue/Green.
 - **Extras › Apps:** the API and Portal always run; Wiki, Kiosk, Learning (the
-  worker training site, `learn.<domain>`), the Status page and Mailpit can be
-  turned off (`STACK_APPS` in the `.env`). Learning needs the wiki (its
-  documents render there): turning the wiki off turns Learning off. An app that
-  is off gets no hostname, DNS record, proxy host, certificate name, smoke test,
-  status-page card or portal link (`SS_APPS`). Turning an app off needs a commit
-  from this release or later: an older git ref runs every app and uses Mailpit.
+  worker training site, `learn.<domain>`), the Status page, Devices (crew app
+  installs, `devices.<domain>`, port 8093) and Mailpit can be turned off
+  (`STACK_APPS` in the `.env`). Learning needs the wiki (its documents render
+  there): turning the wiki off turns Learning off. An app that is off gets no
+  hostname, DNS record, proxy host, certificate name, smoke test, status-page
+  card or portal link (`SS_APPS`). Turning an app off needs a commit from this
+  release or later: an older git ref runs every app and uses Mailpit, and a
+  commit from before the Devices app runs without it (the render step says so).
+- **Devices:** on by default for a new environment. Sirdar makes its two
+  secrets (`SS_DEVICES_SERVICE_TOKEN` and `DEVICES_SECRET_KEY`) when it creates
+  the environment, stores them with the other secrets and writes them into the
+  `.env`; they never show in a step log or an API response. An environment
+  created before Devices keeps its apps (no Devices) until Devices is turned on
+  in Settings › Apps & mail; Sirdar makes the secrets then, once. A stored
+  `DEVICES_SECRET_KEY` is never replaced (a new key would make the saved Apple
+  settings unreadable). Sirdar doesn't manage `DEVICES_IOS_OWNER_URL`: a stack
+  without Apple settings shows "Apple settings aren't set up yet." Adopt
+  reports that key as ignored. The devices database, `serversherpa_devices`,
+  is in every pre-deploy dump and comes back with Roll back and Restore
+  backup; snapshots leave it out (its Apple secrets belong to one stack).
 - **Extras › Kiosk signing digests:** the SHA-256 digests of the kiosk app's
   signing certificates (release and Play), one per line; written as
   `SS_KIOSK_SIGNING_DIGESTS`. Kiosk biometric sign-in refuses every enroll
@@ -1034,7 +1053,9 @@ still needs certificates through NPM, which the create response flags as
   so does every Update with "Activate automatically" on; the first deploy then
   deploys the other VM with the same commit, idle).
 - **Data VM:** Postgres accepts only the two app VMs (pg_hba and the VM's
-  firewall in `DOCKER-USER`); storage accepts the app VMs and NPM. Step 7
+  firewall in `DOCKER-USER`); storage accepts the app VMs and NPM. The
+  devices database, `serversherpa_devices`, lives there beside the main one,
+  and each app VM's `.env` gets `DEVICES_DATABASE_URL` pointing at it. Step 7
   (Prepare data VM) re-applies its stack and firewall on every Update. A commit
   that changes the Postgres or SeaweedFS image, or the data stacks' compose
   files, recreates those containers, so the live server's database restarts

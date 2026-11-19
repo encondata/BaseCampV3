@@ -4,9 +4,10 @@
  *  answer before a round trip; the API stays the authority. Pure: no React, no I/O. */
 import type { EnvMail, NewMail } from './sirdarApi';
 
-export type OptionalApp = 'wiki' | 'kiosk' | 'learn' | 'status' | 'mailpit';
+export type OptionalApp = 'wiki' | 'kiosk' | 'learn' | 'status' | 'devices' | 'mailpit';
 export const OPTIONAL_APPS: [OptionalApp, string][] = [
-  ['wiki', 'Wiki'], ['kiosk', 'Kiosk'], ['learn', 'Learning'], ['status', 'Status page'], ['mailpit', 'Mailpit'],
+  ['wiki', 'Wiki'], ['kiosk', 'Kiosk'], ['learn', 'Learning'], ['status', 'Status page'], ['devices', 'Devices'],
+  ['mailpit', 'Mailpit'],
 ];
 export type AppSwitches = Record<OptionalApp, boolean>;
 export interface MailForm {

@@ -58,7 +58,7 @@ export const DEFAULTS: EnvironmentDefaults = {
     { service: 'kiosk', port: 8090, public: true }, { service: 'wiki', port: 8096, public: true },
     { service: 'learn', port: 8092, public: true },
     { service: 'spaces', port: 9000, public: true }, { service: 'status', port: 8095, public: true },
-    { service: 'mailpit', port: 8025, public: false },
+    { service: 'devices', port: 8093, public: true }, { service: 'mailpit', port: 8025, public: false },
   ],
   domain_suffix: 'serversherpa.com', env_root: '/opt/serversherpa', git_ref: 'main', bind_ip: '0.0.0.0',
   keep_dumps: 5, spaces_bucket: 'serversherpa', log_levels: ['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -67,7 +67,7 @@ export const DEFAULTS: EnvironmentDefaults = {
         limits: { cores: [1, 64], memory_mb: [2048, 262144], disk_gb: [20, 4096], keep_snapshots: [1, 10] } },
   do: DO_DEFAULTS,
   first_admin: { password_min_length: 8, role: 'super_admin', link_minutes: 240 },
-  apps: { optional: ['wiki', 'kiosk', 'learn', 'status', 'mailpit'], always: ['api', 'portal'] },
+  apps: { optional: ['wiki', 'kiosk', 'learn', 'status', 'devices', 'mailpit'], always: ['api', 'portal'] },
   mail: { smtp_port: 587 },
 };
 

@@ -317,6 +317,14 @@ it('Apps & mail: turning the wiki off turns learning off, and both are saved', a
   expect(screen.getByText('Saved. The next deploy applies these settings.')).toBeTruthy();
 });
 
+it('Apps & mail: an environment without Devices shows it off; turning it on saves it before Mailpit', async () => {
+  open();
+  expect((screen.getByLabelText('Devices') as HTMLInputElement).checked).toBe(false);
+  await userEvent.click(screen.getByLabelText('Devices'));
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { apps: ['wiki', 'kiosk', 'status', 'devices', 'mailpit'] }));
+});
+
 it('Apps & mail: SMTP is checked first and sent without a password', async () => {
   open();
   await userEvent.click(screen.getByRole('radio', { name: 'SMTP' }));

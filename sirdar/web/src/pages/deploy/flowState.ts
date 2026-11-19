@@ -123,7 +123,7 @@ export function initialState(ctx: FlowContext): FlowState {
     doAccount: account, dropletSize: d.do.droplet_size, dbSize: d.do.db_size, dbStandby: d.do.db_standby,
     acmeStaging: false, autoActivate: false,
     publish: !!ctx.integrations?.cloudflare.configured && proxyReady(ctx, proxy),
-    apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: true },
+    apps: { wiki: true, kiosk: true, learn: true, status: true, devices: true, mailpit: true },
     mailMode: 'mailpit', smtpHost: '', smtpPort: String(d.mail.smtp_port), smtpUsername: '', smtpPassword: '',
     smtpFrom: '', smtpStarttls: true, aiKey: '', digests: '',
     dataMode: 'empty', snapshotId: '', recipeId: '', recipeSnapshotId: '', resetPasswords: false, seedContent: true,
