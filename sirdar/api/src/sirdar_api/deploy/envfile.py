@@ -14,9 +14,8 @@ from dataclasses import dataclass, field
 
 ENV_ROOT = "/opt/serversherpa"
 
-# devices (deploy/stack's devices app) is known here so its port reaches the
-# .env, but Sirdar never turns it on yet (apps.NOT_RUN): its secrets
-# (SS_DEVICES_SERVICE_TOKEN, DEVICES_SECRET_KEY) stay out of the .env.
+# devices (deploy/stack's devices app): its port is always written; its two
+# secrets (DEVICES_SECRETS) only while it runs (apps.env_extra), as EXTRA_KEYS.
 SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "devices",
             "mailpit")
 PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "devices")
@@ -43,6 +42,10 @@ SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
 # unset): the kiosk app's signing certificate digests (apps.env_extra fills it).
 OPTIONAL_SETTINGS = ("SS_KIOSK_SIGNING_DIGESTS",)
 FERNET_SECRETS = ("SS_TOTP_ENCRYPTION_KEY",)
+# The devices app's: hex (shared by the API and the devices service) and a
+# Fernet key (encrypts its Apple secrets; never replaced once made). Not
+# REQUIRED_SECRETS: an environment without devices has neither.
+DEVICES_SECRETS = ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY")
 HEX_SECRETS = tuple(k for k in REQUIRED_SECRETS if k not in FERNET_SECRETS)
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -51,22 +54,28 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_KEEP_DUMPS = 5
 PLACEHOLDER = "CHANGEME"
 
-# Extra keys a .env carries beyond the basics: the apps and mail of any
-# environment, then a DigitalOcean droplet's (deploy phase 7) or a LAN
-# Blue/Green app VM's (phase 8b), in the order they are written.
+# Extra keys a .env carries beyond the basics: the apps, mail and devices
+# secrets of any environment, then a DigitalOcean droplet's (deploy phase 7)
+# or a LAN Blue/Green app VM's (phase 8b), in the order they are written.
 # deploy/stack reads them with defaults, so a .env without them still means
-# "every app, Mailpit, local data, NPM on the LAN".
+# "every app but devices (it needs its secrets), Mailpit, local data, NPM on
+# the LAN".
 EXTRA_KEYS = (
     # the Deploy page flow (phase 8c): the optional apps that run, and SMTP
     # (the password is the optional secret SS_SMTP_PASSWORD)
     "STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT", "SS_SMTP_USERNAME", "SS_SMTP_STARTTLS",
     "SS_SMTP_FROM",
+    # the devices app's secrets, while it runs (apps.env_extra)
+    *DEVICES_SECRETS,
     "STACK_EXTERNAL_DATA", "STACK_CADDY", "STACK_NETWORK_SUBNET", "STACK_HOSTS_IP",
     "STACK_TRUSTED_PROXIES", "STACK_DB_HOST", "STACK_DB_PORT", "STACK_DB_NAME", "STACK_DB_USER",
     # disable: an app VM's database is a LAN Blue/Green data VM (phase 8b), no TLS
     "STACK_DB_SSLMODE",
     "SS_DATABASE_URL", "SS_DATABASE_SSL", "SS_DATABASE_CA_B64", "SS_SPACES_ENDPOINT",
     "SS_SPACES_REGION", "SS_SPACES_ACCESS_KEY", "SS_SPACES_SECRET_KEY", "SS_SPACES_USE_PATH_STYLE",
+    # the devices service's own database and bucket
+    "DEVICES_DATABASE_URL", "DEVICES_SPACES_BUCKET", "DEVICES_SPACES_ACCESS_KEY",
+    "DEVICES_SPACES_SECRET_KEY",
     "STACK_DROPLET_ID",
     # the cert-worker (deploy/stack/api/compose.yml, profile certs) reads only these
     "SS_CERT_DO_TOKEN", "SS_CERT_LB_ID", "SS_CERT_NAMES", "SS_CERT_ACME_DIRECTORY",

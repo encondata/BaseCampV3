@@ -634,7 +634,10 @@ def _do_parts(env: Environment, do: dict, inv: dict | None) -> tuple[list[dict],
                           f"Managed PostgreSQL · {size}", status, label, region=region,
                           endpoint=_private_host(found) or row.db_host or "—"))
         shown.add(database.do_id)
-    if bucket := _newest(records, "bucket"):
+    # the environment's own bucket (the devices service's, <bucket>-devices, is recorded
+    # as a bucket too, after it)
+    if bucket := next((r for r in records if r.kind == "bucket" and r.do_id == row.bucket),
+                      None):
         # Spaces isn't in the inventory: the bucket is listed, not checked.
         parts.append(node(f"{env.name}:bucket", bucket.name, "spaces", "Spaces bucket",
                           "unknown", "Not checked", region=region))

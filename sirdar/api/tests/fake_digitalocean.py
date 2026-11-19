@@ -17,7 +17,8 @@ smallest size; a database resize stays `resizing` for `db_resize_polls` GETs
 refuses droplets that don't exist (on create too, where `rules` apply from
 the start); VPC names are unique; a load balancer's and a cloud firewall's
 PUT replaces the whole body; a load balancer refuses an unknown `certificate_id` and `droplet_ids`
-together with `tag`."""
+together with `tag`; a Spaces key needs grants, each read/readwrite on one bucket or
+fullaccess on every bucket (bucket "")."""
 
 import base64
 import itertools
@@ -407,6 +408,12 @@ class FakeDigitalOcean:
         if rest[:1] != ["keys"]:
             return _err(404, "not_found")
         if method == "POST" and len(rest) == 1:
+            # each grant: read/readwrite on one bucket, or fullaccess on all ("")
+            for grant in body.get("grants") or [None]:
+                if not isinstance(grant, dict) or grant.get("permission") not in (
+                        "read", "readwrite", "fullaccess") or (
+                        (grant.get("permission") == "fullaccess") != (grant.get("bucket") == "")):
+                    return _err(422, "unprocessable_entity", "invalid grants")
             n = next(self._ids)
             key = {"name": body["name"], "access_key": f"DO00KEY{n:06d}",
                    "secret_key": f"spaces-SECRET-{n:06d}-xyz", "grants": body["grants"],

@@ -32,6 +32,40 @@ from .fake_digitalocean import (
     LB_IP,
 )
 
+# The two buckets step 0 keeps, each with its own readwrite key: (key name,
+# do_environments' key id and secret columns). The devices one (S3) only
+# while devices runs (the factory's environments run it).
+KEYS = {"main": ("ss-uat9", "spaces_key_id", "spaces_secret_enc"),
+        "devices": ("ss-uat9-devices", "devices_spaces_key_id", "devices_spaces_secret_enc")}
+
+
+def _devices_bucket(build) -> str:
+    return f"{build.env.spaces_bucket}-devices"
+
+
+def _bucket_of(build, which: str) -> str:
+    return build.env.spaces_bucket if which == "main" else _devices_bucket(build)
+
+
+def _named(fake, name: str) -> list[str]:
+    return [k["access_key"] for k in fake.keys.values() if k["name"] == name]
+
+
+async def _recorded_keys(db, name: str | None = None) -> list[str]:
+    query = select(DoResource.do_id).where(DoResource.kind == "spaces_key")
+    if name is not None:
+        query = query.where(DoResource.name == name)
+    return sorted(await db.scalars(query))
+
+
+async def _set_apps(db, build, apps: list[str]) -> None:
+    env = await db.get(Environment, build.env.id, populate_existing=True)
+    env.apps = apps
+    await db.commit()
+
+
+WITHOUT_DEVICES = ["wiki", "kiosk", "learn", "status", "mailpit"]
+
 
 async def _kinds(db, env_id) -> list[tuple[str, str | None]]:
     rows = await db.scalars(select(DoResource).where(DoResource.environment_id == env_id))
@@ -64,9 +98,9 @@ async def test_the_first_run_builds_everything(db, do_build):
     env_tag = do_envs.env_tag(b.env.id)
     # One of each, recorded.
     assert await _kinds(db, b.env.id) == [
-        ("bucket", None), ("certificate", None), ("database", None), ("droplet", "orange"),
-        ("droplet", "purple"), ("firewall", None), ("load_balancer", None), ("spaces_key", None),
-        ("vpc", None)]
+        ("bucket", None), ("bucket", None), ("certificate", None), ("database", None),
+        ("droplet", "orange"), ("droplet", "purple"), ("firewall", None),
+        ("load_balancer", None), ("spaces_key", None), ("spaces_key", None), ("vpc", None)]
     droplets = sorted(fake.droplets.values(), key=lambda d: d["name"])
     assert [d["name"] for d in droplets] == ["ss-uat9-orange", "ss-uat9-purple"]
     assert all(env_tag in d["tags"] and "sirdar" in d["tags"] for d in droplets)
@@ -78,12 +112,20 @@ async def test_the_first_run_builds_everything(db, do_build):
     assert database["private_network_uuid"] == next(iter(fake.vpcs))
     assert sorted(r["value"] for r in fake.db_rules[database["id"]]) == sorted(
         str(d["id"]) for d in droplets)
-    (key,) = fake.keys.values()                                   # the setup key is gone
+    # the setup key is gone; each bucket has its own key, granted on it alone
+    key, devices_key = (fake.keys[a] for n in ("ss-uat9", "ss-uat9-devices")
+                        for a in _named(fake, n))
+    assert len(fake.keys) == 2
     assert key["grants"] == [{"bucket": b.env.spaces_bucket, "permission": "readwrite"}]
-    assert b.env.spaces_bucket in b.cloud.spaces.buckets
+    assert devices_key["grants"] == [{"bucket": _devices_bucket(b), "permission": "readwrite"}]
+    assert {b.env.spaces_bucket, _devices_bucket(b)} <= set(b.cloud.spaces.buckets)
+    recorded = {r.do_id for r in (await db.scalars(select(DoResource).where(
+        DoResource.environment_id == b.env.id, DoResource.kind == "bucket")))}
+    assert recorded == {b.env.spaces_bucket, _devices_bucket(b)}
     (cert,) = fake.certificates.values()
     assert sorted(cert["dns_names"]) == sorted(
-        [*(f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "learn", "status")),
+        [*(f"{s}.uat9.serversherpa.com"
+           for s in ("api", "portal", "kiosk", "wiki", "learn", "status", "devices")),
          "uat9.serversherpa.com"])
     (lb,) = fake.load_balancers.values()
     assert lb["droplet_ids"] == [] and lb["vpc_uuid"] == database["private_network_uuid"]
@@ -98,6 +140,9 @@ async def test_the_first_run_builds_everything(db, do_build):
     assert (row.lb_ip, row.vpc_ip_range, row.team_uuid, row.db_port) == (
         LB_IP, "10.116.0.0/20", "team-dev-0002", 25060)
     assert row.db_host.startswith("private-ss-uat9-db") and row.spaces_key_id == key["access_key"]
+    assert row.devices_spaces_key_id == devices_key["access_key"]
+    assert vault.decrypt(get_settings(), row.devices_spaces_secret_enc) == \
+        devices_key["secret_key"]
     assert row.cert_not_after is not None
     slots = (await db.scalars(select(DoSlot).where(DoSlot.environment_id == b.env.id)
                               .execution_options(populate_existing=True))).all()
@@ -110,6 +155,10 @@ async def test_the_first_run_builds_everything(db, do_build):
     host, command, stdin = sql[0]
     admin_line, ca_line, rest = stdin.split("\n", 2)
     assert admin_line == DB_ADMIN_PASSWORD and "SCRAM-SHA-256$4096:" in rest
+    # the role owns the main database and the devices service's
+    assert "CREATE DATABASE serversherpa OWNER serversherpa" in rest
+    assert "CREATE DATABASE serversherpa_devices OWNER serversherpa" in rest
+    assert "ALTER DATABASE serversherpa_devices OWNER TO serversherpa;" in rest
     assert base64.b64decode(ca_line).decode() == CA_PEM          # verify-full against it
     assert "sslmode=verify-full" in command and "export PGPASSWORD" not in command
     password = await _db_password(db, b.env.id)
@@ -117,10 +166,56 @@ async def test_the_first_run_builds_everything(db, do_build):
     assert DB_ADMIN_PASSWORD not in command and password not in command
     assert all(password not in c[1] and DB_ADMIN_PASSWORD not in c[1] for c in b.remote.calls)
     log = b.log()
-    for secret in await _secrets(db, b, key["secret_key"]):
+    for secret in await _secrets(db, b, key["secret_key"], devices_key["secret_key"]):
         assert secret not in log
     assert CA_PEM.strip() not in log
     assert "Created the VPC ss-uat9" in log and "Load balancer ss-uat9-lb: active" in log
+    assert f"Created the bucket {_devices_bucket(b)}." in log
+    assert "Database: serversherpa owns serversherpa and serversherpa_devices." in log
+
+
+async def test_without_devices_there_is_no_devices_bucket_or_key(db, do_build):
+    await _set_apps(db, do_build, WITHOUT_DEVICES)
+    await do_build.run()
+    fake = do_build.cloud.do
+    assert [k["name"] for k in fake.keys.values()] == ["ss-uat9"]
+    assert _devices_bucket(do_build) not in do_build.cloud.spaces.buckets
+    row = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    assert (row.devices_spaces_key_id, row.devices_spaces_secret_enc) == (None, None)
+    # its database is made all the same: SQL on the cluster, nothing on DigitalOcean
+    (sql,) = [c for c in do_build.remote.calls if "PGPASSFILE" in c[1]]
+    assert "CREATE DATABASE serversherpa_devices OWNER serversherpa" in sql[2]
+
+
+async def test_turning_devices_on_makes_its_bucket_and_key_on_the_next_update(db, do_build):
+    await _set_apps(db, do_build, WITHOUT_DEVICES)
+    await do_build.run()
+    fake = do_build.cloud.do
+    before = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    main_key, main_secret = before.spaces_key_id, before.spaces_secret_enc
+    await _set_apps(db, do_build, [*WITHOUT_DEVICES[:4], "devices", "mailpit"])
+    await do_build.run()
+    (devices_key,) = _named(fake, "ss-uat9-devices")
+    # the main key (a live slot may use it) is never replaced or regranted
+    after = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    assert (after.spaces_key_id, after.spaces_secret_enc) == (main_key, main_secret)
+    assert _named(fake, "ss-uat9") == [main_key]
+    assert fake.keys[main_key]["grants"] == [{"bucket": do_build.env.spaces_bucket,
+                                              "permission": "readwrite"}]
+    assert fake.keys[devices_key]["grants"] == [{"bucket": _devices_bucket(do_build),
+                                                 "permission": "readwrite"}]
+    assert _devices_bucket(do_build) in do_build.cloud.spaces.buckets
+    assert do_build.cloud.spaces.cors[_devices_bucket(do_build)][0]["origins"] == [
+        "https://devices.uat9.serversherpa.com"]
+    row = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    assert row.devices_spaces_key_id == devices_key
+    assert len(fake.keys) == 2                                   # no setup key left
+    # turning it off again keeps the bucket, its objects and its key
+    await _set_apps(db, do_build, WITHOUT_DEVICES)
+    before = len(fake.writes())
+    await do_build.run()
+    assert devices_key in fake.keys and _devices_bucket(do_build) in do_build.cloud.spaces.buckets
+    assert not [w for w in fake.writes()[before:] if "/spaces/keys" in w[1]]
 
 
 async def test_a_second_run_changes_nothing(db, do_build):
@@ -371,23 +466,25 @@ async def test_resolve_ref_uses_the_given_slot(db, do_build):
     assert seen == ["Sirdar's key for ss-uat9-purple", "Sirdar's key for ss-uat9-orange"]
 
 
-async def test_a_bucket_key_whose_secret_was_lost_is_replaced(db, do_build):
+@pytest.mark.parametrize("which", KEYS)
+async def test_a_bucket_key_whose_secret_was_lost_is_replaced(db, do_build, which):
     """A key recorded the moment DigitalOcean made it, whose secret never
     reached do_environments (DigitalOcean shows a secret once): step 0
     deletes it and makes a new one, rather than leaving a key nobody can use."""
+    name, id_column, secret_column = KEYS[which]
     await do_build.run()
     fake = do_build.cloud.do
-    (old,) = fake.keys
-    await do_envs.set_do(do_build.env.id, spaces_secret_enc=None)
+    (old,) = _named(fake, name)
+    other = sorted(set(fake.keys) - {old})
+    await do_envs.set_do(do_build.env.id, **{secret_column: None})
     await do_build.run()
-    (new,) = fake.keys
+    (new,) = _named(fake, name)
     assert new != old
     row = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
-    assert row.spaces_key_id == new and row.spaces_secret_enc is not None
-    rows = await db.scalars(select(DoResource.do_id).where(DoResource.kind == "spaces_key"))
-    assert list(rows) == [new]
+    assert getattr(row, id_column) == new and getattr(row, secret_column) is not None
+    assert await _recorded_keys(db) == sorted([new, *other])
     await do_build.run()
-    assert list(fake.keys) == [new]
+    assert sorted(fake.keys) == sorted([new, *other])
 
 
 # ---- review fixes ---------------------------------------------------------------------------
@@ -636,31 +733,40 @@ async def test_a_second_run_only_reads_spaces(db, do_build):
     seen = len(do_build.cloud.spaces.requests)
     await do_build.run()
     later = do_build.cloud.spaces.requests[seen:]
-    assert [(r.method, "cors" in r.url.params) for r in later] == [("HEAD", False),
-                                                                    ("GET", True)]
+    # each bucket: a HEAD under its own key, then its CORS read
+    assert [(r.method, "cors" in r.url.params) for r in later] == [
+        ("HEAD", False), ("GET", True), ("HEAD", False), ("GET", True)]
+    assert [r.url.host.split(".")[0] for r in later] == [do_build.env.spaces_bucket] * 2 + [
+        _devices_bucket(do_build)] * 2
 
 
-async def test_a_recorded_bucket_that_is_gone_is_made_again(db, do_build):
+@pytest.mark.parametrize("which", KEYS)
+async def test_a_recorded_bucket_that_is_gone_is_made_again(db, do_build, which):
+    bucket = _bucket_of(do_build, which)
     await do_build.run()
-    del do_build.cloud.spaces.buckets[do_build.env.spaces_bucket]
+    del do_build.cloud.spaces.buckets[bucket]
     await do_build.run()
-    assert do_build.env.spaces_bucket in do_build.cloud.spaces.buckets
-    assert "is gone; making it again" in do_build.log()
-    assert len(do_build.cloud.do.keys) == 1                 # the setup key went again
+    assert bucket in do_build.cloud.spaces.buckets
+    assert f"The bucket {bucket} Sirdar recorded is gone; making it again" in do_build.log()
+    assert len(do_build.cloud.do.keys) == 2                 # the setup key went again
+    assert bucket in do_build.cloud.spaces.cors             # and its CORS is set again
 
 
-async def test_a_recorded_app_key_gone_from_digitalocean_is_replaced(db, do_build):
+@pytest.mark.parametrize("which", KEYS)
+async def test_a_recorded_app_key_gone_from_digitalocean_is_replaced(db, do_build, which):
+    name, id_column, _ = KEYS[which]
     await do_build.run()
     fake = do_build.cloud.do
-    (old,) = fake.keys
+    (old,) = _named(fake, name)
+    other = sorted(set(fake.keys) - {old})
     del fake.keys[old]
     await do_build.run()
-    (new,) = fake.keys
+    (new,) = _named(fake, name)
     assert new != old
     row = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
-    assert row.spaces_key_id == new
-    rows = await db.scalars(select(DoResource.do_id).where(DoResource.kind == "spaces_key"))
-    assert list(rows) == [new]
+    assert getattr(row, id_column) == new
+    assert await _recorded_keys(db) == sorted([new, *other])
+    assert f"Bucket key {old} is gone from DigitalOcean; making a new one." in do_build.log()
 
 
 async def test_a_recorded_setup_key_renamed_by_hand_is_not_deleted(db, do_build):
@@ -861,18 +967,33 @@ async def test_the_bucket_lets_the_apps_upload_from_the_browser(db, do_build):
     (rule,) = cors
     assert set(rule["origins"]) == _origins(do_build)
     assert set(rule["methods"]) == {"GET", "HEAD", "PUT"}
-    puts = len([r for r in do_build.cloud.spaces.requests
-                if r.method == "PUT" and "cors" in r.url.params])
+    def cors_puts() -> list[str]:
+        return sorted(r.url.host.split(".")[0] for r in do_build.cloud.spaces.requests
+                      if r.method == "PUT" and "cors" in r.url.params)
+    puts = cors_puts()
     await do_build.run()
-    assert len([r for r in do_build.cloud.spaces.requests
-                if r.method == "PUT" and "cors" in r.url.params]) == puts == 1
+    # once per bucket (the main one and the devices one), never again
+    assert cors_puts() == puts == sorted([do_build.env.spaces_bucket, _devices_bucket(do_build)])
     assert "CORS" in do_build.log()
+
+
+async def test_the_devices_bucket_lets_only_the_devices_site_upload(db, do_build):
+    await do_build.run()
+    (rule,) = do_build.cloud.spaces.cors[_devices_bucket(do_build)]
+    assert rule["origins"] == ["https://devices.uat9.serversherpa.com"]
+    assert set(rule["methods"]) == {"GET", "HEAD", "PUT"}
+    # the main bucket's CORS doesn't name it: devices uploads only to its own bucket
+    (main,) = do_build.cloud.spaces.cors[do_build.env.spaces_bucket]
+    assert "https://devices.uat9.serversherpa.com" not in main["origins"]
+    assert (f"Bucket {_devices_bucket(do_build)}: CORS now lets "
+            "https://devices.uat9.serversherpa.com upload") in do_build.log()
 
 
 async def test_cors_falls_back_to_the_setup_key(db, do_build):
     do_build.cloud.spaces.cors_needs_fullaccess = True
     await do_build.run()
     assert do_build.env.spaces_bucket in do_build.cloud.spaces.cors
+    assert _devices_bucket(do_build) in do_build.cloud.spaces.cors
     assert "temporary full-access key" in do_build.log()
     assert not [k for k in do_build.cloud.do.keys.values() if k["name"] == "ss-uat9-setup"]
 
@@ -891,31 +1012,50 @@ async def test_firewall_ports_all_and_0_are_the_same(db, do_build):
     assert not [w for w in fake.writes()[before:] if w[1].startswith("/firewalls")]
 
 
-async def test_an_app_key_whose_create_answer_was_lost_is_replaced(db, do_build):
+@pytest.mark.parametrize("which", KEYS)
+async def test_an_app_key_whose_create_answer_was_lost_is_replaced(db, do_build, which):
+    name, id_column, secret_column = KEYS[which]
     await do_build.run()
     fake = do_build.cloud.do
-    (old,) = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
+    (old,) = _named(fake, name)
+    other = sorted(set(fake.keys) - {old})
     await db.execute(DoResource.__table__.delete().where(DoResource.kind == "spaces_key"))
     await db.commit()
-    await do_envs.set_do(do_build.env.id, spaces_key_id=None, spaces_secret_enc=None)
+    await do_envs.set_do(do_build.env.id, **{id_column: None, secret_column: None})
     await do_build.run()
-    keys = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
-    assert len(keys) == 1 and keys[0]["access_key"] != old["access_key"]
-    rows = (await db.scalars(select(DoResource).where(DoResource.kind == "spaces_key"))).all()
-    assert [r.do_id for r in rows] == [keys[0]["access_key"]]
+    (new,) = _named(fake, name)
+    assert new != old and old not in fake.keys
+    # the other bucket's key, whose secret was saved, is recorded again
+    assert await _recorded_keys(db) == sorted([new, *other])
 
 
-async def test_an_app_key_with_a_known_secret_is_adopted_by_name(db, do_build):
+@pytest.mark.parametrize("which", KEYS)
+async def test_an_app_key_with_a_known_secret_is_adopted_by_name(db, do_build, which):
+    name, _, _ = KEYS[which]
     await do_build.run()
     fake = do_build.cloud.do
-    (old,) = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
-    await db.execute(DoResource.__table__.delete().where(DoResource.kind == "spaces_key"))
+    before = sorted(fake.keys)
+    (old,) = _named(fake, name)
+    await db.execute(DoResource.__table__.delete().where(DoResource.kind == "spaces_key",
+                                                         DoResource.name == name))
     await db.commit()
     await do_build.run()
-    keys = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
-    assert [k["access_key"] for k in keys] == [old["access_key"]]
-    rows = (await db.scalars(select(DoResource).where(DoResource.kind == "spaces_key"))).all()
-    assert [r.do_id for r in rows] == [old["access_key"]]
+    assert _named(fake, name) == [old] and sorted(fake.keys) == before
+    assert await _recorded_keys(db) == before
+    assert (f"Bucket key {old} ({_bucket_of(do_build, which)}): recorded it again (its record "
+            "was lost).") in do_build.log()
+
+
+async def test_a_devices_named_key_for_another_bucket_is_left_alone(db, do_build):
+    """Named like the devices key but granted on another bucket: not ours."""
+    await do_build.run()
+    fake = do_build.cloud.do
+    fake.keys["DO00OTHER"] = {"name": "ss-uat9-devices", "access_key": "DO00OTHER",
+                              "secret_key": "x", "grants": [{"bucket": "someone-elses",
+                                                             "permission": "readwrite"}]}
+    await do_build.run()
+    assert "DO00OTHER" in fake.keys
+    assert "DO00OTHER" not in await _recorded_keys(db)
 
 
 async def test_a_certificate_whose_create_answer_was_lost_is_adopted(db, do_build):

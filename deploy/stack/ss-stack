@@ -7,11 +7,14 @@
 #   ss-stack up      <env-dir>              start or update everything, waiting on health
 #   ss-stack down    <env-dir> [--volumes]  stop everything; --volumes also deletes the data
 #   ss-stack ps      <env-dir>              list every stack's containers
-#   ss-stack dump    <env-dir>              pg_dump into <env-dir>/backups (keeps STACK_KEEP_DUMPS)
+#   ss-stack dump    <env-dir>              pg_dump into <env-dir>/backups (keeps STACK_KEEP_DUMPS);
+#                                           the devices database, when it exists, into backups/devices
 #   ss-stack data    <env-dir>              start only the database and storage, waiting on health
+#   ss-stack hba     <env-dir>              a LAN data VM's pg_hba.conf only, as data writes it
 #   ss-stack restore <env-dir> <file.dump> [--clear-sessions]
 #                                           stop the app stacks, empty the database, pg_restore the
-#                                           dump; --clear-sessions also signs everyone out
+#                                           dump (and devices/<file.dump> into the devices database,
+#                                           when it is there); --clear-sessions also signs everyone out
 #   ss-stack pgdump  <env-dir> <out.dump>   pg_dump (custom, no owner or ACLs) to one file
 #   ss-stack revision <env-dir>             print the database's Alembic revision
 #   ss-stack admin   <env-dir> <args…>      serversherpa bootstrap-admin in the running api
@@ -50,7 +53,7 @@ cleanup() { if (( ${#CLEANUP[@]} )); then rm -f -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '6,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '6,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -78,9 +81,9 @@ lan_db() { [[ $(env_value STACK_DB_PUBLISH) == 1 ]]; }
 
 # The optional apps, in STACK_APPS order: the one list (Sirdar's drift test
 # reads it too). Sirdar's render.yml and slot_smoke.yml grep this line to
-# tell whether a checkout knows the learning site, so keep it one line in
-# this form or change those greps too:
-# sirdar/api/tests/test_deploy_stack_drift.py and
+# tell whether a checkout knows the learning site (and DEVICES_DB's below
+# for the Devices app), so keep it one line in this form or change those
+# greps too: sirdar/api/tests/test_deploy_stack_drift.py and
 # deploy/tests/test_sirdar_greps.py run them against this file.
 OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)
 
@@ -109,6 +112,11 @@ check_apps() {
 
 # The devices app's two secrets: set means non-empty and not CHANGEME.
 DEVICES_SECRETS=(SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY)
+# its own database, on the environment's database server. Sirdar's
+# render.yml and slot_smoke.yml grep this exact line to tell a checkout that
+# dumps, restores and (on a data VM) allows this database from one that
+# predates it: keep it as it is, or change those greps too.
+DEVICES_DB=serversherpa_devices
 devices_secrets_missing() {
   local key value
   for key in "${DEVICES_SECRETS[@]}"; do
@@ -157,11 +165,15 @@ app_on() {
 HBA_FILE="$env_dir/pg_hba.conf"
 
 # pg_hba.conf for a data VM: the local socket (ss-stack dump, the health
-# check), localhost, and the app servers in STACK_DB_ALLOW; nobody else.
+# check), localhost, and the app servers in STACK_DB_ALLOW (to the main and
+# the devices database); nobody else.
 # Every address (and STACK_DB_PORT) is checked before the file changes. The
 # container bind-mounts the file itself, which pins its inode: a changed
 # list is written into the same file (never mv'd over it), then a running
-# Postgres rereads it.
+# Postgres rereads it. HBA_CHANGED and HBA_RELOADED say what happened (hba
+# prints it).
+HBA_CHANGED=0
+HBA_RELOADED=0
 write_hba() {
   local allow ip ips octet octets port
   port=$(env_value STACK_DB_PORT)
@@ -192,21 +204,25 @@ write_hba() {
     echo "host all all 127.0.0.1/32 scram-sha-256"
     for ip in "${ips[@]}"; do
       echo "host serversherpa serversherpa $ip/32 scram-sha-256"
+      echo "host $DEVICES_DB serversherpa $ip/32 scram-sha-256"
     done
   } > "$HBA_FILE.tmp"
   export STACK_DB_HBA_FILE="$HBA_FILE"
   if [[ ! -f $HBA_FILE ]]; then
     chmod 644 "$HBA_FILE.tmp"        # the container's postgres user reads it
     mv "$HBA_FILE.tmp" "$HBA_FILE"
+    HBA_CHANGED=1
     return 0
   fi
   if cmp -s "$HBA_FILE.tmp" "$HBA_FILE"; then return 0; fi
   cat "$HBA_FILE.tmp" > "$HBA_FILE"   # the same inode the container sees
   chmod 644 "$HBA_FILE"
+  HBA_CHANGED=1
   if [[ -n $(dc db ps --status running -q postgres </dev/null) ]]; then
     dc db exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 \
       -tAc 'SELECT pg_reload_conf()' </dev/null >/dev/null \
       || die "couldn't make Postgres reread pg_hba.conf"
+    HBA_RELOADED=1
   fi
 }
 
@@ -339,13 +355,40 @@ psql_run() {  # psql_run <sql> — on whichever database this environment uses
 # builds the statement only when the database is missing (\gexec). The SQL
 # goes in on stdin: psql's -c can't carry a backslash command after a query.
 # A here-string, never a pipe: a pipe would run pg() in a subshell.
-DEVICES_DB_SQL="SELECT 'CREATE DATABASE serversherpa_devices' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'serversherpa_devices')\\gexec"
+DEVICES_DB_SQL="SELECT 'CREATE DATABASE $DEVICES_DB' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$DEVICES_DB')\\gexec"
 ensure_devices_db() {
   if external; then
     pg psql -v ON_ERROR_STOP=1 -q <<<"$DEVICES_DB_SQL"
   else
     pg_local psql -v ON_ERROR_STOP=1 -q <<<"$DEVICES_DB_SQL"
   fi
+}
+
+# A client on the devices database (dump and restore): pg() or the local
+# container, with that database named first. stdin and stdout pass through.
+pg_devices() {  # pg_devices <client> [args…]
+  local client=$1; shift
+  if external; then
+    pg "$client" -d "$DEVICES_DB" "$@"
+  else
+    dc db exec -T postgres "$client" -U serversherpa -d "$DEVICES_DB" "$@"
+  fi
+}
+
+# Whether the devices database exists (an environment that never ran the
+# devices app has none). psql's answer is read through $(…), a subshell: on
+# the managed database the CA file is written here first, so the subshell
+# reuses it and this shell removes it.
+devices_db_exists() {
+  local found query
+  query="SELECT 1 FROM pg_database WHERE datname = '$DEVICES_DB'"
+  if external; then
+    ca_file
+    found=$(pg psql -tAc "$query" </dev/null) || die "couldn't check for the devices database"
+  else
+    found=$(pg_local psql -tAc "$query" </dev/null) || die "couldn't check for the devices database"
+  fi
+  [[ $found == 1 ]]
 }
 
 data_up() {
@@ -452,6 +495,22 @@ case $cmd in
     ensure_network
     data_up
     ;;
+  hba)
+    # Only what data does to pg_hba.conf, on a LAN Blue/Green data VM: Sirdar
+    # runs it there before the pre-deploy dump, because an older commit's
+    # data may have left out the devices database's lines and the step that
+    # runs data again comes after the dump. Nothing starts or restarts.
+    [[ $# -eq 0 ]] || usage
+    lan_db || die "hba is for a LAN data VM (STACK_DB_PUBLISH=1 in $env_file)"
+    write_hba
+    if (( HBA_RELOADED )); then
+      echo "pg_hba.conf updated; Postgres reread it"
+    elif (( HBA_CHANGED )); then
+      echo "pg_hba.conf updated"
+    else
+      echo "pg_hba.conf already up to date"
+    fi
+    ;;
   restore)
     [[ $# -eq 1 || $# -eq 2 ]] || usage
     dump=$1
@@ -472,7 +531,7 @@ case $cmd in
     # two slots share one managed database, so Sirdar (phase 7b) restores
     # only while no slot has run a deploy (pipeline: seed_not_allowed; an
     # added slot's first deploy never seeds): no other slot is writing.
-    for s in status web api; do dc "$s" stop </dev/null; done
+    for s in status devices web api; do dc "$s" stop </dev/null; done
     if ! external; then dc db up -d "${WAIT[@]}" </dev/null; fi
     # an empty schema, never pg_restore --clean: tables a newer migration
     # created aren't in the dump, and --clean would leave them behind
@@ -487,6 +546,24 @@ case $cmd in
     fi
     if [[ -n $clear ]]; then
       psql_run "$CLEAR_SESSIONS" || die "couldn't clear the sessions"
+    fi
+    # the devices database's dump sits beside it (ss-stack dump); a backup
+    # from before devices was dumped has none, and the devices database
+    # stays as it is
+    devices_dump="$(dirname "$dump")/devices/$(basename "$dump")"
+    if [[ -f $devices_dump ]]; then
+      # By now the main database is restored (and signed out, with
+      # --clear-sessions): every failure below says so, and what it left of
+      # the devices database. Running the restore again redoes both.
+      untouched="the main database is already restored, and $DEVICES_DB is as it was: fix that and run the restore again"
+      [[ -r $devices_dump ]] || die "can't read the devices database's dump ($devices_dump): $untouched"
+      ensure_devices_db || die "couldn't create the devices database: $untouched"
+      # one psql -c is one transaction: a failure leaves the schema as it was
+      pg_devices psql -v ON_ERROR_STOP=1 -q -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' \
+        </dev/null || die "couldn't empty the devices database: $untouched"
+      # --exit-on-error stops at the first error, keeping what came before it
+      pg_devices pg_restore --exit-on-error --no-owner --no-acl < "$devices_dump" \
+        || die "pg_restore of the devices database failed: the main database is already restored, but $DEVICES_DB is now empty or only partly restored. Fix the error above and run the restore again (it restores both)."
     fi
     echo "restored $dump"
     ;;
@@ -504,7 +581,11 @@ case $cmd in
     # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?}
     if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
     mkdir -p "$env_dir/backups"
-    out="$env_dir/backups/$(date -u +%Y%m%dT%H%M%SZ).dump"
+    name="$(date -u +%Y%m%dT%H%M%SZ).dump"
+    out="$env_dir/backups/$name"
+    # the devices database goes to backups/devices under the same name, out
+    # of the *.dump that count as backups here (and in Sirdar)
+    devices_out="$env_dir/backups/devices/$name"
     # pg_dump writes to a .partial that becomes the .dump only once it
     # succeeds, so an error, Ctrl-C or dropped SSH session never leaves a
     # truncated file that looks like a backup. The signal traps turn a
@@ -517,13 +598,28 @@ case $cmd in
     if ! dump_db > "$partial"; then
       die "pg_dump failed"
     fi
+    # the main dump becomes a backup only once the devices one is in place
+    if devices_db_exists; then
+      mkdir -p "$env_dir/backups/devices"
+      devices_partial="$devices_out.partial"
+      CLEANUP+=("$devices_partial")
+      pg_devices pg_dump -Fc </dev/null > "$devices_partial" \
+        || die "pg_dump of the devices database failed"
+      mv "$devices_partial" "$devices_out"
+    fi
     mv "$partial" "$out"
     # names are UTC timestamps, so name order is age order (newest first).
     # Only *.dump counts: a stray .partial (maybe a dump still running) is
-    # never counted and never deleted here.
+    # never counted and never deleted here. A main dump takes its devices
+    # dump with it, and the devices dumps keep the same count.
     printf '%s\n' "$env_dir/backups"/*.dump | sort -r | tail -n +"$((keep + 1))" | while IFS= read -r old; do
-      rm -f "$old"
+      rm -f "$old" "$env_dir/backups/devices/${old##*/}"
     done
+    if [[ -d $env_dir/backups/devices ]]; then
+      printf '%s\n' "$env_dir/backups/devices"/*.dump | sort -r | tail -n +"$((keep + 1))" | while IFS= read -r old; do
+        rm -f "$old"
+      done
+    fi
     echo "$out"
     ;;
   pgdump)

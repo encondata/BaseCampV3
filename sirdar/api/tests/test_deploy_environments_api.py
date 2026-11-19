@@ -86,7 +86,8 @@ async def test_environment_defaults(client, db):
                "production_slots": ["blue", "green"], "one_slot": ["orange"],
                "two_slots": ["orange", "purple"]},
         "first_admin": {"password_min_length": 8, "role": "super_admin", "link_minutes": 240},
-        "apps": {"optional": ["wiki", "kiosk", "learn", "status", "mailpit"], "always": ["api", "portal"]},
+        "apps": {"optional": ["wiki", "kiosk", "learn", "status", "devices", "mailpit"],
+                 "always": ["api", "portal"]},
         "mail": {"smtp_port": 587}}
 
 
@@ -113,8 +114,8 @@ async def test_create_new_environment(client, db, target, leak_guard):
         "name": "qa", "type": "custom", "target": "ssh", "base_domain": "qa.serversherpa.com",
         "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True,
         "proxy": "switchyard",
-        "apps": ["wiki", "kiosk", "learn", "status", "mailpit"], "mail": {"mode": "mailpit"},
-        "secrets": []}]
+        "apps": ["wiki", "kiosk", "learn", "status", "devices", "mailpit"],
+        "mail": {"mode": "mailpit"}, "secrets": []}]
     assert (await client.get(f"{URL}/qa", headers=h)).json() == body
     listed = (await client.get(URL, headers=h)).json()["environments"]
     assert [e["name"] for e in listed] == ["qa"]

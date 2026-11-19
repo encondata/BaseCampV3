@@ -33,6 +33,9 @@ CADDY_IP = "172.30.0.2"                  # Caddy on the ss-<env> network = the e
 NETWORK_SUBNET = "172.30.0.0/24"
 BIND_IP = "127.0.0.1"                    # app ports stay on the droplet; Caddy publishes :80
 DB_NAME = DB_USER = "serversherpa"
+DEVICES_DB_NAME = "serversherpa_devices"    # the devices service's, on the same cluster
+DEVICES_SUFFIX = "-devices"                 # its bucket's and its key's names (S3)
+BUCKET_MAX = 63                             # an S3 bucket name's length limit
 _SIZE_RE = re.compile(r"[a-z0-9][a-z0-9-]{2,39}")
 _DB_SIZE_RE = re.compile(r"db-[a-z0-9][a-z0-9-]{2,36}")
 
@@ -56,6 +59,21 @@ def droplet_name(env_name: str, slot: str) -> str:
 
 def bucket_name(env_name: str, env_id) -> str:
     return f"ss-{env_name}-{uuid.UUID(str(env_id)).hex[:8]}"
+
+
+def devices_bucket_name(bucket: str) -> str:
+    """The devices service's own bucket: `<bucket>-devices`. A name that
+    would pass 63 characters loses characters before the main bucket's id
+    suffix (its last `-` part), so it stays unique."""
+    if len(bucket) + len(DEVICES_SUFFIX) <= BUCKET_MAX:
+        return bucket + DEVICES_SUFFIX
+    head, _, ident = bucket.rpartition("-")
+    room = BUCKET_MAX - len(DEVICES_SUFFIX) - len(ident) - 1
+    return f"{head[:room].rstrip('-')}-{ident}{DEVICES_SUFFIX}"
+
+
+def runs_devices(env: Environment) -> bool:
+    return "devices" in (env.apps or ())
 
 
 def env_tag(env_id) -> str:
@@ -315,7 +333,9 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
     cert-worker's keys: the account's renewal token, the load balancer, the
     public names, the ACME directory and this environment's ACME key
     (base64). A droplet id that isn't a number counts as missing (the
-    cert-worker would idle)."""
+    cert-worker would idle). The devices service's database
+    (DEVICES_DATABASE_URL: step 0 makes it on every cluster) and, while
+    devices runs, its own bucket and that bucket's key (S3)."""
     import base64
     from urllib.parse import quote
 
@@ -335,6 +355,8 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         ("database port", row.db_port if row else None),
         ("database CA", row.db_ca_cert if row else None),
         ("Spaces key", row.spaces_key_id if row and row.spaces_secret_enc else None),
+        *([("devices Spaces key", row.devices_spaces_key_id
+            if row and row.devices_spaces_secret_enc else None)] if runs_devices(env) else []),
         ("droplet", droplet if droplet and droplet.isdecimal() else None),
         ("load balancer", lb_id),
         ("renewal token", account.renewal_token if account else None)) if not value]
@@ -342,7 +364,8 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         raise DoEnvError("do_not_ready", missing=missing)
     spaces_secret = vault.decrypt(settings, row.spaces_secret_enc)
     password = quote(secrets["POSTGRES_PASSWORD"], safe="")
-    url = f"postgresql+asyncpg://{DB_USER}:{password}@{row.db_host}:{row.db_port}/{DB_NAME}"
+    server = f"postgresql+asyncpg://{DB_USER}:{password}@{row.db_host}:{row.db_port}"
+    url, devices_url = f"{server}/{DB_NAME}", f"{server}/{DEVICES_DB_NAME}"
     ca_b64 = base64.b64encode(row.db_ca_cert.encode()).decode()
     extra = {
         "STACK_EXTERNAL_DATA": "1", "STACK_CADDY": "1", "STACK_NETWORK_SUBNET": NETWORK_SUBNET,
@@ -352,8 +375,16 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "require", "SS_DATABASE_CA_B64": ca_b64,
         "SS_SPACES_ENDPOINT": spaces.endpoint(row.region), "SS_SPACES_REGION": row.region,
         "SS_SPACES_ACCESS_KEY": row.spaces_key_id, "SS_SPACES_SECRET_KEY": spaces_secret,
-        "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": droplet,
+        "SS_SPACES_USE_PATH_STYLE": "false", "DEVICES_DATABASE_URL": devices_url,
     }
+    found = [url, devices_url, spaces_secret, ca_b64]
+    if runs_devices(env):
+        devices_secret = vault.decrypt(settings, row.devices_spaces_secret_enc)
+        extra |= {"DEVICES_SPACES_BUCKET": devices_bucket_name(row.bucket),
+                  "DEVICES_SPACES_ACCESS_KEY": row.devices_spaces_key_id,
+                  "DEVICES_SPACES_SECRET_KEY": devices_secret}
+        found.append(devices_secret)
+    extra["STACK_DROPLET_ID"] = droplet
     acme_key = base64.b64encode(vault.decrypt(settings, row.acme_key_enc).encode()).decode()
     extra |= {   # the cert-worker's (Task 3); STACK_ENV and STACK_DROPLET_ID come with the rest
         "SS_CERT_DO_TOKEN": account.renewal_token, "SS_CERT_LB_ID": lb_id,
@@ -362,7 +393,7 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         "SS_CERT_ACME_DIRECTORY": (settings.acme_staging_directory if row.acme_staging
                                    else settings.acme_directory),
         "SS_CERT_ACME_KEY": acme_key}
-    found = [url, spaces_secret, ca_b64, account.renewal_token, acme_key]
+    found += [account.renewal_token, acme_key]
     if password != secrets["POSTGRES_PASSWORD"]:
         found.append(password)          # the URL carries it quoted: a secret too
     return extra, found
@@ -374,15 +405,16 @@ async def secret_values(db: AsyncSession, settings: Settings, env: Environment) 
     droplet), the cert-worker's ACME key (as PEM and as the base64 the .env
     carries), the Spaces secret and the doadmin password (step 0 makes the
     last two, after the run's context was built, so each host step reads them
-    again). Values that don't open are left out: whatever needs them fails on
-    its own."""
+    again; the devices bucket's key secret likewise). Values that don't open
+    are left out: whatever needs them fails on its own."""
     import base64
 
     row = await get(db, env.id)
     if row is None:
         return []
     found: list[str | None] = []
-    for blob in (row.acme_key_enc, row.spaces_secret_enc, row.db_admin_password_enc):
+    for blob in (row.acme_key_enc, row.spaces_secret_enc, row.devices_spaces_secret_enc,
+                 row.db_admin_password_enc):
         if blob is not None:
             try:
                 value = vault.decrypt(settings, blob)

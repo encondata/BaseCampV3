@@ -5,11 +5,12 @@ DigitalOcean resources ("do_destroy") and Renew certificate ("do_renew",
 step 19).
 
 Step 0 is idempotent: it makes what is missing and never replaces what
-exists. In order: the team check, the VPC, the bucket and its key, a droplet
+exists. In order: the team check, the VPC, the bucket and its key (and,
+while devices runs, the devices service's own bucket and key), a droplet
 per slot, the database cluster (its firewall set to the droplets right after
 create), the droplets' SSH host keys (Sirdar generated them; cloud-init
 delivers them; they are pinned before any command runs), the commit, the
-database role and database (SQL on the slot's droplet, as doadmin), the
+database role and its databases (SQL on the slot's droplet, as doadmin), the
 certificate, the load balancer and the cloud firewall.
 
 Every resource is recorded in do_resources the moment DigitalOcean answers,
@@ -85,6 +86,7 @@ WAITS = {"droplet": 10 * 60, "database": 30 * 60, "lb": 10 * 60, "ssh": 10 * 60,
 HEALTH_MARGIN = 10             # seconds on top of the load balancer's health checks
 _HEALTHZ = "curl -fsS -o /dev/null --max-time 5 http://127.0.0.1/healthz"
 CORS_SERVICES = ("portal", "kiosk", "wiki")   # the apps that upload straight to the bucket
+DEVICES_CORS_SERVICES = ("devices",)          # the devices site, to its own bucket only
 DB_RESIZE_FLIP = 60            # seconds a resized cluster gets to leave "online"
 SQL_TIMEOUT = 15 * 60          # cloud-init may still be installing psql
 # Runs as `bash -c _PSQL <host> <port>` on the droplet. Stdin: the doadmin
@@ -157,6 +159,7 @@ class DoContext:
     ssh_private_key: str = field(repr=False)
     db_admin_password: str | None = field(default=None, repr=False)
     cloudflare: CloudflareConfig | None = field(default=None, repr=False)
+    devices: bool = False            # the devices app runs: its bucket and key (S3)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -224,7 +227,7 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
         token=account.token, db_password=_decrypt(settings, secret.value_enc),
         ssh_private_key=_decrypt(settings, row.ssh_private_key_enc),
         db_admin_password=_decrypt(settings, row.db_admin_password_enc),
-        cloudflare=cloudflare)
+        cloudflare=cloudflare, devices=do_envs.runs_devices(env))
 
 
 # ---- fresh records -----------------------------------------------------------------------
@@ -244,6 +247,33 @@ async def load_records(env_id) -> Records:
     the context was built before step 0 wrote anything)."""
     async with get_sessionmaker()() as s:
         return Records(await do_envs.resources_of(s, env_id), await do_envs.slots_of(s, env_id))
+
+
+# ---- buckets -------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Bucket:
+    """A bucket step 0 keeps with its own readwrite key: the environment's,
+    or the devices service's (S3). `key_column`/`secret_column` hold the
+    key in do_environments; `cors` names the apps whose browsers upload."""
+    name: str
+    key_name: str
+    key_column: str
+    secret_column: str
+    cors: tuple[str, ...]
+
+
+def buckets(ctx: DoContext, *, devices: bool | None = None) -> list[Bucket]:
+    """The main bucket, then the devices one while devices runs (`devices`
+    overrides that: a lost devices key is Sirdar's whether or not it runs)."""
+    found = [Bucket(ctx.bucket, do_envs.resource_name(ctx.env_name), "spaces_key_id",
+                    "spaces_secret_enc", CORS_SERVICES)]
+    if ctx.devices if devices is None else devices:
+        found.append(Bucket(do_envs.devices_bucket_name(ctx.bucket),
+                            do_envs.resource_name(ctx.env_name, do_envs.DEVICES_SUFFIX),
+                            "devices_spaces_key_id", "devices_spaces_secret_enc",
+                            DEVICES_CORS_SERVICES))
+    return found
 
 
 # ---- load balancer bodies ----------------------------------------------------------------
@@ -515,20 +545,20 @@ class DoProvisioner:
             raise StepFailed(_UNREADABLE) from None
 
     async def _bucket(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
-        """The bucket and its own readwrite key, both checked live: a recorded
-        key DigitalOcean no longer has is forgotten (and replaced); a recorded
-        bucket is checked with a HEAD under that key and made again when gone.
-        A key is deleted only when DigitalOcean still lists it under the name
-        Sirdar recorded."""
+        """Each bucket (buckets()) and its own readwrite key, all checked
+        live: a recorded key DigitalOcean no longer has is forgotten (and
+        replaced); a recorded bucket is checked with a HEAD under its key and
+        made again when gone. A key is deleted only when DigitalOcean still
+        lists it under the name Sirdar recorded."""
         setup_name = do_envs.resource_name(ctx.env_name, "-setup")
-        app_name = do_envs.resource_name(ctx.env_name)
+        key_names = {b.key_name for b in buckets(ctx)}       # the keys this run makes again
         live_keys = {k.get("access_key"): k for k in await api.spaces_keys()}
         recorded_keys = (await load_records(ctx.env_id)).find("spaces_key")
         for rec in recorded_keys:
             live = live_keys.get(rec.do_id)
             if live is None:
                 await do_envs.forget(ctx.env_id, "spaces_key", rec.do_id)
-                if rec.name == app_name:
+                if rec.name in key_names:
                     out(f"Bucket key {rec.do_id} is gone from DigitalOcean; making a new one.\n")
                 continue
             if live.get("name") != rec.name:
@@ -539,87 +569,97 @@ class DoProvisioner:
                 out("Removed a temporary Spaces key a stopped run left behind.\n")
         row = await self._row(ctx)
         await self._lost_keys(api, ctx, live_keys, {r.do_id for r in recorded_keys}, row, out)
+        for bucket in buckets(ctx):
+            await self._one_bucket(api, ctx, bucket, row, out)
+
+    async def _one_bucket(self, api: DigitalOceanApi, ctx: DoContext, bucket: Bucket, row,
+                          out: Output) -> None:
         records = await load_records(ctx.env_id)
-        app_keys = [r for r in records.find("spaces_key") if r.name == app_name]
-        app_key = None
-        if row.spaces_secret_enc is not None and row.spaces_key_id in {r.do_id for r in app_keys}:
-            app_key = spaces.SpacesKey(row.spaces_key_id, self._open(row.spaces_secret_enc))
-        recorded = bool(records.find("bucket"))
-        if recorded and app_key is not None:
-            if await spaces.bucket_exists(ctx.bucket, ctx.region, app_key):
-                out(f"Bucket {ctx.bucket}: in place.\n")
+        own_keys = [r for r in records.find("spaces_key") if r.name == bucket.key_name]
+        key_id, secret = getattr(row, bucket.key_column), getattr(row, bucket.secret_column)
+        key = None
+        if secret is not None and key_id in {r.do_id for r in own_keys}:
+            key = spaces.SpacesKey(key_id, self._open(secret))
+        recorded = any(r.do_id == bucket.name for r in records.find("bucket"))
+        if recorded and key is not None:
+            if await spaces.bucket_exists(bucket.name, ctx.region, key):
+                out(f"Bucket {bucket.name}: in place.\n")
             else:
-                await do_envs.forget(ctx.env_id, "bucket", ctx.bucket)
-                out(f"The bucket {ctx.bucket} Sirdar recorded is gone; making it again.\n")
-                recorded = False
-                await self._make_bucket(api, ctx, False, out)
+                await do_envs.forget(ctx.env_id, "bucket", bucket.name)
+                out(f"The bucket {bucket.name} Sirdar recorded is gone; making it again.\n")
+                await self._make_bucket(api, ctx, bucket.name, False, out)
         else:
             # No key to look with: the create is idempotent (ours answers "already").
-            await self._make_bucket(api, ctx, recorded, out)
-        if app_key is not None:
-            out(f"Bucket key {app_key.access_key}: in place.\n")
-            await self._bucket_cors(api, ctx, app_key, out)
+            await self._make_bucket(api, ctx, bucket.name, recorded, out)
+        if key is not None:
+            out(f"Bucket key {key.access_key}: in place.\n")
+            await self._bucket_cors(api, ctx, bucket, key, out)
             return
-        for rec in app_keys:          # its secret was never saved: DigitalOcean shows it once
+        for rec in own_keys:          # its secret was never saved: DigitalOcean shows it once
             await api.delete_spaces_key(rec.do_id)
             await do_envs.forget(ctx.env_id, "spaces_key", rec.do_id)
             out(f"Removed the bucket key {rec.do_id}: Sirdar never saved its secret.\n")
-        key = await api.create_spaces_key(app_name, [{"bucket": ctx.bucket,
-                                                      "permission": "readwrite"}])
-        await do_envs.record(ctx.env_id, "spaces_key", key["access_key"], app_name)
-        await do_envs.set_do(ctx.env_id, spaces_key_id=key["access_key"],
-                             spaces_secret_enc=vault.encrypt(self._settings, key["secret_key"]))
-        out(f"Made the bucket's own key {key['access_key']}.\n")
-        await self._bucket_cors(api, ctx, spaces.SpacesKey(key["access_key"], key["secret_key"]),
-                                out)
+        made = await api.create_spaces_key(bucket.key_name, [{"bucket": bucket.name,
+                                                              "permission": "readwrite"}])
+        await do_envs.record(ctx.env_id, "spaces_key", made["access_key"], bucket.key_name)
+        await do_envs.set_do(ctx.env_id, **{
+            bucket.key_column: made["access_key"],
+            bucket.secret_column: vault.encrypt(self._settings, made["secret_key"])})
+        out(f"Made the bucket's own key {made['access_key']} ({bucket.name}).\n")
+        await self._bucket_cors(api, ctx, bucket,
+                                spaces.SpacesKey(made["access_key"], made["secret_key"]), out)
 
     async def _lost_keys(self, api: DigitalOceanApi, ctx: DoContext, live_keys: dict,
                          recorded: set[str], row, out: Output) -> None:
         """A key whose create answer was lost: DigitalOcean lists it under
-        Sirdar's exact name but nothing recorded it. The bucket's own key
-        is adopted when its secret was saved; otherwise (DigitalOcean shows a
-        secret once) it, or a temporary key, is deleted."""
+        Sirdar's exact name but nothing recorded it. A bucket's own key (the
+        main one's or the devices one's, granted on that bucket) is adopted
+        when its secret was saved; otherwise (DigitalOcean shows a secret
+        once) it, or a temporary key, is deleted."""
         setup_name = do_envs.resource_name(ctx.env_name, "-setup")
-        app_name = do_envs.resource_name(ctx.env_name)
+        by_key = {b.key_name: b for b in buckets(ctx, devices=True)}
         for access, live in live_keys.items():
             name = live.get("name")
-            if access in recorded or name not in (setup_name, app_name):
+            if access in recorded or (name != setup_name and name not in by_key):
                 continue
-            if name == app_name and not any(g.get("bucket") == ctx.bucket
-                                            for g in live.get("grants") or []):
+            bucket = by_key.get(name)
+            if bucket is not None and not any(g.get("bucket") == bucket.name
+                                              for g in live.get("grants") or []):
                 continue                     # named like ours, but for another bucket
-            if (name == app_name and row.spaces_key_id == access
-                    and row.spaces_secret_enc is not None):
-                await do_envs.record(ctx.env_id, "spaces_key", access, app_name)
-                out(f"Bucket key {access}: recorded it again (its record was lost).\n")
+            if (bucket is not None and getattr(row, bucket.key_column) == access
+                    and getattr(row, bucket.secret_column) is not None):
+                await do_envs.record(ctx.env_id, "spaces_key", access, name)
+                out(f"Bucket key {access} ({bucket.name}): recorded it again (its record "
+                    "was lost).\n")
                 continue
             await api.delete_spaces_key(access)
             out(f"Removed the Spaces key {access} ({name}): Sirdar never recorded it or its "
                 "secret.\n")
 
-    async def _apply_cors(self, ctx: DoContext, key: spaces.SpacesKey,
+    async def _apply_cors(self, ctx: DoContext, bucket: str, key: spaces.SpacesKey,
                           wanted: list[spaces.CorsRule]) -> bool:
-        if await spaces.bucket_cors(ctx.bucket, ctx.region, key) == wanted:
+        if await spaces.bucket_cors(bucket, ctx.region, key) == wanted:
             return False
-        await spaces.put_bucket_cors(ctx.bucket, ctx.region, key, wanted)
+        await spaces.put_bucket_cors(bucket, ctx.region, key, wanted)
         return True
 
-    async def _bucket_cors(self, api: DigitalOceanApi, ctx: DoContext, key: spaces.SpacesKey,
-                           out: Output) -> None:
+    async def _bucket_cors(self, api: DigitalOceanApi, ctx: DoContext, bucket: Bucket,
+                           key: spaces.SpacesKey, out: Output) -> None:
         """The apps' browsers PUT to presigned URLs: PUT, GET and HEAD from
-        their origins. Set with the bucket's own key, or with a temporary
-        full-access key when Spaces refuses that one; only when it differs."""
-        origins = sorted(f"https://{h}" for s, h in ctx.hosts if s in CORS_SERVICES)
+        their origins (bucket.cors). Set with the bucket's own key, or with a
+        temporary full-access key when Spaces refuses that one; only when it
+        differs."""
+        origins = sorted(f"https://{h}" for s, h in ctx.hosts if s in bucket.cors)
         wanted = [spaces.cors_rule(origins)]
         used = "the bucket's own key"
         try:
-            changed = await self._apply_cors(ctx, key, wanted)
+            changed = await self._apply_cors(ctx, bucket.name, key, wanted)
         except spaces.SpacesDenied:
             used = "the temporary full-access key"
             setup = await self._setup_key(api, ctx)
             failure: spaces.SpacesError | None = None
             try:
-                changed = await self._apply_cors(ctx, setup, wanted)
+                changed = await self._apply_cors(ctx, bucket.name, setup, wanted)
             except spaces.SpacesError as e:
                 failure = e
             try:
@@ -633,24 +673,24 @@ class DoProvisioner:
             if failure is not None:
                 raise StepFailed(failure.reason) from None
         if changed:
-            out(f"Bucket {ctx.bucket}: CORS now lets {', '.join(origins)} upload (set with "
+            out(f"Bucket {bucket.name}: CORS now lets {', '.join(origins)} upload (set with "
                 f"{used}).\n")
         else:
-            out(f"Bucket {ctx.bucket}: CORS in place (checked with {used}).\n")
+            out(f"Bucket {bucket.name}: CORS in place (checked with {used}).\n")
 
-    async def _make_bucket(self, api: DigitalOceanApi, ctx: DoContext, recorded: bool,
-                           out: Output) -> None:
+    async def _make_bucket(self, api: DigitalOceanApi, ctx: DoContext, bucket: str,
+                           recorded: bool, out: Output) -> None:
         setup = await self._setup_key(api, ctx)
         try:
-            made = await spaces.create_bucket(ctx.bucket, ctx.region, setup)
+            made = await spaces.create_bucket(bucket, ctx.region, setup)
         finally:
             await self._drop_setup_key(api, ctx, setup.access_key)
-        await do_envs.record(ctx.env_id, "bucket", ctx.bucket, ctx.bucket)
+        await do_envs.record(ctx.env_id, "bucket", bucket, bucket)
         if made:
-            out(f"Created the bucket {ctx.bucket}.\n")
+            out(f"Created the bucket {bucket}.\n")
         else:
-            out(f"Bucket {ctx.bucket}: in place.\n" if recorded
-                else f"Bucket {ctx.bucket}: already this account's; recorded it.\n")
+            out(f"Bucket {bucket}: in place.\n" if recorded
+                else f"Bucket {bucket}: already this account's; recorded it.\n")
 
     async def _row(self, ctx: DoContext):
         async with get_sessionmaker()() as s:
@@ -953,7 +993,10 @@ class DoProvisioner:
         if await self._remote(cfg, _READY, None, log=out) != 0:
             raise StepFailed(f"cloud-init didn't finish setting up {name} (psql is missing). "
                              "Retry from step 0.")
-        sql = pgauth.setup_sql(role=do_envs.DB_USER, database=do_envs.DB_NAME,
+        # the devices service's database on every cluster: turning devices on
+        # later needs no SQL (CREATE DATABASE wants doadmin on a managed cluster)
+        sql = pgauth.setup_sql(role=do_envs.DB_USER,
+                               databases=(do_envs.DB_NAME, do_envs.DEVICES_DB_NAME),
                                verifier=pgauth.scram_sha256(ctx.db_password))
         command = psql_command(database["host"], database["port"])
         ca_b64 = base64.b64encode(database["ca"].encode()).decode()
@@ -962,7 +1005,8 @@ class DoProvisioner:
         if code != 0:
             raise StepFailed("The managed database didn't accept Sirdar's setup (psql exited "
                              f"{code}). Retry from step 0.")
-        out(f"Database: {do_envs.DB_USER} owns {do_envs.DB_NAME}.\n")
+        out(f"Database: {do_envs.DB_USER} owns {do_envs.DB_NAME} and "
+            f"{do_envs.DEVICES_DB_NAME}.\n")
 
     async def _certificate(self, api: DigitalOceanApi, ctx: DoContext, out: Output, *,
                            record_date: bool = True) -> dict:
@@ -1421,11 +1465,13 @@ class DoProvisioner:
         recorded droplets."""
         droplets = []
         certificates = {r.do_id for r in records.find("certificate")}
+        ours = {b.name for b in buckets(ctx, devices=True)}
         for rec in records.resources:
             if rec.kind == "bucket":
-                if rec.do_id != ctx.bucket:
-                    raise StepFailed(f"Sirdar recorded the bucket {rec.do_id}, not this "
-                                     f"environment's {ctx.bucket}. Sirdar changed nothing.")
+                if rec.do_id not in ours:
+                    raise StepFailed(f"Sirdar recorded the bucket {rec.do_id}, not one of this "
+                                     f"environment's ({' or '.join(sorted(ours))}). Sirdar "
+                                     "changed nothing.")
                 continue
             if rec.kind not in self._FETCH:
                 continue

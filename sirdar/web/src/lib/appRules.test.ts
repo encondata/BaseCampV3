@@ -6,13 +6,13 @@ import {
 } from './appRules';
 
 const base: AppsMailForm = {
-  apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: true },
+  apps: { wiki: true, kiosk: true, learn: true, status: true, devices: true, mailpit: true },
   mailMode: 'mailpit', smtpHost: '', smtpPort: '587', smtpUsername: '', smtpPassword: '', smtpFrom: '', smtpStarttls: true,
 };
 
 describe('apps', () => {
-  it('lists Learning between Kiosk and Status page', () => {
-    expect(OPTIONAL_APPS.map(([, l]) => l)).toEqual(['Wiki', 'Kiosk', 'Learning', 'Status page', 'Mailpit']);
+  it('lists Learning between Kiosk and Status page, and Devices before Mailpit', () => {
+    expect(OPTIONAL_APPS.map(([, l]) => l)).toEqual(['Wiki', 'Kiosk', 'Learning', 'Status page', 'Devices', 'Mailpit']);
   });
   it('the learning site goes off with the wiki; Mailpit off moves mail to SMTP', () => {
     expect(switchApp(base, 'wiki', false)).toEqual({ apps: { ...base.apps, wiki: false, learn: false } });
@@ -20,7 +20,7 @@ describe('apps', () => {
     expect(switchApp(base, 'kiosk', false)).toEqual({ apps: { ...base.apps, kiosk: false } });
   });
   it('appsOn keeps the canonical order; appsProblem mirrors the API', () => {
-    expect(appsOn({ ...base.apps, kiosk: false })).toEqual(['wiki', 'learn', 'status', 'mailpit']);
+    expect(appsOn({ ...base.apps, kiosk: false })).toEqual(['wiki', 'learn', 'status', 'devices', 'mailpit']);
     expect(appsProblem({ ...base, apps: { ...base.apps, wiki: false } })).toBe(LEARN_NEEDS_WIKI);
     expect(appsProblem({ ...base, apps: { ...base.apps, mailpit: false } }))
       .toBe('Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.');
@@ -46,7 +46,7 @@ describe('mail', () => {
       mode: 'smtp', host: 'smtp.example.com', port: 2525, username: null, from_address: 'ops@example.com',
       starttls: false, password_set: true,
     }, ['ab'.repeat(32)], 587);
-    expect(f.apps).toEqual({ wiki: true, kiosk: false, learn: false, status: false, mailpit: true });
+    expect(f.apps).toEqual({ wiki: true, kiosk: false, learn: false, status: false, devices: false, mailpit: true });
     expect([f.mailMode, f.smtpPort, f.smtpStarttls, f.digests]).toEqual(['smtp', '2525', false, 'ab'.repeat(32)]);
   });
 });

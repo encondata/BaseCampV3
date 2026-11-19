@@ -32,8 +32,9 @@ from .deploy_factories import (  # noqa: F401
     stop_pipeline,
     trust_fake,
 )
-from .do_helpers import CA, DOADMIN, SPACES_SECRET, make_do_environment
+from .do_helpers import CA, DEVICES_SPACES_SECRET, DOADMIN, SPACES_SECRET, make_do_environment
 from .do_helpers import built as _built
+from .do_helpers import built_env
 from .do_helpers import fetched as _fetched
 from .do_helpers import ready_snapshot as _ready_snapshot
 from .publish_helpers import publish_fakes  # noqa: F401
@@ -94,13 +95,23 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
     assert f"SS_CERT_LB_ID=lb-{do_env.id}\n" in text
     assert f"SS_CERT_DO_TOKEN={DEV_RENEW_TOKEN}\n" in text
     assert "SS_CERT_NAMES=api.uat9.serversherpa.com,portal.uat9.serversherpa.com," in text
-    assert "status.uat9.serversherpa.com,uat9.serversherpa.com\n" in text
+    # devices is on by default: its name is on the certificate too
+    assert "status.uat9.serversherpa.com,devices.uat9.serversherpa.com,uat9.serversherpa.com\n" \
+        in text
     assert f"SS_SPACES_SECRET_KEY={SPACES_SECRET}\n" in text
     assert "SS_DATABASE_URL=postgresql+asyncpg://serversherpa:" in text
+    # the devices service: its database on the same cluster, its own bucket and key
+    env_values = envfile.parse_env(text)
+    assert env_values["DEVICES_DATABASE_URL"].endswith(
+        "@private-ss-uat9-db.db.ondigitalocean.com:25060/serversherpa_devices")
+    assert env_values["DEVICES_SPACES_BUCKET"] == f"{env.spaces_bucket}-devices"
+    assert (env_values["DEVICES_SPACES_ACCESS_KEY"], env_values["DEVICES_SPACES_SECRET_KEY"]) \
+        == ("DO00DEVKEY0001", DEVICES_SPACES_SECRET)
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
     # no spaces: objects live in Spaces, and Caddy has no route for it
     assert [h["hostname"] for h in smoke.extravars["public_hosts"]] == [
-        f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "learn", "status")]
+        f"{s}.uat9.serversherpa.com"
+        for s in ("api", "portal", "kiosk", "wiki", "learn", "status", "devices")]
     assert [h["path"] for h in smoke.extravars["public_hosts"]][0] == "/healthz"
     assert smoke.extravars["block_metadata"] is True
     assert smoke.extravars["external_data"] is True
@@ -117,7 +128,7 @@ async def test_cloud_vars_reach_every_host_step(db, do_env, fake_runner,
     for request in fake_runner.requests:
         assert request.extravars["external_data"] is True, request.step
         assert request.extravars["block_metadata"] is True, request.step
-        assert len(request.extravars["public_hosts"]) == 6, request.step
+        assert len(request.extravars["public_hosts"]) == 7, request.step
 
 
 async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publisher,
@@ -133,18 +144,17 @@ async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publ
             EnvironmentSecret, (do_env.id, "POSTGRES_PASSWORD"))).value_enc)
     assert acme_key.startswith("-----BEGIN")
     ca_b64 = base64.b64encode(CA.encode()).decode()
-    leaks = [SPACES_SECRET, DOADMIN, DEV_RENEW_TOKEN, ca_b64, acme_key, password,
-             base64.b64encode(acme_key.encode()).decode()]
+    leaks = [SPACES_SECRET, DEVICES_SPACES_SECRET, DOADMIN, DEV_RENEW_TOKEN, ca_b64, acme_key,
+             password, base64.b64encode(acme_key.encode()).decode()]
     lines = [f"leak {v}\n" for v in leaks]
     fake_runner.output["render"] = lines
     fake_runner.output["slot_smoke"] = lines
     fake_provisioner.echo["go_live"] = "".join(lines)
 
     def url_line(request):
-        text = base64.b64decode(request.extravars["env_file_b64"]).decode()
-        url = next(v for k, v in (ln.split("=", 1) for ln in text.splitlines() if "=" in ln)
-                   if k == "SS_DATABASE_URL")
-        fake_runner.output["up"] = [f"leak {url}\n"]
+        values = envfile.parse_env(base64.b64decode(request.extravars["env_file_b64"]).decode())
+        fake_runner.output["up"] = [f"leak {values[k]}\n"
+                                    for k in ("SS_DATABASE_URL", "DEVICES_DATABASE_URL")]
 
     fake_runner.effects["render"] = url_line
     dep_id = await _start(db, do_env, slot="orange", go_live=True)
@@ -156,6 +166,20 @@ async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publ
         for value in leaks:
             assert value not in log, (key, value[:12])
     assert "postgresql+asyncpg" not in next(s.log for s in steps if s.key == "up")
+
+
+async def test_devices_turned_on_needs_step_0_before_a_render(db, do_env, fake_runner,
+                                                            fake_publisher, fake_provisioner):
+    """Devices on but step 0 hasn't made its bucket key yet (a retry that
+    skips step 0): Sirdar renders nothing and names step 0, rather than a
+    .env whose devices service would fall back to the main key."""
+    await built_env(do_env)
+    await do_envs.set_do(do_env.id, devices_spaces_key_id=None, devices_spaces_secret_enc=None)
+    dep_id = await _start(db, do_env, slot="orange", go_live=True, sha=SHA, start_step=1)
+    dep, steps, _ = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 1)
+    assert "missing: devices Spaces key" in dep.error and "Retry from step 0" in dep.error
+    assert fake_runner.requests == []
 
 
 async def test_a_retry_before_any_droplet_names_step_0(db, do_env, fake_runner,
@@ -388,7 +412,8 @@ async def test_dns_points_at_the_load_balancer_and_never_needs_npm(db, secrets_k
     await publish.HttpPublisher().run("dns", ctx, lines.append)
     made = {r["name"]: r["content"] for r in publish_fakes.cf.records.values()}
     assert made == {**{f"{s}.uat9.serversherpa.com": "203.0.113.50"
-                       for s in ("api", "portal", "kiosk", "wiki", "learn", "status")},
+                       for s in ("api", "portal", "kiosk", "wiki", "learn", "status",
+                                 "devices")},
                     "uat9.serversherpa.com": "203.0.113.50"}          # home
     assert lines[0] == "api.uat9.serversherpa.com: created A 203.0.113.50\n"
 

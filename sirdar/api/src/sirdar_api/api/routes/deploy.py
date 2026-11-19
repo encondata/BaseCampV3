@@ -610,7 +610,7 @@ async def environment_defaults(actor: AuthContext = require_permission("deploy",
         "first_admin": {"password_min_length": portal_policy.PASSWORD_MIN_LENGTH,
                         "role": portal_policy.FIRST_ADMIN_ROLE,
                         "link_minutes": portal_policy.FIRST_ADMIN_LINK_MINUTES},
-        # the ones Sirdar can run (deploy/stack's devices app isn't, yet)
+        # the ones Sirdar can run: all of deploy/stack's
         "apps": {"optional": list(app_rules.RUNNABLE_APPS), "always": list(app_rules.ALWAYS)},
         "mail": {"smtp_port": app_rules.DEFAULT_SMTP_PORT},
     }

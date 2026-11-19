@@ -15,7 +15,7 @@ from .integration_helpers import CF_TOKEN, NPM_PASSWORD, SY_KEY, configure
 from .publish_helpers import managed, publish_fakes, sp  # noqa: F401
 
 PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "learn": 8092,
-         "spaces": 9000, "status": 8095}
+         "spaces": 9000, "status": 8095, "devices": 8093}
 NAMES = sorted(f"{s}.uat2.serversherpa.com" for s in PORTS)
 HOME = "uat2.serversherpa.com"
 

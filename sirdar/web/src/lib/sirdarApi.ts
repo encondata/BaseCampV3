@@ -378,7 +378,8 @@ const MESSAGES: Record<string, string> = {
   first_admin_not_set: 'This environment has no first admin to change.',
   first_admin_done: 'The first admin was already created; change their password in the portal.',
   // optional apps and mail
-  apps_invalid: 'Choose the apps from Wiki, Kiosk, Learning, Status page and Mailpit.',
+  apps_invalid: 'Choose the apps from Wiki, Kiosk, Learning, Status page, Devices and Mailpit.',
+  devices_secrets_missing: 'The Devices app needs its secrets, and this environment is missing them.',
   learn_needs_wiki: 'The learning site needs the wiki: turn the wiki on, or turn learning off.',
   signing_digest_invalid: 'Each kiosk signing digest is a SHA-256: 64 hex characters, colons allowed.',
   digests_not_allowed: 'An adopted environment keeps the signing digests its own .env has (SS_KIOSK_SIGNING_DIGESTS).',

@@ -88,12 +88,14 @@ async def test_the_first_deploy_builds_and_goes_live(db, lan, fake_runner, fake_
             app_env["STACK_DB_SSLMODE"], app_env["SS_DATABASE_SSL"]) == (
         "1", DATA, "disable", "disable")
     assert app_env["SS_DATABASE_URL"].endswith(f"@{DATA}:5432/serversherpa")
+    # the devices service's database is on the data VM too
+    assert app_env["DEVICES_DATABASE_URL"] == app_env["SS_DATABASE_URL"] + "_devices"
 
     dump = next(r for r in fake_runner.requests if r.step == "dump")
     assert (dump.extravars["external_data"], dump.extravars["data_new"]) == (True, True)
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
     assert {h["service"] for h in smoke.extravars["public_hosts"]} == {
-        "api", "portal", "kiosk", "wiki", "learn", "status"}
+        "api", "portal", "kiosk", "wiki", "learn", "status", "devices"}
     assert all("port" in h for h in smoke.extravars["public_hosts"])
 
 
@@ -466,6 +468,98 @@ async def test_a_retry_from_step_7_alone(db, lan, fake_runner, fake_publisher,
 
 
 FIRST_SKIPPED = ["provision", "preflight", "bootstrap", "fetch", "render", "build", "dump"]
+
+
+# ---- an Update to an older commit, then forward again ---------------------------
+
+# a commit whose ss-stack predates the devices database's pg_hba.conf lines
+OLDER = "0d" * 20
+DATA_HBA = "pg_hba.conf updated; Postgres reread it"
+
+
+def _data_vm_with_an_hba(fake_runner) -> list[str]:
+    """The fake runner plays the data VM's pg_hba.conf: step 7's ss-stack data
+    (and step 6's hba, when the commit has it) write it as that commit's
+    ss-stack would, and the app VM's dump of the devices database (a commit
+    that knows it) is refused while the file leaves it out. Returns the
+    dumps' outcomes."""
+    state = {"devices_hba": True}
+    dumps: list[str] = []
+    original = fake_runner.run
+
+    def knows(request) -> bool:
+        return request.extravars["sha"] != OLDER
+
+    async def run(request, on_output):
+        if request.step == "data_vm":
+            state["devices_hba"] = knows(request)
+        elif request.step == "dump_hba" and knows(request):
+            state["devices_hba"] = True
+            on_output(DATA_HBA + "\n")
+        elif (request.step == "dump" and not request.extravars["data_new"]
+              and knows(request)):
+            dumps.append("ok" if state["devices_hba"] else "refused")
+            if not state["devices_hba"]:
+                fake_runner.requests.append(request)
+                on_output("ss-stack: pg_dump of the devices database failed\n")
+                return RunResult(status="failed", rc=2)
+        return await original(request, on_output)
+
+    fake_runner.run = run
+    return dumps
+
+
+async def test_an_update_forward_after_an_older_one_still_dumps(db, lan, fake_runner,
+                                                              fake_publisher):
+    """Update, Update to an older commit, Update forward: the older commit's
+    ss-stack data (step 7) wrote the data VM's pg_hba.conf without the
+    devices database, and step 7 comes after step 6's dump. Step 6 first
+    has this commit's ss-stack write the file on the data VM; the step
+    numbers stay as they were."""
+    dumps = _data_vm_with_an_hba(fake_runner)
+    await _run(db, lan, go_live=True)                       # orange, then purple
+    older = await _run(db, lan, slot="purple", sha=OLDER)
+    dep, _, _ = await _load(older)
+    assert dep.status == "succeeded", dep.error
+    fake_runner.requests.clear()
+    dep_id = await _run(db, lan, slot="purple", sha=NEWER)
+    dep, steps, _ = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("succeeded", None), dep.error
+    assert dumps[-1] == "ok" and "refused" not in dumps
+    assert fake_runner.steps() == ["preflight", "bootstrap", "fetch", "render", "build",
+                                   "dump_hba", "dump", "data_vm", "up", "slot_smoke"]
+    assert [(s.number, s.key) for s in steps] == [
+        (0, "provision"), (1, "preflight"), (2, "bootstrap"), (3, "fetch"), (4, "render"),
+        (5, "build"), (6, "dump"), (7, "data_vm"), (10, "up"), (13, "slot_smoke")]
+    by_step = {r.step: r for r in fake_runner.requests}
+    hba, dump = by_step["dump_hba"], by_step["dump"]
+    # on the data VM, with this commit; the dump itself on the slot's app VM
+    assert _pub(hba.target) == _pub(by_step["data_vm"].target)
+    assert _pub(dump.target) == _pub(by_step["render"].target) != _pub(hba.target)
+    assert (hba.playbook, hba.extravars["data_hba"], hba.extravars["sha"]) == (
+        "dump.yml", True, NEWER)
+    assert "data_hba" not in dump.extravars
+    for key in ("repo_url", "ss_stack", "env_dir"):
+        assert hba.extravars[key] == by_step["data_vm"].extravars[key]
+    assert "data_env_b64" not in hba.extravars and "env_file_b64" not in hba.extravars
+    log = next(s.log for s in steps if s.key == "dump")
+    assert log.index(DATA_HBA) < log.index("ok: [target] dump")
+
+
+async def test_a_failed_data_vm_hba_fails_step_6(db, lan, fake_runner, fake_publisher):
+    await _run(db, lan, go_live=True)
+    fake_runner.requests.clear()
+    fake_runner.results["dump_hba"] = RunResult(status="failed", rc=2)
+    dep_id = await _run(db, lan, slot="purple", sha=NEWER)
+    dep, _, _ = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 6)
+    assert fake_runner.steps()[-1] == "dump_hba"
+
+
+async def test_a_new_data_vm_gets_no_hba_run_before_its_dump(db, lan, fake_runner,
+                                                             fake_publisher):
+    await _run(db, lan)
+    assert "dump_hba" not in fake_runner.steps()
 
 
 # ---- an unresolved switch --------------------------------------------------------

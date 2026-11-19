@@ -8,8 +8,8 @@ import pytest
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import AuditLog, Environment, EnvironmentService
-from sirdar_api.deploy import do_provision, envfile, pipeline, publish
+from sirdar_api.db.models import AuditLog, Environment, EnvironmentSecret, EnvironmentService
+from sirdar_api.deploy import do_provision, envfile, pipeline, publish, vault
 
 from .api_helpers import auth_headers
 from .deploy_factories import (  # noqa: F401
@@ -35,6 +35,7 @@ from .test_deploy_pipeline_lan import _run as _lan_run
 from .test_deploy_pipeline_lan import lan  # noqa: F401
 
 URL = "/api/deploy/environments"
+EVERY_APP = ["wiki", "kiosk", "learn", "status", "devices", "mailpit"]
 SMTP_PASSWORD = "Mail-Secret-1"
 AI_KEY = "sk-ant-test-0123456789"
 NEW = {"mode": "new", "name": "qa1", "type": "custom", "target": "ssh",
@@ -145,7 +146,8 @@ async def test_adopt_takes_no_secrets(client, db, target):
 async def test_defaults_list_the_apps_and_the_smtp_port(client, db):
     h = await auth_headers(client, db)
     body = (await client.get("/api/deploy/environment-defaults", headers=h)).json()
-    assert body["apps"] == {"optional": ["wiki", "kiosk", "learn", "status", "mailpit"],
+    assert body["apps"] == {"optional": ["wiki", "kiosk", "learn", "status", "devices",
+                                         "mailpit"],
                             "always": ["api", "portal"]}
     assert body["mail"] == {"smtp_port": 587}
 
@@ -165,21 +167,78 @@ async def test_an_environment_with_nothing_chosen_keeps_every_app_and_mailpit(
     target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
     h = await auth_headers(client, db)
     body = (await client.post(URL, headers=h, json=NEW)).json()
-    assert body["apps"] == ["wiki", "kiosk", "learn", "status", "mailpit"]
+    assert body["apps"] == EVERY_APP
     assert body["mail"]["mode"] == "mailpit" and body["mail"]["password_set"] is False
-    # devices (deploy/stack's, never run by Sirdar yet) has no name either
-    assert all(s["hostname"] for s in body["services"]
-               if s["service"] not in ("mailpit", "devices"))
+    assert all(s["hostname"] for s in body["services"] if s["service"] != "mailpit")
     audit = (await db.scalars(select(AuditLog.changes).where(
         AuditLog.action == "deploy.environment_create"))).one()
     assert (audit["apps"], audit["mail"], audit["secrets"]) == (
-        ["wiki", "kiosk", "learn", "status", "mailpit"], {"mode": "mailpit"}, [])
+        EVERY_APP, {"mode": "mailpit"}, [])
     resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
     await pipeline.wait(uuid.UUID(resp.json()["id"]))
     values = await _render_values(fake_runner)
-    assert values["STACK_APPS"] == "wiki,kiosk,learn,status,mailpit"
+    assert values["STACK_APPS"] == "wiki,kiosk,learn,status,devices,mailpit"
     assert not any(k.startswith("SS_SMTP_") and k != "SS_SMTP_PASSWORD" for k in values)
     assert values["SS_SMTP_PASSWORD"] == ""
+
+
+async def _stored(db, name: str) -> dict[str, str]:
+    env = await db.scalar(select(Environment).where(Environment.name == name))
+    rows = await db.scalars(select(EnvironmentSecret)
+                            .where(EnvironmentSecret.environment_id == env.id))
+    return {r.key: vault.decrypt(get_settings(), r.value_enc) for r in rows}
+
+
+async def test_the_devices_secrets_reach_the_env_and_never_a_step_log(client, db, target,
+                                                                      fake_runner, leak_guard):
+    await trust_fake(db, target)
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    await client.post(URL, headers=h, json=NEW)
+    stored = await _stored(db, "qa1")
+    token, key = stored["SS_DEVICES_SERVICE_TOKEN"], stored["DEVICES_SECRET_KEY"]
+    fake_runner.output["render"] = [f"echo {token} {key}\n"]
+    resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
+    dep_id = resp.json()["id"]
+    await pipeline.wait(uuid.UUID(dep_id))
+    values = await _render_values(fake_runner)
+    assert (values["SS_DEVICES_SERVICE_TOKEN"], values["DEVICES_SECRET_KEY"]) == (token, key)
+    out = (await client.get(f"/api/deploy/deployments/{dep_id}", headers=h)).text
+    assert token not in out and key not in out and "[redacted]" in out
+
+
+async def test_devices_off_keeps_its_secrets_out_of_the_env(client, db, target, fake_runner):
+    await trust_fake(db, target)
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    await client.post(URL, headers=h, json={**NEW, "apps": ["wiki", "mailpit"]})
+    resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
+    await pipeline.wait(uuid.UUID(resp.json()["id"]))
+    values = await _render_values(fake_runner)
+    assert values["STACK_APPS"] == "wiki,mailpit"
+    assert not set(envfile.DEVICES_SECRETS) & set(values)
+    assert not set(envfile.DEVICES_SECRETS) & set(await _stored(db, "qa1"))
+
+
+async def test_a_deploy_makes_the_devices_secrets_an_environment_lacks(client, db, target,
+                                                                      fake_runner):
+    """Devices on without its secrets (turned on before Sirdar made them):
+    the next deploy makes them, stores them, and renders them."""
+    await trust_fake(db, target)
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    await client.post(URL, headers=h, json={**NEW, "apps": ["wiki", "mailpit"]})
+    env = await db.scalar(select(Environment).where(Environment.name == "qa1"))
+    env.apps = ["wiki", "devices", "mailpit"]
+    await db.commit()
+    resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
+    await pipeline.wait(uuid.UUID(resp.json()["id"]))
+    values = await _render_values(fake_runner)
+    db.expire_all()
+    stored = await _stored(db, "qa1")
+    assert values["STACK_APPS"] == "wiki,devices,mailpit"
+    assert (values["SS_DEVICES_SERVICE_TOKEN"], values["DEVICES_SECRET_KEY"]) == (
+        stored["SS_DEVICES_SERVICE_TOKEN"], stored["DEVICES_SECRET_KEY"])
 
 
 async def test_the_smtp_password_never_reaches_a_step_log(client, db, target, fake_runner):

@@ -415,6 +415,35 @@ def test_devices_and_the_api_share_the_service_token_and_storage(tmp_path) -> No
     assert dev["DEVICES_SPACES_SECRET_KEY"] == sw["AWS_SECRET_ACCESS_KEY"] == "CHANGEME"
 
 
+def test_devices_spaces_key_falls_back_to_the_main_one(tmp_path) -> None:
+    """A droplet gives the devices bucket its own Spaces key; without one it
+    uses the main key (and locally, SeaweedFS's)."""
+    main = "SS_SPACES_ACCESS_KEY=main-access\nSS_SPACES_SECRET_KEY=main-secret\n"
+    env = _render_with(tmp_path, "devices", main)["services"]["devices"]["environment"]
+    assert (env["DEVICES_SPACES_ACCESS_KEY"], env["DEVICES_SPACES_SECRET_KEY"]) \
+        == ("main-access", "main-secret")
+    own = main + "DEVICES_SPACES_ACCESS_KEY=dev-access\nDEVICES_SPACES_SECRET_KEY=dev-secret\n"
+    env = _render_with(tmp_path, "devices", own)["services"]["devices"]["environment"]
+    assert (env["DEVICES_SPACES_ACCESS_KEY"], env["DEVICES_SPACES_SECRET_KEY"]) \
+        == ("dev-access", "dev-secret")
+    worker = _render_with(tmp_path, "devices", own)["services"]["devices-worker"]["environment"]
+    assert worker["DEVICES_SPACES_SECRET_KEY"] == "dev-secret"
+
+
+def test_devices_verifies_the_managed_database_with_its_ca(tmp_path) -> None:
+    assert rendered("devices")["services"]["devices"]["environment"][
+        "DEVICES_DATABASE_CA_B64"] == ""
+    env = _render_with(tmp_path, "devices", "SS_DATABASE_CA_B64=Y2EtcGVt\n")
+    assert env["services"]["devices"]["environment"]["DEVICES_DATABASE_CA_B64"] == "Y2EtcGVt"
+
+
+def test_env_example_leaves_the_devices_spaces_key_commented() -> None:
+    text = ENV_EXAMPLE.read_text().splitlines()
+    for key in ("DEVICES_SPACES_ACCESS_KEY", "DEVICES_SPACES_SECRET_KEY"):
+        assert any(line.startswith(f"# {key}=") for line in text), key
+        assert not any(line.startswith(f"{key}=") for line in text), key
+
+
 def test_devices_environment_covers_every_required_setting() -> None:
     env = rendered("devices")["services"]["devices"]["environment"]
     fields = devices_settings_fields()

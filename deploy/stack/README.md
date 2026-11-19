@@ -33,12 +33,40 @@ stack that owns iPhone installs, for a stack with no Apple settings);
   so the portal shows no Devices link. An existing `.env` keeps working.
 - A `STACK_APPS` that lists `devices`: `ss-stack up` refuses to start
   without both, naming the missing ones.
-- A `STACK_APPS` without `devices` (Sirdar writes one today): neither is
-  needed.
+- A `STACK_APPS` without `devices`: neither is needed.
+
+Sirdar always writes an explicit `STACK_APPS`, in the order
+`wiki,kiosk,learn,status,devices,mailpit`. A new environment runs devices:
+Sirdar makes both secrets when it creates the environment and writes them
+into the `.env`. An environment created before then keeps its app list
+(without devices) until Devices is turned on in its Settings › Apps & mail;
+Sirdar makes the secrets then, once, and never replaces a stored
+`DEVICES_SECRET_KEY`. Sirdar doesn't manage `DEVICES_IOS_OWNER_URL`: a stack
+without Apple settings shows "Apple settings aren't set up yet." Rendering
+for a checkout whose `ss-stack` predates Sirdar's devices support (Roll
+back, Restore backup, or an Update to an older ref) leaves devices out of
+`STACK_APPS` for that deploy, as it does learn for a checkout older than the
+learning site. Sirdar tells the two apart by the `DEVICES_DB=serversherpa_devices`
+line in `ss-stack`: a commit from before it (79674823f and later know the
+app, but not the devices dump, the data VM's `pg_hba.conf` lines or the
+devices bucket's own key) runs without devices.
 
 With devices off, the API's internal devices endpoints stay off too.
-The devices database isn't in `ss-stack dump` / `restore` (they cover the
-main database only).
+`ss-stack dump` also dumps the devices database, when it exists, to
+`backups/devices/` under the main dump's name (outside the `*.dump` files
+that count as backups; rotated with them). `ss-stack restore` stops the
+devices stack too and, when that sibling dump is there, empties and
+restores the devices database from it; a backup without one leaves the
+devices database as it is. Sirdar's Roll back and Restore backup run the
+target commit's own `ss-stack restore`, so they bring the devices database
+back only when that commit's `ss-stack` is this one or later; an older one
+restores the main database and leaves the devices database as it is.
+`pgdump` and `revision` cover the main database only. On a LAN Blue/Green
+data VM, `pg_hba.conf` lets the app servers in `STACK_DB_ALLOW` reach both
+databases. `ss-stack hba` rewrites only that file, as `data` would (Postgres
+rereads it only when it changed): Sirdar runs it on the data VM before each
+pre-deploy dump, because an Update to an older commit may have left the
+devices database's lines out.
 
 ## DigitalOcean droplets (Sirdar phase 7)
 
@@ -50,12 +78,23 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
 
 - skips the `db` and `storage` stacks: the database is a managed PostgreSQL
   and objects live in DigitalOcean Spaces (mailpit still runs from the
-  `storage` stack). The devices database is created on the same cluster
-  through a one-off client, and the `.env` needs `DEVICES_DATABASE_URL`
-  (`serversherpa_devices` there, `postgresql+asyncpg://`; a LAN Blue/Green
-  app VM too, on its data VM). The devices service encrypts that connection
-  when `SS_DATABASE_SSL=require` but doesn't check the server against
-  `SS_DATABASE_CA_B64` (the main API does);
+  `storage` stack). The devices service's database, `serversherpa_devices`,
+  is on the same cluster, and the `.env` needs `DEVICES_DATABASE_URL` for it
+  (`postgresql+asyncpg://`). Sirdar's step 0 creates that database as
+  `doadmin`, owned by `serversherpa` (which can't create databases itself),
+  and Sirdar writes the URL; a LAN Blue/Green app VM gets one too, for its
+  data VM. `ss-stack up` creates the database through a one-off client only
+  when it is missing, which needs a role that may create databases. The
+  devices service encrypts that connection when `SS_DATABASE_SSL=require`
+  and, like the main API, verifies the server against `SS_DATABASE_CA_B64`
+  when it is set. The devices bucket may have its own Spaces key
+  (`DEVICES_SPACES_ACCESS_KEY` / `DEVICES_SPACES_SECRET_KEY`; without them,
+  the main `SS_SPACES_*` key). Sirdar gives each DigitalOcean environment
+  that runs devices its own bucket, `<main bucket>-devices`, with its own
+  Spaces key (readwrite on that bucket only; the main key's grants never
+  change) and CORS for `https://devices.<domain>`, and writes
+  `DEVICES_SPACES_BUCKET` and that key into the `.env`. Snapshot bundles
+  leave the devices database out: its Apple secrets belong to one stack;
 - dumps and restores through a one-off `postgres:16-alpine` container
   against the managed database (`PGSSLMODE=require`, the password from
   `POSTGRES_PASSWORD`, passed through the environment and never on a

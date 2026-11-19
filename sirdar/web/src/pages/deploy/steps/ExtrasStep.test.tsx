@@ -17,22 +17,22 @@ function renderStep(over: Partial<FlowState> = {}, ctxOver: Partial<FlowContext>
   return set;
 }
 
-it('apps: API and Portal always, five switches; the wiki takes learning with it', async () => {
+it('apps: API and Portal always, six switches; the wiki takes learning with it', async () => {
   const set = renderStep();
   expect(screen.getByText('API and Portal always run.')).toBeTruthy();
-  for (const label of ['Wiki', 'Kiosk', 'Learning', 'Status page', 'Mailpit']) expect(screen.getByLabelText(label)).toBeTruthy();
+  for (const label of ['Wiki', 'Kiosk', 'Learning', 'Status page', 'Devices', 'Mailpit']) expect(screen.getByLabelText(label)).toBeTruthy();
   await userEvent.click(screen.getByLabelText('Wiki'));
-  expect(set).toHaveBeenCalledWith({ apps: { wiki: false, kiosk: true, learn: false, status: true, mailpit: true } });
+  expect(set).toHaveBeenCalledWith({ apps: { wiki: false, kiosk: true, learn: false, status: true, devices: true, mailpit: true } });
 });
 
 it('turning Mailpit off switches mail to SMTP', async () => {
   const set = renderStep();
   await userEvent.click(screen.getByLabelText('Mailpit'));
-  expect(set).toHaveBeenCalledWith({ apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: false }, mailMode: 'smtp' });
+  expect(set).toHaveBeenCalledWith({ apps: { wiki: true, kiosk: true, learn: true, status: true, devices: true, mailpit: false }, mailMode: 'smtp' });
 });
 
 it('Learning is locked while the wiki is off, and says why', () => {
-  renderStep({ apps: { wiki: false, kiosk: true, learn: false, status: true, mailpit: true } });
+  renderStep({ apps: { wiki: false, kiosk: true, learn: false, status: true, devices: true, mailpit: true } });
   expect((screen.getByLabelText('Learning') as HTMLInputElement).disabled).toBe(true);
   expect(screen.getByText('The learning site needs the wiki, so it is off while the wiki is.')).toBeTruthy();
 });
@@ -42,12 +42,12 @@ it('the kiosk signing digests show with the kiosk', async () => {
   await userEvent.type(screen.getByLabelText('Kiosk signing digests'), 'a');
   expect(set).toHaveBeenLastCalledWith({ digests: 'a' });
   cleanup();
-  renderStep({ apps: { wiki: true, kiosk: false, learn: true, status: true, mailpit: true } });
+  renderStep({ apps: { wiki: true, kiosk: false, learn: true, status: true, devices: true, mailpit: true } });
   expect(screen.queryByLabelText('Kiosk signing digests')).toBeNull();
 });
 
 it('with Mailpit off, SMTP is required and the flow says so', () => {
-  renderStep({ apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: false }, mailMode: 'smtp' });
+  renderStep({ apps: { wiki: true, kiosk: true, learn: true, status: true, devices: true, mailpit: false }, mailMode: 'smtp' });
   expect(screen.getByRole('radio', { name: 'Mailpit' }).getAttribute('aria-disabled')).toBe('true');
   expect(screen.getByText(/Mailpit is off, so mail needs SMTP/)).toBeTruthy();
 });

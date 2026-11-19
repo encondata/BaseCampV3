@@ -54,3 +54,9 @@ def generate_env_secrets() -> dict[str, str]:
     Postgres password) or a Fernet key where the app needs one."""
     return {key: fernet_key() if key in envfile.FERNET_SECRETS else hex_secret()
             for key in envfile.REQUIRED_SECRETS}
+
+
+def generate_devices_secrets(keys=envfile.DEVICES_SECRETS) -> dict[str, str]:
+    """The devices app's secrets (or only `keys` of them): the service token
+    hex, DEVICES_SECRET_KEY a Fernet key."""
+    return {key: fernet_key() if key == "DEVICES_SECRET_KEY" else hex_secret() for key in keys}

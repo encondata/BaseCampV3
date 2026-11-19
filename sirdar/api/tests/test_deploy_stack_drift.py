@@ -8,6 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from sirdar_api.deploy import apps, certs, envfile, smoke
@@ -38,6 +39,25 @@ def test_learn_is_a_public_app_everywhere():
     assert "learn" in envfile.PUBLIC_SERVICES and "learn" in certs.PUBLIC_SERVICES
     assert envfile.DEFAULT_PORTS["learn"] == 8092
     assert smoke.PATHS["learn"] == "/"
+
+
+def test_devices_is_a_public_app_everywhere():
+    assert "devices" in apps.OPTIONAL_APPS
+    assert "devices" in envfile.PUBLIC_SERVICES and "devices" in certs.PUBLIC_SERVICES
+    assert envfile.DEFAULT_PORTS["devices"] == 8093
+    assert envfile.PORT_KEYS["devices"] == "STACK_DEVICES_PORT"
+    assert smoke.PATHS["devices"] == "/healthz"
+
+
+def test_sirdar_and_the_stack_order_the_apps_the_same():
+    """Sirdar writes an explicit STACK_APPS in its OPTIONAL_APPS order: the
+    stack's list and its example's STACK_APPS line keep the same order."""
+    text = (STACK / "ss-stack").read_text()
+    listed = re.search(r"^OPTIONAL_APPS=\(([a-z ]+)\)$", text, re.MULTILINE)
+    assert listed and tuple(listed.group(1).split()) == apps.OPTIONAL_APPS
+    found = re.search(r"^# STACK_APPS=([a-z,]+)\s", (STACK / "env.example").read_text(), re.MULTILINE)
+    assert found, "env.example's STACK_APPS line moved"
+    assert tuple(found.group(1).split(",")) == apps.OPTIONAL_APPS
 
 
 # ---- the playbooks' greps of the checkout's ss-stack ----------------------------
@@ -99,11 +119,12 @@ def _failed_greps(ss_stack: Path) -> list[str]:
     return failed
 
 
-def test_the_playbook_greps_cover_learn_and_the_commands():
+def test_the_playbook_greps_cover_learn_devices_and_the_commands():
     greps = _stack_greps()
-    assert {p for p, _, argv in greps if "learn" in argv[-2]} == {"render.yml", "slot_smoke.yml"}
-    for playbook, command in (("data.yml", "data"), ("first_admin.yml", "admin"),
-                              ("seed.yml", "seed")):
+    for app in ("learn", "devices"):
+        assert {p for p, _, argv in greps if app in argv[-2]} == {"render.yml", "slot_smoke.yml"}
+    for playbook, command in (("data.yml", "data"), ("dump.yml", "hba"),
+                              ("first_admin.yml", "admin"), ("seed.yml", "seed")):
         assert any(p == playbook and f"{command})" in argv[-2] for p, _, argv in greps), playbook
 
 
@@ -120,11 +141,31 @@ def test_every_playbook_grep_finds_its_line_in_ss_stack():
         + "\n".join(failed)
 
 
-def test_render_and_slot_smoke_ask_the_same_learn_question():
-    learn: dict[str, list[list[str]]] = {}
+# The lines 79674823f through efefc975a's merge know devices by (its case
+# line, then OPTIONAL_APPS), verbatim. Those commits run devices with the
+# main Spaces key and no data VM pg_hba.conf lines, so Sirdar treats them as
+# predating it: the devices grep must not find them.
+OLDER_DEVICES_LINES = ("      wiki|kiosk|learn|status|devices|mailpit) ;;\n",
+                       "OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)\n")
+
+
+def test_the_devices_grep_finds_only_the_devices_db_line():
+    (argv,) = {tuple(argv) for _, _, argv in _stack_greps() if "devices" in argv[-2]}
+    found = subprocess.run(["grep", "-E", argv[-2], str(STACK / "ss-stack")], check=False,
+                           capture_output=True, text=True).stdout.splitlines()
+    assert found == ["DEVICES_DB=serversherpa_devices"]
+    for line in OLDER_DEVICES_LINES:
+        rc = subprocess.run(["grep", "-qE", argv[-2]], input=line, text=True,
+                            check=False).returncode
+        assert rc == 1, line
+
+
+@pytest.mark.parametrize("app", ["learn", "devices"])
+def test_render_and_slot_smoke_ask_the_same_question(app):
+    asked: dict[str, list[list[str]]] = {}
     for playbook, _, argv in _stack_greps():
-        if "learn" in argv[-2]:
-            learn.setdefault(playbook, []).append(argv)
-    assert sorted(learn) == ["render.yml", "slot_smoke.yml"]
-    assert len(learn["render.yml"]) == len(learn["slot_smoke.yml"]) == 1, learn
-    assert learn["render.yml"] == learn["slot_smoke.yml"]
+        if app in argv[-2]:
+            asked.setdefault(playbook, []).append(argv)
+    assert sorted(asked) == ["render.yml", "slot_smoke.yml"]
+    assert len(asked["render.yml"]) == len(asked["slot_smoke.yml"]) == 1, asked
+    assert asked["render.yml"] == asked["slot_smoke.yml"]

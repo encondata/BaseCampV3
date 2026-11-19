@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from serversherpa_devices.config import get_settings
+from serversherpa_devices.db import tls
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -19,13 +20,13 @@ def get_engine() -> AsyncEngine:
     global _engine, _sessionmaker
     if _engine is None:
         settings = get_settings()
-        connect_args = {"ssl": True} if settings.database_ssl == "require" else {}
         _engine = create_async_engine(
             settings.database_url.get_secret_value(),
             pool_pre_ping=True,
             # Statement errors never log their parameters (a UDID, say).
             hide_parameters=True,
-            connect_args=connect_args,
+            # TLS for "require", verified against a managed database's CA
+            connect_args=tls.connect_args(settings),
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine

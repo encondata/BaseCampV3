@@ -2,12 +2,17 @@
 # record. It arrives base64-encoded so no value is ever read as a template,
 # and it carries every secret, so the tasks that read it are no_log.
 # A checkout from before the learning site (ss-stack learned learn in
-# 6cc4c8b7; its STACK_APPS check refuses any app it doesn't know) runs
-# without it, so Roll back, Update and adopt to an older commit still start.
-# The check recognizes learn in ss-stack's check_apps case line (6cc4c8b7
-# through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on); the same
-# pattern is in slot_smoke.yml, and tests/test_deploy_stack_drift.py runs
-# these greps against the real ss-stack.
+# 6cc4c8b7) or the Devices app runs without them: its ss-stack's STACK_APPS
+# check refuses any app it doesn't know. So Roll back, Update, Restore backup
+# and adopt to an older commit still start.
+# The learn check recognizes the app in ss-stack's check_apps case line
+# (6cc4c8b7 through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on).
+# The devices check looks for ss-stack's DEVICES_DB line (efefc975a on, the
+# commit that dumps and restores the devices database, writes its Blue/Green
+# pg_hba.conf lines and gives it its own Spaces key): commits from 79674823f
+# until then run devices, but not the way Sirdar deploys it, so Sirdar runs
+# them without it. The same patterns are in slot_smoke.yml, and
+# tests/test_deploy_stack_drift.py runs these greps against the real ss-stack.
 - name: Render config
   hosts: target
   gather_facts: false
@@ -38,22 +43,41 @@
       failed_when: false
       when: ss_stack is defined and 'learn' in stack_apps.split(',')
 
-    - name: Run without the learning site when it doesn't
+    - name: Does this checkout's ss-stack know the Devices app?
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qE
+          - "^DEVICES_DB=serversherpa_devices$"
+          - "{{ ss_stack }}"
+      register: knows_devices
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'devices' in stack_apps.split(',')
+
+    - name: The apps it doesn't know
       ansible.builtin.set_fact:
-        learn_dropped: "{{ knows_learn is not skipped and knows_learn.rc != 0 }}"
-        apps_kept: "{{ stack_apps.split(',') | reject('eq', 'learn') | join(',') or 'none' }}"
+        apps_unknown: >-
+          {{ (['learn'] if knows_learn is not skipped and knows_learn.rc != 0 else [])
+             + (['devices'] if knows_devices is not skipped and knows_devices.rc != 0 else []) }}
+
+    - name: Run without them
+      ansible.builtin.set_fact:
+        apps_kept: "{{ stack_apps.split(',') | reject('in', apps_unknown) | join(',') or 'none' }}"
 
     - name: Say so
       ansible.builtin.debug:
-        msg: This commit predates the learning site, so it runs without it.
-      when: learn_dropped | bool
+        msg: >-
+          {{ {'learn': 'This commit predates the learning site, so it runs without it.',
+              'devices': 'This commit predates the Devices app, so it runs without it.'}[item] }}
+      loop: "{{ apps_unknown }}"
 
     - name: Write .env
       ansible.builtin.copy:
         content: >-
           {{ (env_file_b64 | b64decode
               | regex_replace('(?m)^STACK_APPS=.*$', 'STACK_APPS=' ~ apps_kept))
-             if learn_dropped | bool else (env_file_b64 | b64decode) }}
+             if apps_unknown else (env_file_b64 | b64decode) }}
         dest: "{{ env_dir }}/.env"
         mode: "0600"
       no_log: true

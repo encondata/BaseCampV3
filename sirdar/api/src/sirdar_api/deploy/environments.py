@@ -19,6 +19,7 @@ from pathlib import PurePosixPath
 from cryptography.fernet import Fernet
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy import update as sql_update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -211,6 +212,26 @@ async def secret_keys_of(db: AsyncSession, env_id) -> set[str]:
                                 .where(EnvironmentSecret.environment_id == env_id)))
 
 
+async def ensure_devices_secrets(db: AsyncSession, settings: Settings, env: Environment) -> None:
+    """Store whichever of the devices app's two secrets the environment lacks
+    (envfile.DEVICES_SECRETS: hex token, Fernet key). A stored one is never
+    replaced: a new DEVICES_SECRET_KEY makes the saved Apple settings
+    unreadable. Refuses with secrets_key_missing when one must be made and
+    the vault isn't configured."""
+    await db.flush()                        # rows added in this session count as stored
+    stored = await secret_keys_of(db, env.id)
+    missing = [k for k in envfile.DEVICES_SECRETS if k not in stored]
+    if not missing:
+        return
+    if not vault.is_configured(settings):
+        raise EnvError("secrets_key_missing")
+    for key, value in vault.generate_devices_secrets(missing).items():
+        # a concurrent writer's row wins: it is never overwritten
+        await db.execute(pg_insert(EnvironmentSecret).values(
+            environment_id=env.id, key=key, value_enc=vault.encrypt(settings, value))
+            .on_conflict_do_nothing(index_elements=["environment_id", "key"]))
+
+
 async def is_deploying(db: AsyncSession, env_id) -> bool:
     found = await db.scalar(select(Deployment.id).where(
         Deployment.environment_id == env_id, Deployment.status == "running").limit(1))
@@ -329,7 +350,8 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     names. mail: its Mailpit (the default) or an SMTP server (apps.check_mail).
     kiosk_signing_digests: the kiosk app's signing certificate digests (apps.check_digests).
     secrets: optional secrets (SS_ANTHROPIC_API_KEY, …), vault-encrypted with
-    the generated ones; the SMTP password joins them as SS_SMTP_PASSWORD."""
+    the generated ones; the SMTP password joins them as SS_SMTP_PASSWORD.
+    With devices on (the default) its two secrets are generated too."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
     try:
@@ -419,6 +441,8 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                                   snapshot_id=snapshot_id, do=do or {}, apps_on=apps_on,
                                   extra_secrets=extra_secrets)
         await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
+        if "devices" in apps_on:
+            await ensure_devices_secrets(db, settings, env)
         if admin_spec is not None:
             await first_admins.put(db, settings, env.id, admin_spec)
         return env
@@ -465,6 +489,8 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         seed_snapshot_id=snapshot_id, publish=publish,
         public_services=app_rules.public_services(apps_on), proxy=lan_proxy)
     await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
+    if "devices" in apps_on:
+        await ensure_devices_secrets(db, settings, env)
     if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
         add_vm = vms.add_esxi if target_id == targets.ESXI_TARGET else vms.add
@@ -759,15 +785,18 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
     characters. A hand-built env may carry secrets Sirdar didn't generate
     (uat's pepper came from dev), so those are kept as they are, not forced to
     hex.
-    An optional secret left at CHANGEME is unset. Anything else raises
-    adopt_value_invalid naming the key, never the value."""
+    The devices app's two are optional too: its service token by
+    envfile.valid_secret, DEVICES_SECRET_KEY a Fernet key. An optional secret
+    left at CHANGEME is unset. Anything else raises adopt_value_invalid
+    naming the key, never the value."""
     secrets: dict[str, str] = {}
-    for key in envfile.SECRET_KEYS:
+    for key in (*envfile.SECRET_KEYS, *envfile.DEVICES_SECRETS):
         value = values.get(key, "")
-        if key in envfile.OPTIONAL_SECRETS:
+        if key in envfile.OPTIONAL_SECRETS or key in envfile.DEVICES_SECRETS:
             if value in ("", envfile.PLACEHOLDER):
                 continue
-            ok = envfile.valid_secret(key, value)
+            ok = (_valid_fernet_key(value) if key == "DEVICES_SECRET_KEY"
+                  else envfile.valid_secret(key, value))
         elif key in envfile.FERNET_SECRETS:
             ok = _valid_fernet_key(value)
         elif key == "POSTGRES_PASSWORD":
@@ -848,7 +877,8 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
     db.add(dep)
     await db.flush()
     # a droplet's keys (EXTRA_KEYS) never come from a hand-built .env; its
-    # apps and mail do
+    # apps, mail and devices secrets do (DEVICES_IOS_OWNER_URL isn't
+    # Sirdar's yet: reported as ignored)
     adoptable = (set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)) | set(app_rules.ENV_KEYS)
     ignored = sorted(k for k in values if k not in adoptable)
     return env, dep, AdoptReport(sha=sha, imported_secrets=sorted(secrets),
@@ -862,7 +892,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     """Apply a PATCH: an absent or None field is kept. Only the optional
     secrets are editable ("" clears one). Apps and mail follow create's rules
     (an SMTP password in mail is stored as SS_SMTP_PASSWORD); a change of apps
-    rebuilds the public names (home aside). Returns the changed names."""
+    rebuilds the public names (home aside), and turning devices on makes any
+    devices secret it lacks. Returns the changed names."""
     if await is_deploying(db, env.id):
         raise EnvError("deploy_in_progress")
     changed: list[str] = []
@@ -933,8 +964,11 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     sent_password = (secrets_in.get("SS_SMTP_PASSWORD")
                      if isinstance(secrets_in, dict) else None)
     if fields.get("apps") is not None or fields.get("mail") is not None:
+        had_devices = "devices" in env.apps
         apps_changed, smtp_password = await _update_apps_and_mail(
             db, env, fields, changed, sent_password)
+        if "devices" in env.apps and not had_devices:
+            await ensure_devices_secrets(db, settings, env)     # kept if it had them
     elif sent_password and not env.smtp_host:
         _refuse_password_without_smtp()
     if fields.get("kiosk_signing_digests") is not None:

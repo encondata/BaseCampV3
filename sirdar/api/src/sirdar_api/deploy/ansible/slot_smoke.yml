@@ -2,13 +2,14 @@
 # through Caddy on this droplet (http://127.0.0.1 with its Host), before the
 # load balancer sends it any traffic. Sirdar isn't in the VPC, so the check
 # runs on the droplet. 200–399 passes; redirects aren't followed. Worst
-# case for the five public names: 5 × (5 tries × 5 s + 4 waits × 10 s)
-# = 325 s, inside the step's 10 minutes.
+# case for the seven public names (api, portal, kiosk, wiki, learn, status,
+# devices): 7 × (5 tries × 5 s + 4 waits × 10 s) = 455 s, inside the step's
+# 10 minutes.
 # On a LAN Blue/Green app VM each name carries its own port (no Caddy).
-# A checkout from before the learning site runs without it (render.yml), so
-# its name isn't tried. The check is the same as render.yml's: it
-# recognizes learn in ss-stack's check_apps case line (6cc4c8b7 through
-# 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on), and
+# A checkout from before the learning site or the Devices app runs without
+# them (render.yml), so their names aren't tried. The checks are the same as
+# render.yml's (learn: ss-stack's check_apps case line or OPTIONAL_APPS list;
+# devices: its DEVICES_DB line, efefc975a on), and
 # tests/test_deploy_stack_drift.py runs these greps against the real ss-stack.
 - name: Smoke test (slot)
   hosts: target
@@ -26,6 +27,24 @@
       failed_when: false
       when: ss_stack is defined and 'learn' in public_hosts | map(attribute='service')
 
+    - name: Does this checkout's ss-stack know the Devices app?
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qE
+          - "^DEVICES_DB=serversherpa_devices$"
+          - "{{ ss_stack }}"
+      register: knows_devices
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'devices' in public_hosts | map(attribute='service')
+
+    - name: The apps it doesn't know
+      ansible.builtin.set_fact:
+        apps_unknown: >-
+          {{ (['learn'] if knows_learn is not skipped and knows_learn.rc != 0 else [])
+             + (['devices'] if knows_devices is not skipped and knows_devices.rc != 0 else []) }}
+
     - name: Each public name answers through Caddy
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ item.port | default(slot_port | default(80)) }}{{ item.path }}"
@@ -39,8 +58,6 @@
       until: answer is not failed
       retries: "{{ slot_smoke_retries | default(4) }}"
       delay: "{{ slot_smoke_delay | default(10) }}"
-      loop: >-
-        {{ public_hosts | rejectattr('service', 'eq', 'learn') | list
-           if knows_learn is not skipped and knows_learn.rc != 0 else public_hosts }}
+      loop: "{{ public_hosts | rejectattr('service', 'in', apps_unknown) | list }}"
       loop_control:
         label: "{{ item.hostname }}"

@@ -33,7 +33,7 @@ def test_salts_are_random_and_the_password_never_shows():
 
 
 def test_setup_sql():
-    sql = pgauth.setup_sql(role="serversherpa", database="serversherpa",
+    sql = pgauth.setup_sql(role="serversherpa", databases=("serversherpa",),
                            verifier=pgauth.scram_sha256("x"))
     assert "CREATE ROLE serversherpa LOGIN" in sql
     assert "ALTER ROLE serversherpa WITH LOGIN PASSWORD 'SCRAM-SHA-256$4096:" in sql
@@ -42,10 +42,25 @@ def test_setup_sql():
     assert "ALTER DATABASE serversherpa OWNER TO serversherpa" in sql
 
 
-@pytest.mark.parametrize("kw", [{"role": "Bad-Role"}, {"database": "x;drop"},
+def test_setup_sql_makes_every_database_the_role_owns():
+    """The main database and the devices service's: each made only when
+    missing and owned by the role (idempotent)."""
+    sql = pgauth.setup_sql(role="serversherpa",
+                           databases=("serversherpa", "serversherpa_devices"),
+                           verifier=pgauth.scram_sha256("x"))
+    for name in ("serversherpa", "serversherpa_devices"):
+        assert f"SELECT 'CREATE DATABASE {name} OWNER serversherpa'" in sql
+        assert (f"WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{name}')\\gexec"
+                in sql)
+        assert f"ALTER DATABASE {name} OWNER TO serversherpa;" in sql
+    assert sql.count("CREATE ROLE") == 1
+
+
+@pytest.mark.parametrize("kw", [{"role": "Bad-Role"}, {"databases": ("x;drop",)},
+                                {"databases": ("serversherpa", "Bad-Db")}, {"databases": ()},
                                 {"verifier": "md5abc"}, {"verifier": "SCRAM-SHA-256$1:a'$b:c"}])
 def test_setup_sql_refuses_unsafe_values(kw):
-    base = {"role": "serversherpa", "database": "serversherpa",
+    base = {"role": "serversherpa", "databases": ("serversherpa",),
             "verifier": pgauth.scram_sha256("x")}
     with pytest.raises(ValueError):
         pgauth.setup_sql(**{**base, **kw})

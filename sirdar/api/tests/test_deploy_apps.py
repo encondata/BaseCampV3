@@ -6,9 +6,12 @@ from types import SimpleNamespace
 
 from sirdar_api.deploy import apps, envfile
 
+TOKEN = "0123abcd" * 8
+DEVICES = {"SS_DEVICES_SERVICE_TOKEN": TOKEN, "DEVICES_SECRET_KEY": "k" * 43 + "="}
+
 
 def test_check_apps():
-    assert apps.check_apps(None) == ["wiki", "kiosk", "learn", "status", "mailpit"]
+    assert apps.check_apps(None) == ["wiki", "kiosk", "learn", "status", "devices", "mailpit"]
     assert apps.check_apps(["mailpit", "wiki"]) == ["wiki", "mailpit"]      # canonical order
     assert apps.check_apps([]) == []
     for bad in (["api"], "wiki", [1], ["wiki", "nope"]):
@@ -69,6 +72,7 @@ def test_smtp_refusals(change, code):
 def test_public_services_follow_the_apps():
     assert apps.public_services(["wiki", "kiosk", "learn", "status", "mailpit"]) == tuple(
         s for s in envfile.PUBLIC_SERVICES if s != "devices")
+    assert apps.public_services(list(apps.OPTIONAL_APPS)) == envfile.PUBLIC_SERVICES
     assert apps.public_services([]) == ("api", "portal", "spaces")
     assert apps.public_services(["status"], base=("api", "portal", "kiosk", "wiki", "status")) == (
         "api", "portal", "status")
@@ -77,14 +81,14 @@ def test_public_services_follow_the_apps():
 def test_env_extra():
     env = SimpleNamespace(apps=["kiosk"], smtp_host=None, smtp_port=None, smtp_username=None,
                           smtp_from=None, smtp_starttls=True, kiosk_signing_digests=[])
-    assert apps.env_extra(env) == {"STACK_APPS": "kiosk"}
+    assert apps.env_extra(env, {}) == {"STACK_APPS": "kiosk"}
     env = SimpleNamespace(apps=[], smtp_host="smtp.example.com", smtp_port=587,
                           smtp_username=None, smtp_from="ops@example.com", smtp_starttls=False,
                           kiosk_signing_digests=[])
-    assert apps.env_extra(env) == {
+    assert apps.env_extra(env, {}) == {
         "STACK_APPS": "none", "SS_SMTP_HOST": "smtp.example.com", "SS_SMTP_PORT": "587",
         "SS_SMTP_USERNAME": "", "SS_SMTP_STARTTLS": "false", "SS_SMTP_FROM": "ops@example.com"}
-    assert set(apps.env_extra(env)) <= set(envfile.EXTRA_KEYS)
+    assert set(apps.env_extra(env, {})) <= set(envfile.EXTRA_KEYS)
 
 
 def test_is_public():
@@ -95,12 +99,13 @@ def test_is_public():
 
 
 def test_an_environment_with_nothing_chosen_runs_every_app_on_mailpit():
-    """Existing environments (migration 0013's defaults): every app, Mailpit,
-    and no SS_SMTP_* keys (compose keeps its Mailpit defaults)."""
-    env = SimpleNamespace(apps=list(apps.RUNNABLE_APPS), smtp_host=None, smtp_port=None,
-                          smtp_username=None, smtp_from=None, smtp_starttls=True,
-                          kiosk_signing_digests=[])
-    assert apps.env_extra(env) == {"STACK_APPS": "wiki,kiosk,learn,status,mailpit"}
+    """Existing environments (migration 0015's defaults): every app but
+    devices, Mailpit, and no SS_SMTP_* keys (compose keeps its Mailpit
+    defaults). Their devices secrets, if any, stay out of the .env."""
+    env = SimpleNamespace(apps=["wiki", "kiosk", "learn", "status", "mailpit"], smtp_host=None,
+                          smtp_port=None, smtp_username=None, smtp_from=None,
+                          smtp_starttls=True, kiosk_signing_digests=[])
+    assert apps.env_extra(env, DEVICES) == {"STACK_APPS": "wiki,kiosk,learn,status,mailpit"}
     assert apps.public(env, password_set=False) == {
         "mode": "mailpit", "host": None, "port": None, "username": None,
         "from_address": None, "starttls": True, "password_set": False}
@@ -112,7 +117,7 @@ def test_smtp_writes_port_and_starttls_with_the_host():
     env = SimpleNamespace(apps=["mailpit"], smtp_host="smtp.example.com", smtp_port=587,
                           smtp_username="mailer", smtp_from="ops@example.com",
                           smtp_starttls=True, kiosk_signing_digests=[])
-    out = apps.env_extra(env)
+    out = apps.env_extra(env, {})
     assert (out["SS_SMTP_PORT"], out["SS_SMTP_STARTTLS"]) == ("587", "true")
 
 
@@ -127,7 +132,7 @@ def test_env_extra_writes_the_signing_digests():
     env = SimpleNamespace(apps=["kiosk", "mailpit"], smtp_host=None, smtp_port=None,
                           smtp_username=None, smtp_from=None, smtp_starttls=True,
                           kiosk_signing_digests=["ab" * 32, "cd" * 32])
-    extra = apps.env_extra(env)
+    extra = apps.env_extra(env, {})
     assert extra["SS_KIOSK_SIGNING_DIGESTS"] == f"{'ab' * 32},{'cd' * 32}"
     assert set(extra) <= set(envfile.EXTRA_KEYS) | set(envfile.OPTIONAL_SETTINGS)
 
@@ -161,42 +166,86 @@ def test_signing_digests_must_be_a_list_of_strings(value):
     assert (e.value.code, e.value.extra) == ("signing_digest_invalid", {})
 
 
-# ---- devices: deploy/stack knows it; Sirdar doesn't run it yet ----
+# ---- devices: on by default; its two secrets come with it ----
 
-def test_devices_is_known_but_never_turned_on():
-    """deploy/stack's devices app needs two secrets Sirdar doesn't make yet:
-    create's default leaves it off and asking for it is refused."""
-    assert "devices" in apps.OPTIONAL_APPS
-    assert "devices" not in apps.check_apps(None)
-    with pytest.raises(apps.AppsError) as e:
-        apps.check_apps(["wiki", "devices"])
-    assert e.value.code == "apps_invalid"
+def test_devices_is_runnable_and_on_by_default():
+    assert apps.RUNNABLE_APPS == apps.OPTIONAL_APPS
+    assert not hasattr(apps, "NOT_RUN")
+    assert "devices" in apps.check_apps(None)
+    assert apps.check_apps(["devices", "wiki"]) == ["wiki", "devices"]
+    assert "devices" in apps.public_services(apps.check_apps(None))
 
 
 def test_devices_has_no_public_name_while_off():
     assert "devices" in envfile.PUBLIC_SERVICES
-    assert "devices" not in apps.public_services(list(apps.check_apps(None)))
+    assert "devices" not in apps.public_services(["wiki", "mailpit"])
     env = SimpleNamespace(apps=["wiki"])
     assert not apps.is_public(env, "devices")
 
 
-@pytest.mark.parametrize("values", [
-    {"STACK_APPS": "wiki,devices,mailpit"},
-    # no STACK_APPS: ss-stack runs every app, devices too when its secrets are set
-    {"SS_DEVICES_SERVICE_TOKEN": "0123abcd", "DEVICES_SECRET_KEY": "k" * 43 + "="},
+def _env(app_list, **over):
+    kw = dict(apps=app_list, smtp_host=None, smtp_port=None, smtp_username=None,
+              smtp_from=None, smtp_starttls=True, kiosk_signing_digests=[])
+    return SimpleNamespace(**{**kw, **over})
+
+
+def test_env_extra_writes_the_devices_secrets_while_devices_runs():
+    out = apps.env_extra(_env(["devices", "mailpit"]), {**DEVICES, "SS_JWT_SECRET": "j"})
+    assert out == {"STACK_APPS": "devices,mailpit", **DEVICES}
+    smtp = _env(["devices"], smtp_host="smtp.example.com", smtp_port=587,
+                smtp_from="ops@example.com")
+    keys = list(apps.env_extra(smtp, DEVICES))
+    # in EXTRA_KEYS order: right after the mail
+    assert keys == [k for k in envfile.EXTRA_KEYS if k in keys]
+    assert keys[-2:] == list(envfile.DEVICES_SECRETS)
+
+
+def test_env_extra_leaves_the_devices_secrets_out_while_devices_is_off():
+    assert apps.env_extra(_env(["wiki"]), DEVICES) == {"STACK_APPS": "wiki"}
+    assert apps.env_extra(_env([]), DEVICES) == {"STACK_APPS": "none"}
+
+
+@pytest.mark.parametrize("stored, missing", [
+    ({}, ["SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY"]),
+    ({"SS_DEVICES_SERVICE_TOKEN": TOKEN}, ["DEVICES_SECRET_KEY"]),
 ])
-def test_adopting_an_env_that_runs_devices_is_refused(values):
+def test_env_extra_refuses_devices_without_its_secrets(stored, missing):
+    with pytest.raises(apps.AppsError) as e:
+        apps.env_extra(_env(["devices"]), stored)
+    assert (e.value.code, e.value.extra) == ("devices_secrets_missing", {"missing": missing})
+
+
+def test_adopt_reads_the_devices_secrets_with_the_apps():
+    assert set(envfile.DEVICES_SECRETS) <= set(apps.ENV_KEYS)
+
+
+EVERY_APP = ["wiki", "kiosk", "learn", "status", "devices", "mailpit"]
+ALL_BUT_DEVICES = ["wiki", "kiosk", "learn", "status", "mailpit"]
+
+
+@pytest.mark.parametrize("values, apps_on", [
+    # no STACK_APPS: ss-stack runs every app, devices only with both secrets set
+    (DEVICES, EVERY_APP),
+    ({}, ALL_BUT_DEVICES),
+    ({"SS_DEVICES_SERVICE_TOKEN": TOKEN}, ALL_BUT_DEVICES),
+    ({**DEVICES, "DEVICES_SECRET_KEY": "CHANGEME"}, ALL_BUT_DEVICES),
+    ({**DEVICES, "SS_DEVICES_SERVICE_TOKEN": ""}, ALL_BUT_DEVICES),
+    # an explicit list is read as written
+    ({"STACK_APPS": "wiki,devices,mailpit", **DEVICES}, ["wiki", "devices", "mailpit"]),
+    ({"STACK_APPS": "wiki,mailpit", **DEVICES}, ["wiki", "mailpit"]),
+])
+def test_adopt_follows_the_ss_stack_devices_rule(values, apps_on):
+    assert apps.from_env(values, "uat.serversherpa.com")[0] == apps_on
+
+
+@pytest.mark.parametrize("values, key", [
+    ({"STACK_APPS": "wiki,devices,mailpit"}, "SS_DEVICES_SERVICE_TOKEN"),
+    ({"STACK_APPS": "devices,mailpit", "SS_DEVICES_SERVICE_TOKEN": TOKEN}, "DEVICES_SECRET_KEY"),
+    ({"STACK_APPS": "devices,mailpit", **DEVICES, "SS_DEVICES_SERVICE_TOKEN": "CHANGEME"},
+     "SS_DEVICES_SERVICE_TOKEN"),
+])
+def test_adopting_an_env_listing_devices_without_its_secrets_is_refused(values, key):
+    """ss-stack up refuses that .env too (check_devices)."""
     with pytest.raises(apps.AppsError) as e:
         apps.from_env(values, "uat.serversherpa.com")
-    assert (e.value.code, e.value.extra) == ("adopt_value_invalid", {"key": "STACK_APPS"})
-
-
-@pytest.mark.parametrize("values", [
-    {},
-    {"SS_DEVICES_SERVICE_TOKEN": "0123abcd"},
-    {"SS_DEVICES_SERVICE_TOKEN": "0123abcd", "DEVICES_SECRET_KEY": "CHANGEME"},
-])
-def test_adopting_an_env_without_stack_apps_or_devices_secrets_runs_the_rest(values):
-    """ss-stack's rule: no STACK_APPS runs devices only with both secrets set."""
-    apps_on, _ = apps.from_env(values, "uat.serversherpa.com")
-    assert apps_on == ["wiki", "kiosk", "learn", "status", "mailpit"]
+    assert (e.value.code, e.value.extra) == ("adopt_value_invalid", {"key": key})

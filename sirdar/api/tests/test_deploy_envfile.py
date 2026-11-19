@@ -251,6 +251,35 @@ def test_the_signing_digests_follow_the_optional_secrets():
     assert envfile.parse_env(envfile.render_env(_cfg()))["SS_KIOSK_SIGNING_DIGESTS"] == ""
 
 
+# ---- devices (deploy/stack's devices app) ----
+
+def test_the_devices_secrets_are_extras_right_after_the_mail():
+    """Not REQUIRED_SECRETS: an environment without devices renders without them."""
+    assert envfile.DEVICES_SECRETS == ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY")
+    keys = envfile.EXTRA_KEYS
+    at = keys.index("SS_SMTP_FROM")
+    assert keys[at + 1:at + 3] == envfile.DEVICES_SECRETS
+    assert not set(envfile.DEVICES_SECRETS) & set(envfile.REQUIRED_SECRETS)
+    assert not set(envfile.DEVICES_SECRETS) & set(envfile.FERNET_SECRETS)
+    assert "SS_DEVICES_SERVICE_TOKEN" not in envfile.parse_env(envfile.render_env(_cfg()))
+
+
+def test_the_devices_storage_keys_follow_the_path_style():
+    keys = envfile.EXTRA_KEYS
+    at = keys.index("SS_SPACES_USE_PATH_STYLE")
+    assert keys[at + 1:at + 5] == ("DEVICES_DATABASE_URL", "DEVICES_SPACES_BUCKET",
+                                   "DEVICES_SPACES_ACCESS_KEY", "DEVICES_SPACES_SECRET_KEY")
+
+
+def test_the_devices_secrets_render_when_given():
+    token, key = "f0" * 32, "y" * 43 + "="
+    values = envfile.parse_env(envfile.render_env(_cfg(extra={
+        "STACK_APPS": "devices,mailpit", "SS_DEVICES_SERVICE_TOKEN": token,
+        "DEVICES_SECRET_KEY": key})))
+    assert (values["STACK_APPS"], values["SS_DEVICES_SERVICE_TOKEN"],
+            values["DEVICES_SECRET_KEY"]) == ("devices,mailpit", token, key)
+
+
 FCM = "SS_FCM_SERVICE_ACCOUNT_B64"
 
 

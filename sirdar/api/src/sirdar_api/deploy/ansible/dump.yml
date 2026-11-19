@@ -9,10 +9,61 @@
 # ss-stack's one-off client; so is a LAN Blue/Green data VM, from the slot's
 # app VM, unless this deploy just built it (data_new: no dump, dump_path '').
 # Reports the dump's path to Sirdar through set_stats.
+#
+# LAN Blue/Green: before the dump, Sirdar runs this playbook on the data VM
+# with data_hba (and only that part runs there). An Update to an older
+# commit ran that commit's ss-stack data, which may have written
+# pg_hba.conf without the devices database's lines; step 7 (which runs data
+# again) comes after this dump, so the app VM's dump of the devices database
+# would be refused. This commit's own ss-stack (checked out here, as step 7
+# would) writes the file as its data would, and Postgres rereads it only
+# when it changed. A commit whose ss-stack has no hba command doesn't dump
+# the devices database, so nothing needs changing for it.
 - name: Pre-deploy dump
   hosts: target
   gather_facts: false
   tasks:
+    - name: The data VM's pg_hba.conf
+      when: data_hba | default(false) | bool
+      block:
+        - name: Check out the commit (the stack's files)
+          ansible.builtin.git:
+            repo: "{{ repo_url }}"
+            dest: "{{ env_dir }}/repo"
+            version: "{{ sha }}"
+            force: false
+
+        - name: Does this checkout's ss-stack have the hba command?
+          ansible.builtin.command:
+            argv: [grep, -q, "^  hba)", "{{ ss_stack }}"]
+          register: knows_hba
+          changed_when: false
+          failed_when: false
+
+        - name: Say so when it doesn't
+          ansible.builtin.debug:
+            msg: >-
+              This commit's ss-stack has no hba command, and its dump leaves the
+              devices database out: the data VM's pg_hba.conf stays as it is
+              until step 7.
+          when: knows_hba.rc != 0
+
+        - name: ss-stack hba
+          ansible.builtin.command:
+            argv: ["{{ ss_stack }}", hba, "{{ env_dir }}"]
+          register: hba
+          changed_when: hba.stdout is search('updated')
+          when: knows_hba.rc == 0
+
+        - name: Say what changed
+          ansible.builtin.debug:
+            msg: "{{ hba.stdout_lines[-1] }}"
+          when: hba is not skipped
+
+    - name: Only that, on the data VM
+      ansible.builtin.meta: end_play
+      when: data_hba | default(false) | bool
+
     # DigitalOcean: the managed database is always running, so the dump always
     # happens (a first deploy dumps an empty database).
     - name: ss-stack dump (the managed database)

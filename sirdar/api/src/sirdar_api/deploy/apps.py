@@ -1,7 +1,9 @@
 """Which apps an environment runs and where its mail goes (deploy phase 8c).
-API and portal always run; wiki, kiosk, learn, status and mailpit can be turned off
-when the environment is created. deploy/stack's devices app is known but never
-run here yet: it needs two secrets Sirdar doesn't make (NOT_RUN). Mail goes to the environment's own Mailpit
+API and portal always run; wiki, kiosk, learn, status, devices and mailpit
+can be turned off. A new environment runs them all. devices needs its two
+secrets (envfile.DEVICES_SECRETS): Sirdar makes them when devices is turned
+on (environments.ensure_devices_secrets) and writes them into the .env only
+while it runs. Mail goes to the environment's own Mailpit
 (nothing leaves the host) or to an SMTP server: ServerSherpa reads SMTP only
 from its environment (SS_SMTP_* in api/src/serversherpa/config.py), so Sirdar
 writes it into the .env. The SMTP password is the optional secret
@@ -13,14 +15,11 @@ from sirdar_api.deploy import envfile
 
 # deploy/stack's list (ss-stack check_apps; tests/test_deploy_stack_drift.py)
 OPTIONAL_APPS = ("wiki", "kiosk", "learn", "status", "devices", "mailpit")
-# Apps Sirdar leaves off: devices needs SS_DEVICES_SERVICE_TOKEN and
-# DEVICES_SECRET_KEY, which Sirdar doesn't generate or store yet.
-NOT_RUN = ("devices",)
-RUNNABLE_APPS = tuple(a for a in OPTIONAL_APPS if a not in NOT_RUN)
+# the ones Sirdar can run: every one
+RUNNABLE_APPS = OPTIONAL_APPS
 ALWAYS = ("api", "portal")
 # their public names go when they're off
 _PUBLIC_APPS = ("wiki", "kiosk", "learn", "status", "devices")
-_DEVICES_SECRETS = ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY")
 DEFAULT_SMTP_PORT = 587                             # ServerSherpa's smtp_port default
 _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 # no whitespace, quotes, "$", "#", backslash, backtick or control character:
@@ -113,13 +112,21 @@ def is_public(env, service: str) -> bool:
     return service not in _PUBLIC_APPS or service in (env.apps or ())
 
 
-def env_extra(env) -> dict[str, str]:
+def env_extra(env, secrets: dict[str, str]) -> dict[str, str]:
+    """The apps and mail keys of the .env, and the devices secrets (from
+    `secrets`, the environment's decrypted ones) while devices runs. Devices
+    on without them raises devices_secrets_missing (ss-stack would refuse)."""
     out = {"STACK_APPS": ",".join(env.apps) if env.apps else "none"}
     if env.smtp_host:
         out |= {"SS_SMTP_HOST": env.smtp_host, "SS_SMTP_PORT": str(env.smtp_port),
                 "SS_SMTP_USERNAME": env.smtp_username or "",
                 "SS_SMTP_STARTTLS": "true" if env.smtp_starttls else "false",
                 "SS_SMTP_FROM": env.smtp_from}
+    if "devices" in (env.apps or ()):
+        missing = [k for k in envfile.DEVICES_SECRETS if not secrets.get(k)]
+        if missing:
+            raise AppsError("devices_secrets_missing", missing=missing)
+        out |= {k: secrets[k] for k in envfile.DEVICES_SECRETS}
     if env.kiosk_signing_digests:
         out["SS_KIOSK_SIGNING_DIGESTS"] = ",".join(env.kiosk_signing_digests)
     return out
@@ -137,7 +144,7 @@ def public(env, *, password_set: bool) -> dict:
 # The .env keys an adopted environment's apps and mail come from, and what
 # compose falls back to without them (deploy/stack/api/compose.yml).
 ENV_KEYS = ("STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT", "SS_SMTP_USERNAME",
-            "SS_SMTP_PASSWORD", "SS_SMTP_STARTTLS", "SS_SMTP_FROM")
+            "SS_SMTP_PASSWORD", "SS_SMTP_STARTTLS", "SS_SMTP_FROM", *envfile.DEVICES_SECRETS)
 _COMPOSE_SMTP_PORT = "1025"
 _COMPOSE_STARTTLS = "false"
 _TRUE = ("true", "1", "yes", "on")
@@ -151,17 +158,18 @@ _KEY_OF = {"apps_invalid": "STACK_APPS", "smtp_host_invalid": "SS_SMTP_HOST",
 def from_env(values: dict[str, str], domain: str) -> tuple[list[str], dict]:
     """A hand-built .env's apps and mail, checked as create checks them, with
     compose's defaults for what it leaves out (so a deploy renders the same
-    mail back). A bad value raises AppsError("adopt_value_invalid", key=…);
-    Mailpit off without SMTP raises mailpit_required."""
+    mail back). Devices follows ss-stack: without STACK_APPS it runs only
+    when both its secrets are set (not CHANGEME); a STACK_APPS that lists it
+    needs both. A bad value raises AppsError("adopt_value_invalid", key=…),
+    naming the missing devices secret for that; Mailpit off without SMTP
+    raises mailpit_required."""
     raw = values.get("STACK_APPS", "")
+    missing = [k for k in envfile.DEVICES_SECRETS
+               if values.get(k, "") in ("", envfile.PLACEHOLDER)]
     try:
         if not raw:
-            # ss-stack runs every app, devices too once both its secrets are
-            # set (not CHANGEME): Sirdar couldn't deploy that back (NOT_RUN)
-            if all(values.get(k, "") not in ("", envfile.PLACEHOLDER)
-                   for k in _DEVICES_SECRETS):
-                raise AppsError("apps_invalid")
-            apps_on = check_apps(None)
+            # ss-stack runs every app, devices only once both its secrets are set
+            apps_on = [a for a in check_apps(None) if a != "devices" or not missing]
         elif raw == "none":
             apps_on = []
         else:
@@ -169,6 +177,8 @@ def from_env(values: dict[str, str], domain: str) -> tuple[list[str], dict]:
             if "" in names:                     # ss-stack refuses empty entries too
                 raise AppsError("apps_invalid")
             apps_on = check_apps(names)
+            if "devices" in apps_on and missing:     # ss-stack up refuses it (check_devices)
+                raise AppsError("adopt_value_invalid", key=missing[0])
         host = values.get("SS_SMTP_HOST", "")
         if not host:
             return apps_on, check_mail(None, apps_on)       # Mailpit (needs it on)
