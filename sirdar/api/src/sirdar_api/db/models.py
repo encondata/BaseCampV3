@@ -618,7 +618,7 @@ class DoEnvironment(Base):
     account and sizes frozen at create (step 0 builds from these), the
     per-environment SSH key pair and the cert-worker's ACME account key, and
     what step 0 learned (VPC range, load balancer address, database
-    connection, bucket key, certificate expiry). Secrets are
+    connection, the bucket keys, certificate expiry). Secrets are
     Fernet-encrypted with SIRDAR_SECRETS_KEY and never returned."""
 
     __tablename__ = "do_environments"
@@ -645,6 +645,9 @@ class DoEnvironment(Base):
     bucket: Mapped[str] = mapped_column(unique=True)
     spaces_key_id: Mapped[str | None]
     spaces_secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    # the devices bucket's own key (migration 0021; only once devices runs)
+    devices_spaces_key_id: Mapped[str | None]
+    devices_spaces_secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     cert_not_after: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

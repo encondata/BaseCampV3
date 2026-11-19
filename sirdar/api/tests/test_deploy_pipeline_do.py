@@ -32,7 +32,7 @@ from .deploy_factories import (  # noqa: F401
     stop_pipeline,
     trust_fake,
 )
-from .do_helpers import CA, DOADMIN, SPACES_SECRET, make_do_environment
+from .do_helpers import CA, DEVICES_SPACES_SECRET, DOADMIN, SPACES_SECRET, make_do_environment
 from .do_helpers import built as _built
 from .do_helpers import fetched as _fetched
 from .do_helpers import ready_snapshot as _ready_snapshot
@@ -99,6 +99,13 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
         in text
     assert f"SS_SPACES_SECRET_KEY={SPACES_SECRET}\n" in text
     assert "SS_DATABASE_URL=postgresql+asyncpg://serversherpa:" in text
+    # the devices service: its database on the same cluster, its own bucket and key
+    env_values = envfile.parse_env(text)
+    assert env_values["DEVICES_DATABASE_URL"].endswith(
+        "@private-ss-uat9-db.db.ondigitalocean.com:25060/serversherpa_devices")
+    assert env_values["DEVICES_SPACES_BUCKET"] == f"{env.spaces_bucket}-devices"
+    assert (env_values["DEVICES_SPACES_ACCESS_KEY"], env_values["DEVICES_SPACES_SECRET_KEY"]) \
+        == ("DO00DEVKEY0001", DEVICES_SPACES_SECRET)
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
     # no spaces: objects live in Spaces, and Caddy has no route for it
     assert [h["hostname"] for h in smoke.extravars["public_hosts"]] == [
@@ -136,18 +143,17 @@ async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publ
             EnvironmentSecret, (do_env.id, "POSTGRES_PASSWORD"))).value_enc)
     assert acme_key.startswith("-----BEGIN")
     ca_b64 = base64.b64encode(CA.encode()).decode()
-    leaks = [SPACES_SECRET, DOADMIN, DEV_RENEW_TOKEN, ca_b64, acme_key, password,
-             base64.b64encode(acme_key.encode()).decode()]
+    leaks = [SPACES_SECRET, DEVICES_SPACES_SECRET, DOADMIN, DEV_RENEW_TOKEN, ca_b64, acme_key,
+             password, base64.b64encode(acme_key.encode()).decode()]
     lines = [f"leak {v}\n" for v in leaks]
     fake_runner.output["render"] = lines
     fake_runner.output["slot_smoke"] = lines
     fake_provisioner.echo["go_live"] = "".join(lines)
 
     def url_line(request):
-        text = base64.b64decode(request.extravars["env_file_b64"]).decode()
-        url = next(v for k, v in (ln.split("=", 1) for ln in text.splitlines() if "=" in ln)
-                   if k == "SS_DATABASE_URL")
-        fake_runner.output["up"] = [f"leak {url}\n"]
+        values = envfile.parse_env(base64.b64decode(request.extravars["env_file_b64"]).decode())
+        fake_runner.output["up"] = [f"leak {values[k]}\n"
+                                    for k in ("SS_DATABASE_URL", "DEVICES_DATABASE_URL")]
 
     fake_runner.effects["render"] = url_line
     dep_id = await _start(db, do_env, slot="orange", go_live=True)

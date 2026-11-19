@@ -27,15 +27,17 @@ def scram_sha256(password: str, *, salt: bytes | None = None, iterations: int = 
     return f"SCRAM-SHA-256${iterations}:{_b64(salt)}${_b64(stored_key)}:{_b64(server_key)}"
 
 
-def setup_sql(*, role: str, database: str, verifier: str) -> str:
+def setup_sql(*, role: str, databases: tuple[str, ...], verifier: str) -> str:
     """Run as doadmin in defaultdb: the role (created by doadmin, so PG 16
     gives doadmin ADMIN OPTION on it), its password, doadmin's membership
-    (needed to hand it a database) and the database it owns. Idempotent."""
-    if not _IDENT_RE.fullmatch(role) or not _IDENT_RE.fullmatch(database):
+    (needed to hand it a database) and each database it owns (the main one
+    and the devices service's). Idempotent."""
+    if not _IDENT_RE.fullmatch(role) or isinstance(databases, str) or not databases \
+            or not all(_IDENT_RE.fullmatch(d) for d in databases):
         raise ValueError("identifier")
     if not _VERIFIER_RE.fullmatch(verifier):
         raise ValueError("verifier")
-    return "\n".join([
+    lines = [
         "DO $$ BEGIN",
         f"  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}') THEN",
         f"    CREATE ROLE {role} LOGIN;",
@@ -43,8 +45,11 @@ def setup_sql(*, role: str, database: str, verifier: str) -> str:
         "END $$;",
         f"ALTER ROLE {role} WITH LOGIN PASSWORD '{verifier}';",
         f"GRANT {role} TO doadmin;",
-        f"SELECT 'CREATE DATABASE {database} OWNER {role}'",
-        f"  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{database}')\\gexec",
-        f"ALTER DATABASE {database} OWNER TO {role};",
-        "",
-    ])
+    ]
+    for database in databases:
+        lines += [
+            f"SELECT 'CREATE DATABASE {database} OWNER {role}'",
+            f"  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{database}')\\gexec",
+            f"ALTER DATABASE {database} OWNER TO {role};",
+        ]
+    return "\n".join([*lines, ""])

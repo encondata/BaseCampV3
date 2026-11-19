@@ -212,7 +212,10 @@ async def _ready_for_extras(env, **over):
     values = {"lb_ip": "203.0.113.50", "vpc_ip_range": "10.116.0.0/20",
               "db_host": "private-ss-uat9-db.db.ondigitalocean.com", "db_port": 25060,
               "db_ca_cert": CA_PEM, "spaces_key_id": "DO00KEY000001",
-              "spaces_secret_enc": vault.encrypt(get_settings(), "spaces-SECRET-1"), **over}
+              "spaces_secret_enc": vault.encrypt(get_settings(), "spaces-SECRET-1"),
+              "devices_spaces_key_id": "DO00DEVKEY0001",
+              "devices_spaces_secret_enc": vault.encrypt(get_settings(), "spaces-SECRET-dev"),
+              **over}
     await do_envs.set_do(env.id, **values)
     await do_envs.set_slot(env.id, "orange", droplet_id="4001", public_ip="127.0.0.1")
     await do_envs.record(env.id, "load_balancer", "lb-0001", "ss-uat9-lb")
@@ -228,7 +231,7 @@ async def test_env_extra(db):
     assert e.value.code == "do_not_ready"
     assert e.value.extra["missing"] == ["load balancer address", "VPC range", "database host",
                                         "database port", "database CA", "Spaces key",
-                                        "droplet", "load balancer"]
+                                        "devices Spaces key", "droplet", "load balancer"]
     await _ready_for_extras(env)
     extra, secrets = await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
     password = ENV_SECRETS["POSTGRES_PASSWORD"]
@@ -247,6 +250,12 @@ async def test_env_extra(db):
         "SS_SPACES_ENDPOINT": "https://nyc3.digitaloceanspaces.com",
         "SS_SPACES_REGION": "nyc3", "SS_SPACES_ACCESS_KEY": "DO00KEY000001",
         "SS_SPACES_SECRET_KEY": "spaces-SECRET-1", "SS_SPACES_USE_PATH_STYLE": "false",
+        "DEVICES_DATABASE_URL": "postgresql+asyncpg://serversherpa:"
+                                f"{password}@private-ss-uat9-db.db.ondigitalocean.com:25060/"
+                                "serversherpa_devices",
+        "DEVICES_SPACES_BUCKET": f"{env.spaces_bucket}-devices",
+        "DEVICES_SPACES_ACCESS_KEY": "DO00DEVKEY0001",
+        "DEVICES_SPACES_SECRET_KEY": "spaces-SECRET-dev",
         "STACK_DROPLET_ID": "4001",
         "SS_CERT_DO_TOKEN": DEV_RENEW_TOKEN, "SS_CERT_LB_ID": "lb-0001",
         "SS_CERT_NAMES": ",".join([*(f"{s}.uat9.serversherpa.com"
@@ -257,7 +266,8 @@ async def test_env_extra(db):
         "SS_CERT_ACME_KEY": acme_b64,
     }
     assert set(secrets) == {extra["SS_DATABASE_URL"], "spaces-SECRET-1", ca_b64,
-                            DEV_RENEW_TOKEN, acme_b64}
+                            DEV_RENEW_TOKEN, acme_b64, extra["DEVICES_DATABASE_URL"],
+                            "spaces-SECRET-dev"}
     assert list(extra) == [k for k in envfile.EXTRA_KEYS if k in extra]
     # the rendered .env takes every value as it is (one line each)
     assert envfile.parse_env(envfile.render_env(envfile.EnvConfig(
@@ -265,6 +275,59 @@ async def test_env_extra(db):
         bind_ip=env.bind_ip, ports=dict(envfile.DEFAULT_PORTS), keep_dumps=5,
         spaces_bucket=env.spaces_bucket, log_level="INFO", secrets=ENV_SECRETS,
         extra=extra)))["SS_DATABASE_CA_B64"] == ca_b64
+
+
+async def test_env_extra_without_devices_has_no_devices_bucket(db):
+    """Devices off: no devices bucket or key is needed or written. Its
+    database (step 0 makes it on every cluster) is named all the same."""
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db)
+    env.apps = ["wiki", "kiosk", "learn", "status", "mailpit"]
+    await db.commit()
+    await _ready_for_extras(env, devices_spaces_key_id=None, devices_spaces_secret_enc=None)
+    extra, secrets = await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
+    assert not [k for k in extra if k.startswith("DEVICES_SPACES_")]
+    assert extra["DEVICES_DATABASE_URL"].endswith(":25060/serversherpa_devices")
+    assert "spaces-SECRET-dev" not in secrets
+
+
+async def test_env_extra_with_devices_wants_the_devices_key_and_its_secret(db):
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db)
+    await _ready_for_extras(env, devices_spaces_secret_enc=None)
+    with pytest.raises(do_envs.DoEnvError) as e:
+        await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
+    assert e.value.extra["missing"] == ["devices Spaces key"]
+
+
+async def test_env_extra_hides_the_quoted_password_in_the_devices_url(db):
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db)
+    await _ready_for_extras(env)
+    extra, secrets = await do_envs.env_extra(db, get_settings(), env, "orange",
+                                             {**ENV_SECRETS, "POSTGRES_PASSWORD": "p@ss/w:rd%"})
+    assert extra["DEVICES_DATABASE_URL"].startswith(
+        "postgresql+asyncpg://serversherpa:p%40ss%2Fw%3Ard%25@private-ss-uat9-db.")
+    assert {extra["DEVICES_DATABASE_URL"], "p%40ss%2Fw%3Ard%25"} <= set(secrets)
+
+
+async def test_secret_values_include_the_devices_key_secret(db):
+    env = await make_do_environment(db)
+    await _ready_for_extras(env)
+    found = await do_envs.secret_values(db, get_settings(), env)
+    assert {"spaces-SECRET-1", "spaces-SECRET-dev"} <= set(found)
+
+
+@pytest.mark.parametrize("bucket, expected", [
+    ("ss-uat9-0123abcd", "ss-uat9-0123abcd-devices"),
+    # the longest a name makes (32 characters): 52, nothing cut
+    ("ss-" + "a" * 32 + "-0123abcd", "ss-" + "a" * 32 + "-0123abcd-devices"),
+    # longer than any name makes: cut before the id, so it stays unique
+    ("ss-" + "b" * 60 + "-0123abcd", "ss-" + "b" * 43 + "-0123abcd-devices"),
+])
+def test_the_devices_bucket_is_named_after_the_main_one(bucket, expected):
+    name = do_envs.devices_bucket_name(bucket)
+    assert name == expected and len(name) <= 63
 
 
 async def test_env_extra_wants_the_renewal_token_and_a_numeric_droplet(db):

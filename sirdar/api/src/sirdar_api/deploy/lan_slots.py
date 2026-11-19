@@ -102,7 +102,8 @@ def app_ips(machines: list) -> list[str]:
 async def env_extra(db: AsyncSession, env: Environment,
                     secrets: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     """An app VM's .env keys on top of the usual ones: the data VM's database
-    (no TLS on the LAN) and the secret values among them. Objects stay at
+    (no TLS on the LAN), the devices service's database beside it, and the
+    secret values among them. Objects stay at
     https://spaces.<domain> through NPM, as on a single-server LAN host.
     Raises do_envs.DoEnvError (do_not_ready) when the data VM isn't recorded."""
     from urllib.parse import quote
@@ -110,11 +111,13 @@ async def env_extra(db: AsyncSession, env: Environment,
     if host is None:
         raise do_envs.DoEnvError("do_not_ready", missing=["data VM"])
     password = quote(secrets["POSTGRES_PASSWORD"], safe="")
-    url = f"postgresql+asyncpg://{do_envs.DB_USER}:{password}@{host}:{DB_PORT}/{do_envs.DB_NAME}"
+    server = f"postgresql+asyncpg://{do_envs.DB_USER}:{password}@{host}:{DB_PORT}"
+    url, devices_url = f"{server}/{do_envs.DB_NAME}", f"{server}/{do_envs.DEVICES_DB_NAME}"
     extra = {"STACK_EXTERNAL_DATA": "1", "STACK_DB_HOST": host, "STACK_DB_PORT": str(DB_PORT),
              "STACK_DB_NAME": do_envs.DB_NAME, "STACK_DB_USER": do_envs.DB_USER,
-             "STACK_DB_SSLMODE": "disable", "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "disable"}
-    found = [url]
+             "STACK_DB_SSLMODE": "disable", "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "disable",
+             "DEVICES_DATABASE_URL": devices_url}
+    found = [url, devices_url]
     if password != secrets["POSTGRES_PASSWORD"]:
         found.append(password)
     return extra, found

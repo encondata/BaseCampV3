@@ -249,18 +249,24 @@ async def test_switch_without_a_load_balancer_fails(db, do_build):
 async def test_remove_everything(db, do_build):
     await do_build.run()
     fake, spaces_fake = do_build.cloud.do, do_build.cloud.spaces
+    devices_bucket = f"{do_build.env.spaces_bucket}-devices"
     for i in range(3):
         spaces_fake.put(do_build.env.spaces_bucket, f"files/{i}.pdf", b"x")
+    spaces_fake.put(devices_bucket, "apps/kiosk.ipa", b"x")
+    assert [k["name"] for k in fake.keys.values()] == ["ss-uat9", "ss-uat9-devices"]
     stranger = fake.add_droplet("someone-elses", ["web"])
     await do_build.run("do_destroy", mode="teardown", slot=None, go_live=False)
     assert list(fake.droplets) == [str(stranger["id"])]
     assert (fake.vpcs, fake.databases, fake.keys, fake.certificates, fake.load_balancers,
             fake.firewalls) == ({}, {}, {}, {}, {}, {})
     assert do_build.env.spaces_bucket not in spaces_fake.buckets
+    assert devices_bucket not in spaces_fake.buckets           # the devices bucket and key too
     assert (await db.scalars(select(DoResource))).all() == []
     assert await known_hosts.lookup(db, "127.0.0.1", vms.VM_SSH_PORT) is None
     log = do_build.log()
     assert "emptied (3 objects)" in log and "Forgot 127.0.0.1's SSH host key" in log
+    assert f"Bucket {devices_bucket}: emptied (1 objects) and deleted." in log
+    assert "ss-uat9-devices: deleted." in log
     for secret in ("spaces-SECRET", DEV_TOKEN, DEV_RENEW_TOKEN):
         assert secret not in log
 
@@ -322,7 +328,8 @@ async def test_remove_refuses_a_renamed_spaces_key(db, do_build):
 async def test_remove_refuses_a_bucket_record_for_another_bucket(db, do_build):
     await do_build.run()
     fake = do_build.cloud.do
-    await db.execute(update(DoResource).where(DoResource.kind == "bucket")
+    await db.execute(update(DoResource).where(DoResource.kind == "bucket",
+                                              DoResource.do_id == do_build.env.spaces_bucket)
                      .values(do_id="someone-elses-bucket", name="someone-elses-bucket"))
     await db.commit()
     before = len(fake.writes())
@@ -330,6 +337,44 @@ async def test_remove_refuses_a_bucket_record_for_another_bucket(db, do_build):
         await do_build.run("do_destroy", mode="teardown", slot=None, go_live=False)
     assert "someone-elses-bucket" in err.value.reason
     assert fake.writes()[before:] == []
+
+
+async def test_remove_refuses_a_bucket_record_named_like_another_environments(db, do_build):
+    """Only this environment's two buckets: the main one and `<main>-devices`."""
+    await do_build.run()
+    fake = do_build.cloud.do
+    await db.execute(update(DoResource).where(
+        DoResource.kind == "bucket", DoResource.do_id == f"{do_build.env.spaces_bucket}-devices")
+        .values(do_id="ss-other-0123abcd-devices", name="ss-other-0123abcd-devices"))
+    await db.commit()
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await _destroy(do_build)
+    assert "ss-other-0123abcd-devices" in err.value.reason
+    assert fake.writes()[before:] == []
+
+
+async def test_remove_resumes_after_a_failed_devices_bucket(db, do_build, monkeypatch):
+    await do_build.run()
+    devices_bucket = f"{do_build.env.spaces_bucket}-devices"
+    real = spaces.empty_bucket
+
+    async def refuse_devices(bucket, *a, **kw):
+        if bucket == devices_bucket:
+            raise spaces.SpacesError("Spaces refused the request (AccessDenied).")
+        return await real(bucket, *a, **kw)
+
+    monkeypatch.setattr(spaces, "empty_bucket", refuse_devices)
+    with pytest.raises(StepFailed):
+        await _destroy(do_build)
+    rows = (await db.scalars(select(DoResource))).all()
+    assert sorted((r.kind, r.do_id) for r in rows if r.kind != "vpc") == [
+        ("bucket", devices_bucket)]
+    assert do_build.cloud.do.keys == {}            # both keys and the setup key are gone
+    monkeypatch.setattr(spaces, "empty_bucket", real)
+    await _destroy(do_build)
+    assert devices_bucket not in do_build.cloud.spaces.buckets
+    assert (await db.scalars(select(DoResource))).all() == []
 
 
 async def test_remove_forgets_rows_of_resources_already_gone(db, do_build):

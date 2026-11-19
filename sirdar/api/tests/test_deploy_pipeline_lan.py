@@ -88,6 +88,8 @@ async def test_the_first_deploy_builds_and_goes_live(db, lan, fake_runner, fake_
             app_env["STACK_DB_SSLMODE"], app_env["SS_DATABASE_SSL"]) == (
         "1", DATA, "disable", "disable")
     assert app_env["SS_DATABASE_URL"].endswith(f"@{DATA}:5432/serversherpa")
+    # the devices service's database is on the data VM too
+    assert app_env["DEVICES_DATABASE_URL"] == app_env["SS_DATABASE_URL"] + "_devices"
 
     dump = next(r for r in fake_runner.requests if r.step == "dump")
     assert (dump.extravars["external_data"], dump.extravars["data_new"]) == (True, True)

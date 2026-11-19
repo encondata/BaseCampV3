@@ -168,6 +168,7 @@ async def do_build(db, do_cloud, secrets_key, ssh_server, monkeypatch, deploy_en
 # ---- a built, deployed environment (pipeline and route tests) ----------------------
 
 SPACES_SECRET = "spaces-SECRET-pipeline-1"
+DEVICES_SPACES_SECRET = "spaces-SECRET-pipeline-devices-1"
 DOADMIN = "doadmin-SECRET-pipeline-1"
 CA = "-----BEGIN CERTIFICATE-----\nMIIBcaPIPELINE\n-----END CERTIFICATE-----\n"
 
@@ -180,6 +181,9 @@ async def built(ctx) -> None:
                          db_host="private-ss-uat9-db.db.ondigitalocean.com", db_port=25060,
                          db_ca_cert=CA, spaces_key_id="DO00KEY000001",
                          spaces_secret_enc=vault.encrypt(settings, SPACES_SECRET),
+                         devices_spaces_key_id="DO00DEVKEY0001",
+                         devices_spaces_secret_enc=vault.encrypt(settings,
+                                                                 DEVICES_SPACES_SECRET),
                          db_admin_password_enc=vault.encrypt(settings, DOADMIN))
     for i, slot in enumerate(ctx.slots):
         await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(4001 + i), public_ip="127.0.0.1")
