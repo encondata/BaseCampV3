@@ -11,6 +11,8 @@
 # Raise the build first with tools/bump_build.sh: every upload needs a higher
 # build than any build ever uploaded (deleted versions count).
 set -euo pipefail
+# An exported CDPATH would make the cd below print the path it went to.
+unset CDPATH
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     echo "usage: $(basename "$0")   archive Release with DEV_API, package and check the Devices site IPA"
@@ -38,11 +40,13 @@ log="$out/archive.log"
 upload_limit=$((500 * 1024 * 1024))
 # The only entitlements the Devices site's Ad Hoc profile is sure to cover.
 # Anything else is a capability that must be turned on for the App ID first.
-allowed_entitlements="application-identifier com.apple.developer.team-identifier get-task-allow keychain-access-groups"
+allowed_entitlements=(application-identifier com.apple.developer.team-identifier
+                      get-task-allow keychain-access-groups)
 
 # xcode-select may point at the Command Line Tools.
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-[[ -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ]] || die "no xcodebuild under DEVELOPER_DIR=$DEVELOPER_DIR"
+xcodebuild="$DEVELOPER_DIR/usr/bin/xcodebuild"
+[[ -x "$xcodebuild" ]] || die "no xcodebuild under DEVELOPER_DIR=$DEVELOPER_DIR"
 [[ -f "$pbxproj" ]] || die "can't find $pbxproj"
 
 # The one build number every target and configuration agrees on.
@@ -57,11 +61,13 @@ dirty="$(git -C "$app_root" status --porcelain -- . 2>/dev/null || true)"
 
 mkdir -p "$out"
 rm -rf "$archive"
+# A failed run leaves no IPA of this build, not even one from an earlier run.
+rm -f "$out/ServerSherpa-Kiosk-"*"-$project_build.ipa"
 echo "Archiving Release with DEV_API (build $project_build); log: $log"
 # $(inherited) keeps any condition the Release configuration ever sets
 # (today it sets none). It is for xcodebuild to expand, not the shell.
 # shellcheck disable=SC2016
-if ! xcodebuild archive \
+if ! "$xcodebuild" archive \
     -project "$project" \
     -scheme "$scheme" \
     -configuration Release \
@@ -92,23 +98,26 @@ plist_value() {   # plist_value <plist> <key>
 }
 
 # Package: Payload/<App>.app, symlinks kept (-y), no .DS_Store. /usr/bin/zip
-# writes no __MACOSX folder.
+# writes no __MACOSX folder. The IPA is zipped in the stage directory and
+# gets its final name only after every check below passes, so a failed run
+# never leaves an IPA that looks ready to upload.
 mkdir "$stage/Payload"
 cp -RP "${archived[0]}" "$stage/Payload/"
 version="$(plist_value "$stage/Payload/$app_name/Info.plist" CFBundleShortVersionString)"
 build="$(plist_value "$stage/Payload/$app_name/Info.plist" CFBundleVersion)"
 [[ -n "$version" && -n "$build" ]] || die "the archived app's Info.plist has no version or build"
 ipa="$out/ServerSherpa-Kiosk-$version-$build.ipa"
-rm -f "$ipa"
-(cd "$stage" && /usr/bin/zip -qry "$ipa" Payload -x '*.DS_Store')
+rm -f "$ipa"      # an earlier IPA of this build isn't from this archive
+pending="$stage/pending.ipa"
+(cd "$stage" && /usr/bin/zip -qry "$pending" Payload -x '*.DS_Store')
 
 # Check the IPA itself, unzipped fresh.
 fail() {
     echo "build_ipa: the IPA failed a check: $*" >&2
-    echo "build_ipa: $ipa" >&2
+    echo "build_ipa: no IPA was written. The archive is in $archive" >&2
     exit 1
 }
-/usr/bin/unzip -q "$ipa" -d "$check"
+/usr/bin/unzip -q "$pending" -d "$check"
 apps=("$check/Payload/"*.app)
 [[ ${#apps[@]} -eq 1 ]] || fail "expected exactly one Payload/*.app, found ${#apps[@]}"
 app="${apps[0]}"
@@ -122,31 +131,40 @@ got="$(plist_value "$info" CFBundleVersion)"
 got="$(plist_value "$info" DTPlatformName)"
 [[ "$got" == "iphoneos" ]] || fail "DTPlatformName is '$got', not iphoneos (not a device build)"
 
+# DEV_API reached the Swift compiler (only swiftc gets -D conditions)...
+grep -qE -- '(^|[[:space:]])-D ?DEV_API([[:space:]]|$)' "$log" \
+    || fail "no Swift compile in $log was given -DDEV_API"
+# ...and the binary carries the dev API URL, which only a DEBUG or DEV_API
+# build does (KioskBuildConfig.swift; the literal appears nowhere else).
 executable="$(plist_value "$info" CFBundleExecutable)"
 [[ -n "$executable" && -f "$app/$executable" ]] || fail "the main executable '$executable' isn't in the app"
-# Only a DEBUG or DEV_API build carries the dev API URL (KioskBuildConfig.swift).
 LC_ALL=C grep -aqF "$dev_api" "$app/$executable" \
     || fail "the executable doesn't contain $dev_api, so DEV_API didn't take effect"
 
-if ! ents_xml="$(/usr/bin/codesign -d --entitlements - --xml "$app" 2>/dev/null)"; then
-    fail "codesign can't read the app's signature"
-fi
-keys="$(printf '%s' "$ents_xml" | /usr/bin/python3 -I -c '
+# The signed entitlements of the app and of each app extension: the Devices
+# site checks both against the app's one profile (frameworks carry none).
+check_entitlements() {   # check_entitlements <bundle> <name for messages>
+    local ents_xml extra
+    if ! ents_xml="$(/usr/bin/codesign -d --entitlements - --xml "$1" 2>/dev/null)"; then
+        fail "codesign can't read the signature of $2"
+    fi
+    extra="$(printf '%s' "$ents_xml" | /usr/bin/python3 -I -c '
 import plistlib, sys
 data = sys.stdin.buffer.read()
-print("\n".join(sorted(plistlib.loads(data))) if data.strip() else "")
-')" || fail "the signed entitlements can't be parsed"
-extra=""
-for key in $keys; do
-    case " $allowed_entitlements " in
-        *" $key "*) ;;
-        *) extra="$extra $key" ;;
-    esac
+keys = plistlib.loads(data) if data.strip() else {}
+print(" ".join(sorted(set(keys) - set(sys.argv[1:]))))
+' "${allowed_entitlements[@]}")" || fail "the signed entitlements of $2 can't be parsed"
+    [[ -z "$extra" ]] || fail "$2 has entitlements beyond the basic ones: $extra. Turn that capability on for the App ID $bundle_id in Apple's developer site first, or the Devices site's re-sign fails."
+}
+check_entitlements "$app" "the app"
+for appex in "$app/PlugIns/"*.appex; do
+    check_entitlements "$appex" "PlugIns/$(basename "$appex")"
 done
-[[ -z "$extra" ]] || fail "the app has entitlements beyond the basic ones:$extra. Turn that capability on for the App ID $bundle_id in Apple's developer site first, or the Devices site's re-sign fails."
 
-size="$(stat -f %z "$ipa")"
+size="$(/usr/bin/stat -f %z "$pending")"
 [[ "$size" -le "$upload_limit" ]] || fail "it is $size bytes; the Devices site takes at most 500 MB ($upload_limit bytes)"
+
+mv -f "$pending" "$ipa"
 
 echo
 echo "IPA:      $ipa"

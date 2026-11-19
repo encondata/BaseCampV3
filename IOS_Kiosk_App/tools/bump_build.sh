@@ -9,6 +9,8 @@
 # Every IPA uploaded to the Devices site needs a higher build than any build
 # ever uploaded there, deleted versions included.
 set -euo pipefail
+# An exported CDPATH would make the cd below print the path it went to.
+unset CDPATH
 
 usage() {
     echo "usage: $(basename "$0") [N]   set CURRENT_PROJECT_VERSION to N, or to the current value + 1"
