@@ -1048,7 +1048,8 @@ check_apps() {
 }
 """
 # check_apps as ss-stack had it from 6cc4c8b7 (learn in its case line) until
-# 4e8ceb1d4 moved the names into OPTIONAL_APPS; this is 253c882bb's
+# 4e8ceb1d4 moved the names into OPTIONAL_APPS; abridged from 253c882bb's
+# (its case line, the only part the grep reads, is verbatim)
 CASE_SS_STACK = """#!/usr/bin/env bash
 check_apps() {
   local apps app list
@@ -1067,9 +1068,30 @@ check_apps() {
   fi
 }
 """
-# The two forms a checkout that knows learn has: this checkout's real
-# ss-stack (its OPTIONAL_APPS list, 4e8ceb1d4 on) and the old case line.
-KNOWS_LEARN = {"optional-apps": None, "case-line": CASE_SS_STACK}
+# The list and check_apps as 4e8ceb1d4 wrote them (learn in the OPTIONAL_APPS
+# line); frozen here so a later rewording of ss-stack can't quietly drop
+# checkouts in this form. The OPTIONAL_APPS line is verbatim.
+OPTIONAL_APPS_SS_STACK = """#!/usr/bin/env bash
+OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)
+
+check_apps() {
+  local apps app list names name known
+  apps=$(env_value STACK_APPS)
+  [[ -z $apps || $apps == none ]] && return 0
+  IFS=, read -ra list <<<"$apps"
+  for app in "${list[@]}"; do
+    if [[ $app == none ]]; then die "STACK_APPS: none can't be combined with other apps"; fi
+    known=0
+    for name in "${OPTIONAL_APPS[@]}"; do if [[ $app == "$name" ]]; then known=1; fi; done
+    (( known )) || die "STACK_APPS has '$app', not one of $names (lowercase, no spaces)"
+  done
+}
+"""
+# Every form a checkout that knows learn has had: this checkout's real
+# ss-stack, the OPTIONAL_APPS list (4e8ceb1d4 on) and the case line
+# (6cc4c8b7 through 253c882bb).
+KNOWS_LEARN = {"this-checkout": None, "optional-apps": OPTIONAL_APPS_SS_STACK,
+               "case-line": CASE_SS_STACK}
 
 
 def _ss_stack(tmp_path: Path, text: str) -> Path:

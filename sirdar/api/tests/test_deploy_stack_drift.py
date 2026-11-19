@@ -42,17 +42,29 @@ def test_learn_is_a_public_app_everywhere():
 
 # ---- the playbooks' greps of the checkout's ss-stack ----------------------------
 
-def _stack_greps() -> list[tuple[str, str, list[str]]]:
-    """Every command task in the playbooks (tasks/ included) that greps the
-    checkout's ss-stack: (playbook, task name, argv)."""
+# deploy/tests/test_sirdar_greps.py has a twin of this walker and these
+# checks (deploy/tests can't import Sirdar): change both together.
+MODULES = ("command", "shell", "raw")
+
+
+def _scan_stack_greps() -> tuple[list[tuple[str, str, list[str]]], list[str]]:
+    """Every task in the playbooks (tasks/ included) that greps the checkout's
+    ss-stack. Returns the argv-form greps, (playbook, task name, argv), and
+    any other task that runs grep on ss_stack in a form this walker can't
+    run (free-form, cmd:, shell, raw), named so the test can refuse it."""
     found: list[tuple[str, str, list[str]]] = []
+    odd: list[str] = []
 
     def walk(node, playbook: str) -> None:
         if isinstance(node, dict):
-            command = node.get("ansible.builtin.command") or node.get("command")
-            argv = command.get("argv") if isinstance(command, dict) else None
-            if argv and argv[0] == "grep" and argv[-1] == SS_STACK_ARG:
-                found.append((playbook, node.get("name"), argv))
+            for key, module in node.items():
+                if key.rsplit(".", 1)[-1] not in MODULES:
+                    continue
+                argv = module.get("argv") if isinstance(module, dict) else None
+                if argv and argv[0] == "grep" and argv[-1] == SS_STACK_ARG:
+                    found.append((playbook, node.get("name"), argv))
+                elif "grep" in str(module) and "ss_stack" in str(module):
+                    odd.append(f"{playbook}: {node.get('name')!r} ({key})")
             node = list(node.values())
         if isinstance(node, list):
             for item in node:
@@ -60,7 +72,11 @@ def _stack_greps() -> list[tuple[str, str, list[str]]]:
 
     for path in sorted(PLAYBOOK_DIR.rglob("*.yml")):
         walk(yaml.safe_load(path.read_text()), path.relative_to(PLAYBOOK_DIR).as_posix())
-    return found
+    return found, odd
+
+
+def _stack_greps() -> list[tuple[str, str, list[str]]]:
+    return _scan_stack_greps()[0]
 
 
 def _failed_greps(ss_stack: Path) -> list[str]:
@@ -80,6 +96,13 @@ def test_the_playbook_greps_cover_learn_and_the_commands():
     for playbook, command in (("data.yml", "data"), ("first_admin.yml", "admin"),
                               ("seed.yml", "seed")):
         assert any(p == playbook and f"{command})" in argv[-2] for p, _, argv in greps), playbook
+
+
+def test_every_ss_stack_grep_is_one_these_tests_can_run():
+    """A grep of ss-stack written any other way would be skipped by the
+    checks below; write it as `argv: [grep, ..., "{{ ss_stack }}"]`."""
+    odd = _scan_stack_greps()[1]
+    assert not odd, "grep ss-stack with an argv list ending in {{ ss_stack }}:\n" + "\n".join(odd)
 
 
 def test_every_playbook_grep_finds_its_line_in_ss_stack():
