@@ -31,7 +31,7 @@ import {
   BACKOFF, clearSent, discardFailed, enqueueScan, retryFailed, startSender, stopSender,
   useOutbox, type OutboxRow,
 } from '../lib/outbox';
-import { buildScanIndex, matchScan, scanTypeFor, type ScanAsset, type ScanIndex } from '../lib/scanMatch';
+import { buildScanIndex, matchScan, scanTypeFor, sentScanValue, type ScanAsset, type ScanIndex } from '../lib/scanMatch';
 import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 
@@ -166,7 +166,7 @@ export default function Scan() {
     playScanSound(match ? 'good' : 'not_found');
     const enqueued = match
       ? enqueueScan({
-          scanned_value: raw,
+          scanned_value: sentScanValue(raw, match.kind, match.asset.rfid),
           scan_type: scanTypeFor(match.kind),
           asset: {
             id: match.asset.id,

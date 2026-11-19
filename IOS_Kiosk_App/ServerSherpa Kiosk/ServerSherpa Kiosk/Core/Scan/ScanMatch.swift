@@ -76,3 +76,13 @@ func matchAssetOrSerial<A: ScanAsset>(_ index: ScanIndex<A>, _ raw: String) -> S
 
 /// The ingest endpoint's `scan_type`.
 func scanTypeFor(_ kind: ScanMatchKind) -> String { kind == .rfid ? "rfid" : "barcode" }
+
+/// What a matched scan sends as `scanned_value`. An RFID match sends the asset's
+/// stored tag, not the value as read: this app ignores leading zeros (`rfidKey`),
+/// the portal's RFID match does not, so a label's short form (`100348`) would
+/// match here and never there. Anything else is sent exactly as scanned, for the
+/// portal to re-match.
+func sentScanValue<A: ScanAsset>(_ hit: ScanMatch<A>, _ raw: String) -> String {
+    let tag = hit.asset.rfid?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return hit.kind == .rfid && !tag.isEmpty ? tag : raw
+}

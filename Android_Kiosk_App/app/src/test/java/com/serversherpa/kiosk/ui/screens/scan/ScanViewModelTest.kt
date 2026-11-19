@@ -63,6 +63,8 @@ class ScanViewModelTest {
         vm.onScan("100348"); settle()
         val row = outbox.snapshot.value.rows[0]
         assertEquals(OutboxStatus.QUEUED, row.status); assertEquals("rfid", row.scanType); assertEquals("a1", row.asset?.id); assertEquals("s1", row.siteId)
+        // The stored tag goes out, not the short form read: the portal's RFID match is exact.
+        assertEquals("000000000000000000100348", row.scannedValue)
         assertNotNull(flash.state.value)
         vm.onScan("zzz"); settle()
         assertEquals(OutboxStatus.NOMATCH, outbox.snapshot.value.rows[0].status)

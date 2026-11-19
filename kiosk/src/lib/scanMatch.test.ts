@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 
 import {
-  buildScanIndex, matchAssetOrSerial, matchScan, scanTypeFor, type ScanAsset,
+  buildScanIndex, matchAssetOrSerial, matchScan, scanTypeFor, sentScanValue, type ScanAsset,
 } from './scanMatch';
 
 const rows: ScanAsset[] = [
@@ -91,4 +91,15 @@ it('matchAssetOrSerial returns null for a blank or unknown value', () => {
   expect(matchAssetOrSerial(index, '')).toBeNull();
   expect(matchAssetOrSerial(index, '  ')).toBeNull();
   expect(matchAssetOrSerial(index, 'nope123')).toBeNull();
+});
+
+it('sentScanValue sends the stored tag for an RFID match and the value as scanned otherwise', () => {
+  // The server's RFID match is exact, so the short form on a label must go out as the full tag.
+  expect(sentScanValue('100348', 'rfid', '000000000000100348')).toBe('000000000000100348');
+  expect(sentScanValue('100348', 'rfid', '  000000000000100348 ')).toBe('000000000000100348');
+  expect(sentScanValue('sn-4242', 'serial', '000000000000100348')).toBe('sn-4242');
+  expect(sentScanValue('10042', 'asset_id', '000000000000100348')).toBe('10042');
+  // A tag-kind match with no stored tag can't happen, but never send an empty value.
+  expect(sentScanValue('100348', 'rfid', null)).toBe('100348');
+  expect(sentScanValue('100348', 'rfid', '  ')).toBe('100348');
 });

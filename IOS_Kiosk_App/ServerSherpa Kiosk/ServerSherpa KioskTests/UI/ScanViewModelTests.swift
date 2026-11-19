@@ -40,6 +40,8 @@ struct ScanViewModelTests {
         await vm.onScan("100348")
         let row = outbox.snapshot.rows[0]
         #expect(row.status == .queued); #expect(row.scanType == "rfid"); #expect(row.asset?.id == "a1"); #expect(row.siteId == "s1")
+        // The stored tag goes out, not the short form read: the portal's RFID match is exact.
+        #expect(row.scannedValue == "000000000000000000100348")
         #expect(flash.state?.color == Color(hsl: prefs.appearance.goodScan))
         await vm.onScan("zzz")
         let miss = outbox.snapshot.rows[0]

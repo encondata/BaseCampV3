@@ -70,3 +70,22 @@ fun <A : ScanAsset> matchAssetOrSerial(index: ScanIndex<A>, raw: String): ScanMa
 
 /** The ingest endpoint's `scan_type`. */
 fun scanTypeFor(kind: ScanMatchKind): String = if (kind == ScanMatchKind.RFID) "rfid" else "barcode"
+
+/** A matched scan's `scanned_value` and `scan_type`, as the outbox sends them. */
+data class SentScan(val value: String, val type: String)
+
+/** An RFID match sends the asset's stored tag, not the value as read: this app ignores leading
+ *  zeros ([rfidKey]), the portal's RFID match does not, so a label's short form (`100348`) would
+ *  match here and never there. Anything else is sent exactly as scanned, for the portal to re-match. */
+fun <A : ScanAsset> sentScan(hit: ScanMatch<A>, raw: String): SentScan {
+    val tag = hit.asset.rfid?.trim()?.takeIf { it.isNotEmpty() }
+    return SentScan(if (hit.kind == ScanMatchKind.RFID && tag != null) tag else raw, scanTypeFor(hit.kind))
+}
+
+/** What a printed label's scan sends: what [raw] matched on [asset] in [matchLabelScan]'s order
+ *  (asset ID, serial, then tag), through [sentScan]. A value that matches none of them goes out
+ *  as a scanned barcode. */
+fun <A : ScanAsset> labelScan(asset: A, raw: String): SentScan {
+    val one = buildScanIndex(listOf(asset))
+    return matchLabelScan(one, raw)?.let { sentScan(it, raw) } ?: SentScan(raw, "barcode")
+}

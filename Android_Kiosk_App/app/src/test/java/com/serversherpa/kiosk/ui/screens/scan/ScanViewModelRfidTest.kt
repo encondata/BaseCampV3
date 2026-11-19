@@ -96,6 +96,14 @@ class ScanViewModelRfidTest {
         assertEquals(OutboxStatus.NOMATCH, byValue["100999"]?.status)
     }
 
+    @Test fun aBurstTagReadWithoutItsPaddingSendsTheStoredTag() = runTest {
+        val vm = build()
+        vm.onBurst(listOf("100348")); settle()
+        val row = vm.outboxSnapshot.value.rows.single()
+        assertEquals("000000000000000000100348", row.scannedValue); assertEquals("rfid", row.scanType)
+        assertEquals("Tagged rack", row.asset?.name)
+    }
+
     @Test fun anEmptyBurstQueuesNothingAndSaysNothing() = runTest {
         val vm = build()
         vm.onBurst(emptyList()); settle()

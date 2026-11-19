@@ -64,7 +64,7 @@ import { flash } from '../lib/flash';
 import { getIdentity, uuid } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
-import { buildScanIndex, matchScan, scanTypeFor, type ScanAsset } from '../lib/scanMatch';
+import { buildScanIndex, matchScan, scanTypeFor, sentScanValue, type ScanAsset } from '../lib/scanMatch';
 import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 import { buildTruckIndex, filterTrucks, matchTruck, type TruckRow } from '../lib/truckMatch';
@@ -359,6 +359,7 @@ export default function Trucks() {
     let containerId = crateHit?.container.id ?? null;
     let scanKind: 'rfid' | 'barcode' = crateHit
       ? (crateHit.kind === 'rfid' ? 'rfid' : 'barcode') : 'barcode';
+    let sentValue = crateHit ? sentScanValue(raw, crateHit.kind, crateHit.container.rfid_tag) : raw;
     let viaAsset: string | null = null;
 
     if (!containerId) {
@@ -376,6 +377,7 @@ export default function Trucks() {
       }
       containerId = asset.container_id;
       scanKind = scanTypeFor(assetHit.kind);
+      sentValue = sentScanValue(raw, assetHit.kind, asset.rfid);
       viaAsset = asset.name || asset.asset_id;
     }
 
@@ -387,7 +389,7 @@ export default function Trucks() {
       serial: getIdentity().serial,
       container_id: containerId,
       action,
-      scanned_value: raw,
+      scanned_value: sentValue,
       scan_type: scanKind,
       scan_status: action === 'load' ? loadCheckpoint : unloadCheckpoint,
       client_scan_id: uuid(),
