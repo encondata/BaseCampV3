@@ -5,7 +5,6 @@
 .ud-panels { display: flex; flex-direction: column; gap: 18px; margin-top: 18px; }
 .ud-membership-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 6px; }
 .ud-membership-head:first-child { margin-top: 0; }
-.ud-source-ref { display: block; margin-top: 2px; }
 .ud-rank-note { border: 1px dashed var(--border, #d9dee7); border-radius: 10px; padding: 14px 16px; color: var(--text-mute); }
 .ud-confirm-card { width: min(520px, 96vw); }
 .ud-groups-card { width: min(760px, 96vw); max-width: 96vw; }

@@ -18,12 +18,6 @@ import TwoFactorOffNote from '../TwoFactorOffNote';
 import UserBiometricKeys from './UserBiometricKeys';
 import UserTrustedBrowsers from './UserTrustedBrowsers';
 
-const SOURCE_LABEL: Record<string, string> = {
-  manual: 'Added manually',
-  v2_import: 'Imported from V2',
-  import: 'Imported from V2',
-};
-
 /** Read-only group chips on a client affiliation (staff only; names come from
  *  the client's groups). */
 function AffiliationGroups({ org, ids }: {
@@ -81,11 +75,6 @@ export default function UserProfileTab({
                 <dt>Contact email</dt><dd className="mono">{person.email ?? '—'}</dd>
                 <dt>Phone</dt><dd className="mono">{person.phone ?? '—'}</dd>
                 <dt>Address</dt><dd>{address}</dd>
-                <dt>Source</dt>
-                <dd>
-                  {SOURCE_LABEL[person.source] ?? person.source}
-                  {person.source_ref && <span className="mono ud-source-ref">{person.source_ref}</span>}
-                </dd>
                 <dt>Member since</dt><dd className="mono">{longDate(person.created_at)}</dd>
               </dl>
             </div>
