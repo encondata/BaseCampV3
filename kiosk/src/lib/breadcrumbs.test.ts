@@ -27,6 +27,19 @@ it('Label Printing nests its three pages under itself', () => {
     .toEqual(['Home=/', 'Label Printing=/labels', 'Printer Setup / Troubleshooting=/labels/printers']);
 });
 
+it('a troubleshooting topic nests under Troubleshooting, so the list is a link back', () => {
+  expect(trail('/troubleshooting')).toEqual(['Home=/', 'Troubleshooting=/troubleshooting']);
+  expect(trail('/troubleshooting/zebra-ds22'))
+    .toEqual(['Home=/', 'Troubleshooting=/troubleshooting', 'Zebra Scanner Troubleshooting=/troubleshooting/zebra-ds22']);
+  expect(trail('/troubleshooting/zebra-ds22/'))
+    .toEqual(['Home=/', 'Troubleshooting=/troubleshooting', 'Zebra Scanner Troubleshooting=/troubleshooting/zebra-ds22']);
+});
+
+it('an unknown troubleshooting topic stops at Troubleshooting', () => {
+  // the topic page shows "This topic isn't available." with its own Back link
+  expect(trail('/troubleshooting/nope')).toEqual(['Home=/', 'Troubleshooting=/troubleshooting']);
+});
+
 it('tabs within a page do not count — the query string never adds a level', () => {
   // the router hands the shell a pathname, so ?tab= never reaches here;
   // this pins that a settings sub-path would not invent one either

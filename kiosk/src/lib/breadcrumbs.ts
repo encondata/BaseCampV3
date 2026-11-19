@@ -14,13 +14,16 @@
  *     station, so it is matched FIRST and never reads as a child of
  *     Timeclock;
  *   - every launcher feature is a top-level page;
- *   - Label Printing is the one page with pages beneath it.
+ *   - Label Printing and Troubleshooting have pages beneath them (the
+ *     label sections; one page per troubleshooting topic). An unknown topic
+ *     id stops at Troubleshooting, whose page then offers its own Back link.
  * An address that matches nothing gets Home alone — the router sends such
  * addresses home anyway, and the bar must never show a guess.
  */
 
 import { DOCK_FEATURE, FEATURES, RFID_READER_FEATURE, TIMECLOCK_STATION_FEATURE } from './features';
 import { LABEL_SECTIONS } from './labelSections';
+import { findTopic } from '../troubleshooting/topics';
 
 export interface Crumb {
   title: string;
@@ -55,6 +58,11 @@ export function breadcrumbs(pathname: string): Crumb[] {
   if (feature.id === 'labels') {
     const section = LABEL_SECTIONS.find((s) => within(path, s.path));
     if (section) trail.push({ title: section.title, path: section.path });
+  }
+  if (feature.id === 'troubleshooting') {
+    const id = path.split('/')[2];
+    const topic = id ? findTopic(id) : undefined;
+    if (topic) trail.push({ title: topic.title, path: `${feature.path}/${topic.id}` });
   }
   return trail;
 }
