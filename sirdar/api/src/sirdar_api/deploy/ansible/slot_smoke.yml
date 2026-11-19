@@ -6,14 +6,21 @@
 # = 325 s, inside the step's 10 minutes.
 # On a LAN Blue/Green app VM each name carries its own port (no Caddy).
 # A checkout from before the learning site runs without it (render.yml), so
-# its name isn't tried.
+# its name isn't tried. The check is the same as render.yml's: it
+# recognizes learn in ss-stack's check_apps case line (6cc4c8b7 through
+# 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on), and
+# tests/test_deploy_stack_drift.py runs these greps against the real ss-stack.
 - name: Smoke test (slot)
   hosts: target
   gather_facts: false
   tasks:
     - name: Does this checkout's ss-stack know the learning site?
       ansible.builtin.command:
-        argv: [grep, -qE, "^ +([a-z]+[|])*learn([|][a-z]+)*[)]", "{{ ss_stack }}"]
+        argv:
+          - grep
+          - -qE
+          - "^ +([a-z]+[|])*learn([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*learn( [a-z]+)*[)]"
+          - "{{ ss_stack }}"
       register: knows_learn
       changed_when: false
       failed_when: false

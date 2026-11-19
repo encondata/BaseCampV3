@@ -4,6 +4,10 @@
 # A checkout from before the learning site (ss-stack learned learn in
 # 6cc4c8b7; its STACK_APPS check refuses any app it doesn't know) runs
 # without it, so Roll back, Update and adopt to an older commit still start.
+# The check recognizes learn in ss-stack's check_apps case line (6cc4c8b7
+# through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on); the same
+# pattern is in slot_smoke.yml, and tests/test_deploy_stack_drift.py runs
+# these greps against the real ss-stack.
 - name: Render config
   hosts: target
   gather_facts: false
@@ -24,7 +28,11 @@
 
     - name: Does this checkout's ss-stack know the learning site?
       ansible.builtin.command:
-        argv: [grep, -qE, "^ +([a-z]+[|])*learn([|][a-z]+)*[)]", "{{ ss_stack }}"]
+        argv:
+          - grep
+          - -qE
+          - "^ +([a-z]+[|])*learn([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*learn( [a-z]+)*[)]"
+          - "{{ ss_stack }}"
       register: knows_learn
       changed_when: false
       failed_when: false
