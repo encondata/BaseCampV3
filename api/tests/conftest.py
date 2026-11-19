@@ -427,6 +427,9 @@ async def clean_db():
         # labels seeds (0042 as amended by 0066, 0102 and 0104)
         await session.execute(text(LABEL_VOCAB_SEEDS))
         await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
+        # matching rules: the people TRUNCATE above also emptied the versions
+        from serversherpa.matching_rules.seed import reset_matching_seed
+        await reset_matching_seed(session)
         await session.commit()
     # per-process rate limiters would otherwise carry hits between tests
     from serversherpa.api.routes.auth import reset_confirm_limiter, reset_request_limiter
@@ -437,6 +440,8 @@ async def clean_db():
     from serversherpa.api.routes.kiosk import learning_link_limiter, override_limiter
     override_limiter.reset()
     learning_link_limiter.reset()
+    from serversherpa.api.routes.kiosk_push import push_key_limiter
+    push_key_limiter.reset()
     yield
     await dispose_engine()
 
@@ -517,3 +522,25 @@ def storage_calls(monkeypatch):
 
     monkeypatch.setattr("serversherpa.devtools.cleanup.storage.delete_object", fake_delete)
     return calls
+
+
+@pytest.fixture
+def fcm_on(monkeypatch):
+    """Push is set up (a key file path is configured; nothing reads it)."""
+    from serversherpa.config import get_settings
+
+    monkeypatch.setenv("SS_FCM_SERVICE_ACCOUNT_FILE", "/nonexistent/fcm.json")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """`clock(instant)` freezes push.py's clock at `instant`."""
+    from serversherpa.notifications import push as push_mod
+
+    def set_to(instant):
+        monkeypatch.setattr(push_mod, "_now", lambda: instant)
+        return instant
+    return set_to

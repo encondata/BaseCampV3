@@ -24,7 +24,7 @@ def test_name_and_target():
 
 def test_home_sorts_right_after_portal_and_is_not_a_stack_service():
     assert home.SERVICE_ORDER == ("api", "portal", "home", "kiosk", "wiki", "learn", "spaces",
-                                  "status", "mailpit")
+                                  "status", "devices", "mailpit")
     assert home.HOME not in envfile.SERVICES
 
 

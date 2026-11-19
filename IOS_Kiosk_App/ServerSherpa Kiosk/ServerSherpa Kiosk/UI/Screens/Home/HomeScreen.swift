@@ -4,18 +4,15 @@ import SwiftUI
 
 struct HomeTile: Equatable {
     let feature: KioskFeature
-    let available: Bool
-    /// The line under an unavailable tile.
-    let lockedReason: String?
 }
 
-/// `isAdmin` (rank 60+) adds the Rolodex tile on a full kiosk Home.
+/// Only the apps this kiosk can open now: before setup is complete that is Kiosk Setup, the
+/// Rolodex (admins) and Settings; the rest are hidden, not shown locked (Jimmy, 2026-11-17).
+/// Developer mode shows every app. `isAdmin` (rank 60+) adds the Rolodex tile on a full kiosk Home.
 func homeTiles(setupState: SetupState, devMode: Bool, stationType: String? = nil, isAdmin: Bool = false) -> [HomeTile] {
-    homeFeatures(stationType: stationType, isAdmin: isAdmin).map { f in
-        let available = featureAvailable(f, setupState: setupState, devMode: devMode)
-        let reason = available ? nil : (setupState == .failed ? "Kiosk setup failed — open Kiosk Setup." : "Finish Kiosk Setup first.")
-        return HomeTile(feature: f, available: available, lockedReason: reason)
-    }
+    homeFeatures(stationType: stationType, isAdmin: isAdmin)
+        .filter { featureAvailable($0, setupState: setupState, devMode: devMode) }
+        .map { HomeTile(feature: $0) }
 }
 
 /// The banner above the tiles while setup is not complete.
@@ -23,7 +20,7 @@ func homeBanner(setupState: SetupState, devMode: Bool) -> (text: String, error: 
     if setupState == .complete { return nil }
     if devMode { return ("Developer mode: all features are available while kiosk setup is \(setupState.rawValue).", false) }
     if setupState == .failed { return ("Kiosk setup failed. Open Kiosk Setup to try again.", true) }
-    return ("Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.", false)
+    return ("Kiosk setup is incomplete. Finish Kiosk Setup to see the other apps.", false)
 }
 
 /// Three columns once the content is 1000 pt wide, else two.
@@ -42,7 +39,7 @@ struct HomeScreen: View {
     }
 }
 
-/// The launcher's page body: header, setup banner, tiles.
+/// The launcher's page body: header, update banner, setup banner, tiles.
 struct HomeContent: View {
     @Binding var path: [Route]
     @Environment(KioskPrefs.self) private var prefs
@@ -64,9 +61,9 @@ struct HomeContent: View {
         let rows = stride(from: 0, to: tiles.count, by: perRow).map { Array(tiles[$0..<min($0 + perRow, tiles.count)]) }
         VStack(alignment: .leading, spacing: 0) {
             PageHeader(eyebrow: "Kiosk", title: "What would you like to do?")
+            UpdateBanner()
             if let banner { KioskToast(text: banner.text, error: banner.error) }
-            // A Grid, not a LazyVGrid: every tile in a row takes the row's height, so a tile
-            // without the "Finish Kiosk Setup first." line is not shorter than its neighbor.
+            // A Grid, not a LazyVGrid: every tile in a row takes the row's height.
             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                 ForEach(rows.indices, id: \.self) { r in
                     GridRow {
@@ -82,16 +79,12 @@ struct HomeContent: View {
     }
 
     private func tileView(_ tile: HomeTile) -> some View {
-        SetupCard(selected: false, enabled: tile.available && !leaving, action: { open(tile.feature) }) {
+        SetupCard(selected: false, enabled: !leaving, action: { open(tile.feature) }) {
             FeatureIcon(id: tile.feature.id, tint: palette.accent)
             Text(tile.feature.title).font(KioskType.titleLarge).foregroundStyle(palette.text)
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
             Text(tile.feature.blurb).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
-            if let reason = tile.lockedReason {
-                Text(reason).font(KioskType.labelSmall).foregroundStyle(palette.textMute)
-                    .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
-            }
         }
         .accessibilityIdentifier(tile.feature == TIMECLOCK_STATION_FEATURE ? "tile-timeclock-station" : "tile-\(tile.feature.id.rawValue)")
     }

@@ -15,6 +15,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from serversherpa.access.role_mix import assert_no_client_worker_mix
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuthSession, Initiative, Person, PersonRole, UserAccount
 from serversherpa.security.secretbox import decrypt, encrypt
@@ -84,6 +85,8 @@ async def ensure_kiosk_identity(db: AsyncSession, initiative: Initiative) -> Use
         PersonRole.person_id == person.id, PersonRole.role == "worker",
         PersonRole.revoked_at.is_(None)))
     if has_role is None:
+        # the repair path reuses a person: never beside a client tier
+        await assert_no_client_worker_mix(db, person.id, "worker")
         db.add(PersonRole(person_id=person.id, role="worker"))
     initiative.kiosk_person_id = person.id
     await db.flush()

@@ -92,14 +92,14 @@ const cardTitles = (list: string) => within(screen.getByRole('listbox', { name: 
   .getAllByRole('option').map((o) => o.querySelector('.setup-card-title')?.textContent);
 
 async function toMoveStep(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole('option', { name: /Time Clock/ }));
+  await user.click(await screen.findByRole('option', { name: /Timeclock Station/ }));
   await screen.findByText('NAP11 Hall Migration (demo)');
 }
 
-it('step 1 offers a third card, Time Clock, with its next steps', async () => {
+it('step 1 offers a Timeclock Station card with its next steps', async () => {
   renderPage();
-  const card = await screen.findByRole('option', { name: /Time Clock/ });
-  expect(within(card).getByText('Time Clock')).toBeTruthy();
+  const card = await screen.findByRole('option', { name: /Timeclock Station/ });
+  expect(within(card).getByText('Timeclock Station')).toBeTruthy();
   expect(within(card).getByText('Workers clock in and out here. Next: Move (optional) → Site.')).toBeTruthy();
   expect(screen.getByRole('option', { name: /Label Station/ })).toBeTruthy();
   expect(screen.getByRole('option', { name: /RFID Station/ })).toBeTruthy();
@@ -237,8 +237,8 @@ it('Change setup on a no-move station preselects Time Clock and No move', async 
   renderPage();
   await user.click(await screen.findByRole('button', { name: 'Change setup' }));
   expect(screen.getByText('Step 1 of 3 · Station type')).toBeTruthy();
-  expect(cardFor('Time Clock').getAttribute('aria-selected')).toBe('true');
-  await user.click(cardFor('Time Clock'));
+  expect(cardFor('Timeclock Station').getAttribute('aria-selected')).toBe('true');
+  await user.click(cardFor('Timeclock Station'));
   await screen.findByText('NAP11 Hall Migration (demo)');
   expect(cardFor('No move').getAttribute('aria-selected')).toBe('true');
   expect(cardFor('NAP11 Hall Migration (demo)').getAttribute('aria-selected')).toBe('false');

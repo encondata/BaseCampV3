@@ -79,7 +79,7 @@ import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
-import { writeWebLabelSettings } from '../lib/webLabelSettings';
+import { writeWebLabelPrintingOff, writeWebLabelSettings } from '../lib/webLabelSettings';
 import { DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import KioskShell from './KioskShell';
@@ -661,6 +661,20 @@ it('web kiosk shows no takeover once the build is idle', async () => {
     label_kind: 'top', dpi: 203, offset_x: 0, offset_y: 0, peel: false,
     printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'ZD-1' },
   });
+  render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+});
+
+it('web kiosk set up not to print labels shows no takeover, even mid-build with a printer saved', async () => {
+  buildMock.status = {
+    state: 'running', reason: 'setup', total: 10, done: 3, ready: 0, errors: 0, unsupported: 0,
+  };
+  writeWebLabelSettings({
+    label_kind: 'top', dpi: 203, offset_x: 0, offset_y: 0, peel: false,
+    printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'ZD-1' },
+  });
+  writeWebLabelPrintingOff();
   render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
   expect(screen.queryByRole('alertdialog')).toBeNull();

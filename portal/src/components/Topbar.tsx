@@ -49,6 +49,7 @@ const CRUMBS: Record<string, string[]> = {
   '/notifications': ['Account', 'Notifications'],
   '/dev': ['Portal', 'Developer tools'],
   '/dev/database/variables': ['Portal', 'Developer tools', 'Database', 'Variables'],
+  '/dev/matching-rules': ['Portal', 'Developer tools', 'Matching rules'],
 };
 
 const G_CHORD: Record<string, string> = {

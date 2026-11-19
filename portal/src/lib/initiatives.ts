@@ -434,6 +434,54 @@ export function moveAssetProgress(
   return { pct, countable };
 }
 
+/** Same weighted progress as `moveAssetProgress`, from server-side per-status
+ *  counts (a restricted login's roster is shorter than the move). */
+export function moveAssetProgressFromCounts(
+  byStatus: Record<string, number>,
+  statuses: StatusValue[],
+): { pct: number; countable: number } {
+  const weightByKey = new Map(statuses.map((s) => [s.key, s.progress_weight]));
+  let sum = 0;
+  let countable = 0;
+  for (const [key, n] of Object.entries(byStatus)) {
+    const weight = weightByKey.has(key) ? weightByKey.get(key)! : 0;
+    if (weight === null) continue;
+    countable += n;
+    sum += weight * n;
+  }
+  if (countable === 0) return { pct: 0, countable: 0 };
+  return { pct: Math.round((sum / (countable * 100)) * 100), countable };
+}
+
+/** Donut entries from server-side per-status counts: labels/colors come from
+ *  the vocabulary (same order as `moveAssetStatusBreakdown`); a status key
+ *  with no vocabulary match falls back to a visible row's own label/color. */
+export function moveAssetStatusBreakdownFromCounts(
+  byStatus: Record<string, number>,
+  statuses: StatusValue[],
+  rows: InitiativeAssetRow[] = [],
+): { key: string; label: string; color: string; count: number; pct: number }[] {
+  const total = Object.values(byStatus).reduce((a, n) => a + n, 0);
+  if (total === 0) return [];
+  const entries: { key: string; label: string; color: string; count: number; pct: number }[] = [];
+  const known = new Set<string>();
+  for (const s of statuses) {
+    known.add(s.key);
+    const count = byStatus[s.key] ?? 0;
+    if (count === 0) continue;
+    entries.push({ key: s.key, label: s.label, color: s.color, count, pct: (count / total) * 100 });
+  }
+  for (const [key, count] of Object.entries(byStatus)) {
+    if (known.has(key) || count === 0) continue;
+    const row = rows.find((r) => r.status === key);
+    entries.push({
+      key, label: row?.status_label ?? key, color: row?.status_color ?? '#51606f',
+      count, pct: (count / total) * 100,
+    });
+  }
+  return entries;
+}
+
 /** Move-asset status breakdown for the Overview card's donut chart — one
  *  entry per status key with count > 0 among `rows`, ordered by the
  *  vocabulary's sort_order (the `statuses` array's own order, mirroring how

@@ -17,11 +17,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 
 /** `.segmented`: a row of tabs/radios; `options` are (value, label). Scrolls when narrow. A
- *  disabled one is dimmed and ignores taps. */
+ *  disabled one is dimmed and ignores taps. The lit option reads as selected to accessibility
+ *  services (and tests). */
 @Composable
 fun Segmented(
     options: List<Pair<String, String>>,
@@ -43,7 +46,7 @@ fun Segmented(
                 color = if (on) c.ink else c.textDark,
                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(if (on) c.accent else c.paper2)
                     .clickable(enabled = enabled) { onSelect(value) }.heightIn(min = 48.dp).padding(horizontal = 14.dp, vertical = 10.dp)
-                    .wrapContentHeight(Alignment.CenterVertically),
+                    .wrapContentHeight(Alignment.CenterVertically).semantics { this.selected = on },
             )
         }
     }

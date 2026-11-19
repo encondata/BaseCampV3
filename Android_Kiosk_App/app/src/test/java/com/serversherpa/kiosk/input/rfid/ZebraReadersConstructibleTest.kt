@@ -30,6 +30,10 @@ import org.robolectric.annotation.Config
  * `LinkageError` thrown directly — fails the test with the missing class
  * named in the message, and everything else (or a clean return) is treated
  * as the ordinary "no hardware here" case and passes.
+ *
+ * It builds `Readers` with the `BLUETOOTH` transport, the one the adapter
+ * uses; the app never asks for every transport. This file is in `src/test`,
+ * which the never-call scans do not read.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -37,7 +41,7 @@ class ZebraReadersConstructibleTest {
     @Test fun constructingReadersNeverThrowsALinkageError() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         try {
-            val readers = Readers(context, ENUM_TRANSPORT.ALL)
+            val readers = Readers(context, ENUM_TRANSPORT.BLUETOOTH)
             // Constructed cleanly — great, but also exercise the call that
             // triggered the LocalBroadcastManager NoClassDefFoundError in the
             // first place, in case the constructor alone doesn't touch it on

@@ -22,6 +22,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.role_mix import (
+    CONFLICT_ROW_ERROR, assert_no_client_worker_mix, client_contact_ids,
+)
 from serversherpa.db.models import (
     AuthSession, Partner, Person, PersonRole, Role, StatusValue, UserAccount,
     WorkerLevel, WorkerProfile,
@@ -29,7 +32,7 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
-from serversherpa.services import biometric
+from serversherpa.services import biometric, push_registrations
 from serversherpa.services.audit import audit
 
 __all__ = ["BulkImportError", "MAX_BYTES", "MAX_ROWS"]
@@ -224,7 +227,9 @@ async def _reference_data(db: AsyncSession) -> dict:
             "by_phone": by_phone, "by_name": by_name, "by_rfid": by_rfid,
             "archived_emails": archived_emails, "archived_rfids": archived_rfids,
             "profiles": profiles, "worker_ids": worker_ids, "max_rank": max_rank,
-            "account_ids": account_ids}
+            "account_ids": account_ids,
+            # a client contact can't also be a worker (access/role_mix.py)
+            "client_contact_ids": await client_contact_ids(db)}
 
 
 def _row_display_name(row: dict) -> str:
@@ -372,6 +377,8 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
                 changes = _diff_row(
                     target, profile, target.id in ref["worker_ids"], data, blank,
                     partner_obj, ref["partner_names"])
+                if "worker_role" in changes and target.id in ref["client_contact_ids"]:
+                    errors.append(CONFLICT_ROW_ERROR)
                 # the guards the single-record endpoints apply: a status change
                 # is guarded on anyone (PUT /workers/{id}/profile), every other
                 # edit only on people who can log in (PATCH …/person, which
@@ -569,6 +576,8 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
                     f"partner '{change['new']}' vanished between preview and commit")
             profile.partner_id = partner.id
         elif col == "worker_role":
+            # the preview refuses this row; a contact added since it ran is refused here
+            await assert_no_client_worker_mix(db, person.id, "worker")
             db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
         else:
             setattr(profile, col, change["new"])
@@ -591,6 +600,7 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
                 .values(revoked_at=now, revoke_reason="account_disabled"))
             await biometric.revoke_keys(db, person_id=person.id, reason="blacklist",
                                         actor_id=actor_id)
+            await push_registrations.drop_for_person(db, person.id, reason="blacklist")
         elif old_status == "blacklist" and new_status != "blacklist":
             account.disabled_at = None
             account.failed_login_count = 0

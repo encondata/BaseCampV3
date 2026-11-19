@@ -23,7 +23,7 @@ import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.outbox.EnqueueInput
 import com.serversherpa.kiosk.core.scan.ScanIndex
 import com.serversherpa.kiosk.core.scan.buildScanIndex
-import com.serversherpa.kiosk.core.scan.matchAssetOrSerial
+import com.serversherpa.kiosk.core.scan.matchLabelScan
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
 import com.serversherpa.kiosk.core.settings.hslToArgb
 import com.serversherpa.kiosk.data.db.AssetEntity
@@ -189,8 +189,9 @@ class PrintLabelsViewModel(
             return
         }
         _state.update { it.copy(error = null) }
-        // Asset ID or serial only, as the laptop's Printing Station: a tag is not a label request.
-        val asset = matchAssetOrSerial(idx, value)?.asset
+        // Asset ID, serial, then RFID: a label's RFID value, read with a barcode scanner, finds its
+        // asset as it does on Scanning (Jimmy, 2026-11-17).
+        val asset = matchLabelScan(idx, value)?.asset
         scope.launch { settled(queue.scan(asset, value)) }
     }
 

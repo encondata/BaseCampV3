@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.apply import ORG_ANCHORS, apply_global_roles, apply_groups
+from serversherpa.access.role_mix import assert_no_client_worker_mix
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -49,7 +50,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
+    AccessGroup, AccessGroupMember, AuthSession, Client, ClientContactGroup,
+    NotificationGroup,
     NotificationGroupMember, NotificationMembershipRequest, Partner,
     PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
@@ -58,7 +60,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.mail import email_enabled
 from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
-from serversherpa.services import biometric, invites
+from serversherpa.services import biometric, invites, push_registrations
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -205,6 +207,15 @@ async def get_user_detail(
         db, {g.client_id for g, _ in grant_rows if g.client_id},
         {g.partner_id for g, _ in grant_rows if g.partner_id})
 
+    chips: dict = {}
+    if actor.access.is_global:
+        chip_rows = (await db.execute(
+            select(ClientContactGroup.client_id, ClientContactGroup.group_id)
+            .where(ClientContactGroup.person_id == person_id)
+            .order_by(ClientContactGroup.group_id))).all()
+        for cid, gid in chip_rows:
+            chips.setdefault(cid, []).append(gid)
+
     # ── worker card ──
     worker: UserWorkerCard | None = None
     profile = await db.get(WorkerProfile, person_id)
@@ -312,7 +323,8 @@ async def get_user_detail(
             scope_anchor=role.scope_anchor,
             org=(orgs.get(("client", g.client_id)) if g.client_id
                  else orgs.get(("partner", g.partner_id)) if g.partner_id else None),
-            granted_by=refs.get(g.granted_by), granted_at=g.granted_at)
+            granted_by=refs.get(g.granted_by), granted_at=g.granted_at,
+            group_ids=chips.get(g.client_id, []) if g.client_id else [])
             for g, role in grant_rows],
         max_rank=target_max_rank,
         worker=worker,
@@ -687,6 +699,7 @@ async def disable_account(
     await revoke_all_sessions(db, person_id, "account_disabled")
     await biometric.revoke_keys(db, person_id=person_id, reason="account_disabled",
                                 actor_id=actor.person.id)
+    await push_registrations.drop_for_person(db, person_id, reason="account_disabled")
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.disable")
     await db.commit()
@@ -728,7 +741,11 @@ async def demote_to_worker(
     organization's contact; the contact flows own them. Everything else
     that grants portal access goes: other roles, access groups, per-person
     permission overrides, notification groups (and pending join/leave
-    requests), two-factor, trusted browsers, sessions and the account."""
+    requests), two-factor, trusted browsers, sessions and the account.
+
+    409 `client_worker_conflict` for a client contact who isn't a worker
+    yet: one person never holds a client tier and the worker role, so
+    staff remove the contact first (access/role_mix.py)."""
     _, account, _ = await _load_target(db, actor, person_id)
     try:
         now = datetime.now(UTC)
@@ -745,6 +762,9 @@ async def demote_to_worker(
             and (role_rows.get(name) is None
                  or role_rows[name].scope_anchor not in ORG_ANCHORS))
         worker_granted = "worker" not in active_roles
+        if worker_granted:
+            # a client contact can't also be a worker: 409, before any write
+            await assert_no_client_worker_mix(db, person_id, "worker")
         access_groups = sorted(await db.scalars(
             select(AccessGroup.name)
             .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
@@ -795,6 +815,7 @@ async def demote_to_worker(
         # delete, so the keys must be revoked explicitly (and audited).
         await biometric.revoke_keys(db, person_id=person_id, reason="demoted",
                                     actor_id=actor.person.id, ip=client_ip(request))
+        await push_registrations.drop_for_person(db, person_id, reason="demoted")
         await db.delete(account)   # password_history cascades
 
         audit(db, actor_id=actor.person.id, entity_type="user_account",
@@ -932,11 +953,14 @@ async def revoke_all_user_sessions(
     db: DbSession,
     actor: AuthContext = require_permission("users", "change"),
 ) -> None:
-    """Sign the person out everywhere without disabling them."""
+    """Sign the person out everywhere without disabling them: sessions,
+    biometric keys, remembered browsers and their phones' push registrations
+    (a push key works with no session)."""
     await _load_target(db, actor, person_id)
     await revoke_all_sessions(db, person_id, "admin")
     await biometric.revoke_keys(db, person_id=person_id, reason="admin",
                                 actor_id=actor.person.id)
+    await push_registrations.drop_for_person(db, person_id, reason="admin")
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})

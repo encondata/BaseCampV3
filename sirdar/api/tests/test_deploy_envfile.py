@@ -50,6 +50,7 @@ def test_render_values():
     assert values["STACK_BIND_IP"] == "0.0.0.0"
     assert values["STACK_API_PORT"] == "8000"
     assert values["STACK_MAILPIT_PORT"] == "8025"
+    assert values["STACK_DEVICES_PORT"] == "8093"
     assert values["STACK_KEEP_DUMPS"] == "5"
     assert values["SS_SPACES_BUCKET"] == "serversherpa"
     assert values["SS_LOG_LEVEL"] == "INFO"
@@ -105,7 +106,7 @@ def test_helpers():
     assert envfile.unsafe_value("ok-value") is False
     assert envfile.unsafe_value("a\tb") is True
     assert set(envfile.SERVICES) == set(envfile.DEFAULT_PORTS) == set(envfile.PORT_KEYS)
-    assert envfile.PUBLIC_SERVICES == envfile.SERVICES[:7]
+    assert envfile.PUBLIC_SERVICES == tuple(s for s in envfile.SERVICES if s != "mailpit")
     assert set(envfile.HEX_SECRETS) | set(envfile.FERNET_SECRETS) == set(envfile.REQUIRED_SECRETS)
 
 

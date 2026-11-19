@@ -31,6 +31,7 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.SetupCard
+import com.serversherpa.kiosk.ui.components.UpdateBanner
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.CancellationException
@@ -73,6 +74,7 @@ fun HomeScreen(nav: NavHostController) {
 
     Column {
         PageHeader("Kiosk", "What would you like to do?")
+        UpdateBanner(container.updates)
         if (!complete && devMode) KioskToast("Developer mode: all features are available while kiosk setup is ${setupState.wire}.")
         if (!complete && !devMode) KioskToast(if (failed) "Kiosk setup failed. Open Kiosk Setup to try again." else "Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.", error = failed)
         startError?.let { KioskToast(it, error = true) }

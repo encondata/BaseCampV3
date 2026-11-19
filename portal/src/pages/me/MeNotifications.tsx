@@ -3,8 +3,9 @@
  * person and when (saved on the account like every preference), plus the
  * notification groups they belong to.
  *
- * "What you get" is the Inbox / Email switch grid. A switch the person has not
- * changed follows the company default, which the server sends
+ * "What you get" is the Inbox / Email switch grid, with a Push column for
+ * admins (max rank 60 and up). A switch the person has not changed follows
+ * the company default, which the server sends
  * (GET /notifications/settings); only their own choices are saved, so a later
  * change to a default still reaches them. The grid stays off limits until the
  * defaults have loaded. Under it the critical note names the kinds an admin
@@ -23,6 +24,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useAuth } from '../../auth/AuthContext';
 import MembershipRequestModal from '../../components/notifications/MembershipRequestModal';
 import ScheduleCard from '../../components/notifications/ScheduleCard';
 import SwitchGrid from '../../components/notifications/SwitchGrid';
@@ -58,7 +60,11 @@ function withCategory(
   return switches;
 }
 
+/** The lowest max rank that gets Push (access/defaults.py GATE_BYPASS_RANK). */
+const PUSH_MIN_RANK = 60;
+
 export default function MeNotifications() {
+  const { maxRank } = useAuth();
   const { preferences, update, saveState } = usePreferenceSave();
 
   // Until the first status lands its defaults read "email off": say nothing
@@ -141,6 +147,8 @@ export default function MeNotifications() {
             defaults={settings?.defaults ?? null}
             own={preferences.notif.switches}
             emailEnabled={statusLoaded ? status.email_enabled : null}
+            pushEnabled={statusLoaded && status.push_enabled !== undefined ? status.push_enabled : null}
+            showPush={maxRank >= PUSH_MIN_RANK}
             onChange={(category, next) => update({
               notif: {
                 ...preferences.notif,

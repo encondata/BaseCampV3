@@ -3,20 +3,23 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from serversherpa.api.routes import (
-    access, ai, asset_models, assets, attachments, audit, auth, cleanup, containers,
-    devices, devtools, health, initiatives, kiosk, kiosk_biometric, kiosk_rolodex, labels,
-    learn, learning, me,
+    access, app_distribution_internal, ai, asset_models, assets, attachments, audit, auth, cleanup,
+    client_groups, containers,
+    devices, devtools, health, initiatives, kiosk, kiosk_biometric, kiosk_push, kiosk_rolodex,
+    labels, learn, learning, matching_rules, me,
     move_setup,
     notes, notifications, plans, reports, router_agent, scans, search, sites, spec_lookup,
     blocked_addresses, stakeholders, status_provenance, status_rules, status_values, system,
     time as time_routes, time_bulk as time_bulk_routes, trucks, users, warehouse,
     wiki, workers,
 )
+from serversherpa.access.role_mix import RoleMixError
 from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine, set_application_name
 
@@ -103,6 +106,13 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+    @app.exception_handler(RoleMixError)
+    async def _role_mix(_request: Request, exc: RoleMixError) -> JSONResponse:
+        # Any grant path that would give one person a client tier and the
+        # worker role (access/role_mix.py). Nothing was committed: the
+        # request's session closes without it.
+        return JSONResponse(status_code=409, content={"detail": {"code": exc.code}})
+
     app.include_router(auth.router)
     app.include_router(access.router)
     app.include_router(ai.router)
@@ -110,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(me.router)
     app.include_router(search.router)
     app.include_router(attachments.router)
+    app.include_router(client_groups.router)
     app.include_router(stakeholders.clients_router)
     app.include_router(stakeholders.partners_router)
     app.include_router(stakeholders.people_router)
@@ -131,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(devices.sounds_router)
     app.include_router(kiosk.router)
     app.include_router(kiosk_biometric.router)
+    app.include_router(kiosk_push.router)
     app.include_router(kiosk_rolodex.router)
     app.include_router(router_agent.router)
     app.include_router(initiatives.router)
@@ -145,11 +157,13 @@ def create_app() -> FastAPI:
     app.include_router(devtools.router)
     app.include_router(cleanup.router)
     app.include_router(health.router)
+    app.include_router(matching_rules.router)
     app.include_router(audit.router)
     app.include_router(system.router)
     app.include_router(blocked_addresses.router)
     app.include_router(notifications.router)
     app.include_router(wiki.router)
+    app.include_router(app_distribution_internal.router)
     app.include_router(learning.router)
     app.include_router(plans.router)
     app.include_router(learn.router)

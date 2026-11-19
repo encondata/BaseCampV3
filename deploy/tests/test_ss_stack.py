@@ -48,9 +48,19 @@ case "$*" in
   *pg_restore*)
     cat > "$DOCKER_LOG.stdin"
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
+  *"/api/compose.yml up "*)
+    # the apps the API is told run (SS_APPS comes from STACK_APPS; unset: the .env's)
+    printf 'STACK_APPS=%s\n' "${STACK_APPS-unset}" >> "$DOCKER_LOG.apps" ;;
+  # SQL on stdin (the devices database): recorded, so a test can read it
+  *"psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q"|*" psql -v ON_ERROR_STOP=1 -q")
+    cat >> "$DOCKER_LOG.sql"
+    [[ -n "${FAKE_FAIL_PSQL_STDIN:-}" ]] && exit 1 ;;
 esac
 exit 0
 """
+
+
+DEVICES_SECRETS = "SS_DEVICES_SERVICE_TOKEN=0123abcd\nDEVICES_SECRET_KEY=0123abcd\n"
 
 
 @pytest.fixture
@@ -58,6 +68,8 @@ def env_dir(tmp_path: Path) -> Path:
     d = tmp_path / "uat"
     d.mkdir()
     text = ENV_EXAMPLE.read_text().replace("=CHANGEME", "=0123abcd")
+    # every app runs (no STACK_APPS), so the devices app's secrets too
+    text += DEVICES_SECRETS
     (d / ".env").write_text(text)
     return d.resolve()   # ss-stack logs the physical path (macOS /private/var)
 
@@ -87,6 +99,12 @@ def dc(env_dir: Path, stack: str, rest: str) -> str:
     return (f"compose --env-file {env_dir}/.env -f {STACK_DIR}/{stack}/compose.yml {rest}")
 
 
+# the devices service's own database, created once (CREATE DATABASE has no IF NOT EXISTS)
+DEVICES_DB = "exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q"
+DEVICES_SQL = ("SELECT 'CREATE DATABASE serversherpa_devices' WHERE NOT EXISTS "
+               "(SELECT FROM pg_database WHERE datname = 'serversherpa_devices')\\gexec\n")
+
+
 def test_up_starts_stacks_in_dependency_order(env_dir: Path, fake: dict[str, str]) -> None:
     out = run(fake, "up", str(env_dir))
     assert out.returncode == 0, out.stderr
@@ -99,8 +117,11 @@ def test_up_starts_stacks_in_dependency_order(env_dir: Path, fake: dict[str, str
         dc(env_dir, "api", "run --rm migrate"),
         dc(env_dir, "api", wait),
         dc(env_dir, "web", wait),
+        dc(env_dir, "db", DEVICES_DB),
+        dc(env_dir, "devices", wait),
         dc(env_dir, "status", wait),
     ]
+    assert Path(fake["DOCKER_LOG"] + ".sql").read_text() == DEVICES_SQL
 
 
 def test_up_reuses_an_existing_network(env_dir: Path, fake: dict[str, str]) -> None:
@@ -154,14 +175,16 @@ def test_build_uses_only_the_build_file(env_dir: Path, fake: dict[str, str]) -> 
 def test_down_stops_in_reverse_order_and_keeps_data(env_dir: Path, fake: dict[str, str]) -> None:
     out = run(fake, "down", str(env_dir))
     assert out.returncode == 0, out.stderr
-    assert calls(fake) == [dc(env_dir, s, "down") for s in ("status", "web", "api", "storage", "db")]
+    assert calls(fake) == [dc(env_dir, s, "down")
+                           for s in ("status", "devices", "web", "api", "storage", "db")]
 
 
 def test_down_volumes_deletes_data_and_the_network(env_dir: Path, fake: dict[str, str]) -> None:
     out = run(fake, "down", str(env_dir), "--volumes")
     assert out.returncode == 0, out.stderr
     assert calls(fake) == [
-        *[dc(env_dir, s, "down --volumes") for s in ("status", "web", "api", "storage", "db")],
+        *[dc(env_dir, s, "down --volumes")
+          for s in ("status", "devices", "web", "api", "storage", "db")],
         "network rm ss-uat",
     ]
 
@@ -169,7 +192,8 @@ def test_down_volumes_deletes_data_and_the_network(env_dir: Path, fake: dict[str
 def test_ps_lists_every_stack(env_dir: Path, fake: dict[str, str]) -> None:
     out = run(fake, "ps", str(env_dir))
     assert out.returncode == 0, out.stderr
-    assert calls(fake) == [dc(env_dir, s, "ps") for s in ("db", "storage", "api", "web", "status")]
+    assert calls(fake) == [dc(env_dir, s, "ps")
+                           for s in ("db", "storage", "api", "web", "devices", "status")]
 
 
 def test_dump_writes_and_keeps_the_newest(env_dir: Path, fake: dict[str, str]) -> None:
@@ -792,10 +816,10 @@ def test_the_status_page_checks_only_the_apps_that_run(env_dir: Path, fake: dict
 
 def test_every_app_runs_when_the_key_is_absent_or_lists_them_all(env_dir: Path,
                                                                  fake: dict[str, str]) -> None:
-    _apps(env_dir, "STACK_APPS=wiki,kiosk,learn,status,mailpit\n")
+    _apps(env_dir, "STACK_APPS=wiki,kiosk,learn,status,devices,mailpit\n")
     assert run(fake, "up", str(env_dir)).returncode == 0
     c = calls(fake)
-    for stack in ("storage", "api", "web", "status"):
+    for stack in ("storage", "api", "web", "devices", "status"):
         assert dc(env_dir, stack, WAIT) in c, stack
 
 
@@ -843,6 +867,7 @@ def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> No
 
 @pytest.mark.parametrize("apps", [
     "wiki, kiosk", " wiki", "kiosk ", "Wiki", "KIOSK,status", "wiki,blog", "portal", "Learn",
+    "Devices", "device",
     "wiki,", ",wiki", "wiki,,kiosk", "none,wiki", "\"wiki kiosk\""])
 @pytest.mark.parametrize("command", ["up", "data"])
 def test_a_bad_app_list_is_refused(env_dir: Path, fake: dict[str, str], apps: str,
@@ -859,7 +884,7 @@ def test_an_empty_app_list_runs_every_app(env_dir: Path, fake: dict[str, str]) -
     out = run(fake, "up", str(env_dir))
     assert out.returncode == 0, out.stderr
     c = calls(fake)
-    for stack in ("storage", "api", "web", "status"):
+    for stack in ("storage", "api", "web", "devices", "status"):
         assert dc(env_dir, stack, WAIT) in c, stack
 
 
@@ -1244,3 +1269,177 @@ def test_every_subcommand_slipway_yml_runs_exists() -> None:
     for sub in used:
         assert re.search(rf"^  {re.escape(sub)}\)$", script, re.M), sub
     assert (STACK_DIR / "objects.py").is_file()
+
+
+# ---- the devices service (STACK_APPS: devices) ----
+
+def test_devices_off_stops_its_stack_and_skips_its_database(env_dir: Path,
+                                                            fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=wiki\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert dc(env_dir, "devices", "down") in c
+    assert dc(env_dir, "devices", WAIT) not in c
+    assert dc(env_dir, "db", DEVICES_DB) not in c
+    assert not Path(fake["DOCKER_LOG"] + ".sql").exists()
+    # still in its place: after web, before status
+    assert c.index(dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale learn=0")) \
+        < c.index(dc(env_dir, "devices", "down")) < c.index(dc(env_dir, "status", "down"))
+
+
+def test_devices_on_creates_its_database_then_starts(env_dir: Path,
+                                                     fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=devices\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert c.index(dc(env_dir, "db", DEVICES_DB)) == c.index(dc(env_dir, "devices", WAIT)) - 1
+    assert dc(env_dir, "devices", "down") not in c
+
+
+def test_devices_database_on_the_external_database(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                   "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n")
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    create = next(i for i, x in enumerate(c) if x.endswith(" psql -v ON_ERROR_STOP=1 -q"))
+    assert c[create].startswith("run --rm -i --network ss-uat ")
+    assert "-e PGSSLMODE=require" in c[create] and "-e PGHOST=db.internal" in c[create]
+    assert "postgres:16-alpine psql" in c[create]
+    assert c[create + 1] == dc(env_dir, "devices", WAIT)
+    assert not any("/db/compose.yml" in x for x in c)
+    assert Path(fake["DOCKER_LOG"] + ".sql").read_text() == DEVICES_SQL
+
+
+def test_a_failed_devices_database_stops_before_the_devices_stack(env_dir: Path,
+                                                                  fake: dict[str, str]) -> None:
+    out = run({**fake, "FAKE_FAIL_PSQL_STDIN": "1"}, "up", str(env_dir))
+    assert out.returncode != 0
+    assert "couldn't create the devices database" in out.stderr
+    assert dc(env_dir, "devices", WAIT) not in calls(fake)
+
+
+def test_external_down_walks_devices_too(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\n")
+    out = run(fake, "down", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, s, "down")
+                           for s in ("status", "devices", "web", "api", "storage")]
+
+
+def _ca_b64() -> str:
+    import base64
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "fixture-ca")])
+    now = dt.datetime.now(dt.UTC)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(1)
+            .not_valid_before(now - dt.timedelta(days=1))
+            .not_valid_after(now + dt.timedelta(days=1))
+            .sign(key, hashes.SHA256()))
+    return base64.b64encode(cert.public_bytes(serialization.Encoding.PEM)).decode()
+
+
+def test_the_devices_database_with_a_ca_leaves_no_ca_file(env_dir: Path, fake: dict[str, str],
+                                                          tmp_path: Path) -> None:
+    """pg() writes the CA to a temp file only this shell removes: the devices
+    database must not be created from a subshell (a pipe)."""
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                   "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n"
+                   f"SS_DATABASE_CA_B64={_ca_b64()}\n")
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1", "TMPDIR": str(tmp)}, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    create = next(x for x in calls(fake) if x.endswith(" psql -v ON_ERROR_STOP=1 -q"))
+    assert "-e PGSSLMODE=verify-full" in create
+    assert Path(fake["DOCKER_LOG"] + ".sql").read_text() == DEVICES_SQL
+    assert list(tmp.iterdir()) == []
+
+
+def _without_devices_secrets(env_dir: Path, extra: str = "") -> None:
+    env_file = env_dir / ".env"
+    env_file.write_text(env_file.read_text().replace(DEVICES_SECRETS, "") + extra)
+
+
+@pytest.mark.parametrize("extra, missing", [
+    ("STACK_APPS=wiki,devices,mailpit\n", "SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY"),
+    ("STACK_APPS=devices,mailpit\nSS_DEVICES_SERVICE_TOKEN=0123abcd\n", "DEVICES_SECRET_KEY"),
+    ("STACK_APPS=wiki,devices,mailpit\nDEVICES_SECRET_KEY=0123abcd\n", "SS_DEVICES_SERVICE_TOKEN"),
+])
+def test_explicit_devices_without_secrets_dies(env_dir: Path, fake: dict[str, str], extra: str,
+                                               missing: str) -> None:
+    _without_devices_secrets(env_dir, extra)
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode != 0
+    assert (f"The devices app is on (STACK_APPS lists it): set {missing} in "
+            f"{env_dir}/.env, or leave devices out of STACK_APPS.") in out.stderr
+    assert calls(fake) == []
+
+
+def _apps_seen(env: dict[str, str]) -> list[str]:
+    path = Path(env["DOCKER_LOG"] + ".apps")
+    return path.read_text().splitlines() if path.exists() else []
+
+
+@pytest.mark.parametrize("extra", [
+    "",                                            # no STACK_APPS (uat's .env)
+    "STACK_APPS=\n",
+    "SS_DEVICES_SERVICE_TOKEN=0123abcd\n",         # one secret isn't enough
+    "SS_DEVICES_SERVICE_TOKEN=0123abcd\nDEVICES_SECRET_KEY=\n",
+])
+def test_empty_stack_apps_without_devices_secrets_skips_devices(
+        env_dir: Path, fake: dict[str, str], extra: str) -> None:
+    """"Every app" means devices only once its secrets are set: an existing
+    .env without them keeps working, the devices stack stays stopped, and
+    the API is told the apps that run (no Devices link in the portal)."""
+    _without_devices_secrets(env_dir, extra)
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert dc(env_dir, "devices", "down") in c
+    assert dc(env_dir, "devices", WAIT) not in c
+    assert dc(env_dir, "db", DEVICES_DB) not in c
+    for stack in ("storage", "api", "web", "status"):
+        assert dc(env_dir, stack, WAIT) in c, stack
+    assert _apps_seen(fake) == ["STACK_APPS=wiki,kiosk,learn,status,mailpit"]
+
+
+def test_empty_stack_apps_with_devices_secrets_runs_devices(env_dir: Path,
+                                                            fake: dict[str, str]) -> None:
+    out = run({k: v for k, v in fake.items() if k != "STACK_APPS"}, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert c.index(dc(env_dir, "db", DEVICES_DB)) == c.index(dc(env_dir, "devices", WAIT)) - 1
+    # every app runs: the API reads the .env's own (empty) STACK_APPS
+    assert _apps_seen(fake) == ["STACK_APPS=unset"]
+
+
+def test_devices_secrets_left_at_changeme_are_refused(env_dir: Path, fake: dict[str, str]) -> None:
+    _without_devices_secrets(env_dir, "SS_DEVICES_SERVICE_TOKEN=CHANGEME\nDEVICES_SECRET_KEY=x\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode != 0 and "SS_DEVICES_SERVICE_TOKEN" in out.stderr
+    assert calls(fake) == []
+
+
+@pytest.mark.parametrize("command", ["up", "down", "ps"])
+def test_devices_off_needs_no_devices_secrets(env_dir: Path, fake: dict[str, str],
+                                              command: str) -> None:
+    """An environment without the devices app (every Sirdar-written .env
+    today) carries no devices secrets: up stops the devices stack, and down
+    and ps walk it, all without them."""
+    _without_devices_secrets(env_dir, SMTP + "STACK_APPS=wiki,kiosk,learn,status,mailpit\n")
+    out = run(fake, command, str(env_dir))
+    assert out.returncode == 0, out.stderr
+    verb = {"up": "down", "down": "down", "ps": "ps"}[command]
+    assert dc(env_dir, "devices", verb) in calls(fake)
+    assert dc(env_dir, "devices", WAIT) not in calls(fake)

@@ -11,11 +11,9 @@ STACK = Path(__file__).resolve().parents[3] / "deploy" / "stack"
 
 def _stack_apps() -> set[str]:
     text = (STACK / "ss-stack").read_text()
-    body = text[text.index("check_apps() {"):]
-    body = body[:body.index("\n}\n")]
-    case = re.search(r"^\s*([a-z|]+)\) ;;$", body, re.MULTILINE)
-    assert case, "check_apps' case list moved"
-    return set(case.group(1).split("|"))
+    found = re.search(r"^OPTIONAL_APPS=\(([a-z ]+)\)$", text, re.MULTILINE)
+    assert found, "ss-stack's OPTIONAL_APPS list moved"
+    return set(found.group(1).split())
 
 
 def test_sirdar_knows_exactly_the_stacks_optional_apps():

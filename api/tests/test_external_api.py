@@ -102,6 +102,24 @@ async def test_external_directory_shape_and_multi_org_and_metadata(
     assert body["function_tags"] == sorted(body["function_tags"])
 
 
+async def test_external_lists_individual_link(client, seeded_user, db):
+    """A client_individual link shows up with tier "individual"."""
+    headers = await _headers(client)
+    client_org = (await client.post("/clients", headers=headers,
+                                    json={"name": "Acme"})).json()
+    person = await _mk_person(db, first="Ina", last="Individual",
+                              email="ina@acme.example.com")
+    r = await client.post(f"/clients/{client_org['id']}/contacts", headers=headers,
+                          json={"person_id": str(person.id), "tier": "individual"})
+    assert r.status_code == 201, r.text
+
+    resp = await client.get("/external", headers=headers)
+    assert resp.status_code == 200
+    [row] = [p for p in resp.json()["people"] if p["person_id"] == str(person.id)]
+    assert [(link["kind"], link["org_id"], link["tier"]) for link in row["links"]] == [
+        ("client", client_org["id"], "individual")]
+
+
 async def test_external_login_status_variants(client, seeded_user, db):
     headers = await _headers(client)
     org = (await client.post("/clients", headers=headers,

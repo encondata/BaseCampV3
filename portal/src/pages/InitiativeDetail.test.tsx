@@ -62,6 +62,8 @@ vi.mock('../auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   getInitiative: vi.fn(),
+  updateInitiative: vi.fn(),
+  archiveInitiative: vi.fn(),
   listInitiativeAssets: vi.fn(),
   listAssetStatuses: vi.fn(),
   getTimeSummary: vi.fn(),
@@ -905,3 +907,78 @@ it("assets list: a rack cell opens the rack view, whose Export PDF names the mov
     moveName: 'NAP11 Hall Migration', rackName: 'rack-a1', sideLabel: 'Source',
   }));
 });
+
+
+/* ── Edit tab ─────────────────────────────────────────────────────── */
+
+function renderWithLocation(tab?: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/initiatives/i1${tab ? `?tab=${tab}` : ''}`]}>
+      <Routes>
+        <Route path="/initiatives/:id" element={<><InitiativeDetail /><LocationProbe /></>} />
+      </Routes>
+    </MemoryRouter>,
+    { wrapper: ListPrefsFromAuth },
+  );
+}
+
+it('Edit tab: the header Edit button opens it, with the edit fields on the page', async () => {
+  const user = userEvent.setup();
+  renderWithLocation();
+  const actions = await headerActions();
+  await user.click(within(actions).getByRole('button', { name: 'Edit' }));
+  expect(currentSearch).toBe('?tab=edit');
+  expect(screen.getByRole('tab', { name: 'Edit' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByDisplayValue('NAP11 Hall Migration')).toBeTruthy();
+  // nothing changed yet: Save and Discard wait for an edit
+  expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Discard changes' }) as HTMLButtonElement).disabled)
+    .toBe(true);
+  expect(screen.getByRole('button', { name: 'Archive' })).toBeTruthy();
+});
+
+it('Edit tab: Save sends the change, refetches, and says Saved', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockResolvedValue({});
+  renderPage('edit');
+  const name = await screen.findByDisplayValue('NAP11 Hall Migration');
+  await user.clear(name);
+  await user.type(name, 'NAP11 Hall B');
+  api.getInitiative.mockResolvedValue({ ...INITIATIVE, name: 'NAP11 Hall B' });
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  expect(api.updateInitiative).toHaveBeenCalledWith('i1', expect.objectContaining({ name: 'NAP11 Hall B' }));
+  expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Saved');
+  expect(screen.getByDisplayValue('NAP11 Hall B')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('Edit tab: Discard changes puts the saved values back', async () => {
+  const user = userEvent.setup();
+  renderPage('edit');
+  const name = await screen.findByDisplayValue('NAP11 Hall Migration');
+  await user.type(name, ' draft');
+  await user.click(screen.getByRole('button', { name: 'Discard changes' }));
+  expect(screen.getByDisplayValue('NAP11 Hall Migration')).toBeTruthy();
+  expect(api.updateInitiative).not.toHaveBeenCalled();
+});
+
+it('Edit tab: a draft survives a look at another tab', async () => {
+  const user = userEvent.setup();
+  renderPage('edit');
+  const name = await screen.findByDisplayValue('NAP11 Hall Migration');
+  await user.type(name, ' draft');
+  await user.click(screen.getByRole('tab', { name: 'Overview' }));
+  await user.click(screen.getByRole('tab', { name: 'Edit' }));
+  expect(screen.getByDisplayValue('NAP11 Hall Migration draft')).toBeTruthy();
+});
+
+it('Edit tab: not offered without change permission, even by its link', async () => {
+  auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
+  renderPage('edit');
+  await screen.findByRole('tab', { name: 'Overview' });
+  expect(screen.queryByRole('tab', { name: 'Edit' })).toBeNull();
+  expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+});
+

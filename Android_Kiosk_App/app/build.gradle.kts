@@ -6,6 +6,14 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Push notifications (FCM) read the Firebase project from app/google-services.json, which is
+// committed once the project exists (it identifies the project; it is not a secret). Without it
+// the plugin stays off: the app still builds, its tests run, and "This is my phone" reports that
+// push isn't available in this build (data/push/FcmTokens.kt).
+if (file("google-services.json").exists()) {
+    apply(plugin = libs.plugins.google.services.get().pluginId)
+}
+
 android {
     namespace = "com.serversherpa.kiosk"
     compileSdk = 36
@@ -36,6 +44,17 @@ android {
         }
     }
 
+    // play: the Google Play build, with no self-update code. direct: the build installed from
+    // devices.<env>, which checks that site for a newer APK. Same applicationId and version.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("play") {
+            dimension = "distribution"
+            isDefault = true
+        }
+        create("direct") { dimension = "distribution" }
+    }
+
     buildTypes {
         debug {
             buildConfigField("String", "DEFAULT_API_URL", "\"https://api.dev.serversherpa.com\"")
@@ -64,7 +83,7 @@ android {
         // MigrationTestHelper loads exported schemas from the instrumentation context's assets,
         // and under Robolectric that is the tested variant's merged assets (src/test assets are
         // never merged). So the schemas ride in debug builds only (release stays clean), and
-        // testReleaseUnitTest does not see them: run the migration tests with testDebugUnitTest.
+        // testReleaseUnitTest does not see them: run the migration tests with testPlayDebugUnitTest (or testDirectDebugUnitTest).
         getByName("debug").assets.srcDir("$projectDir/schemas")
     }
 
@@ -110,6 +129,10 @@ dependencies {
     implementation(libs.androidx.biometric)
     // MainActivity is a FragmentActivity (BiometricPrompt); never left to whatever appcompat pulls in.
     implementation(libs.androidx.fragment.ktx)
+    // Push notifications. Only data/push/FirebaseFcmTokens.kt and the thin KioskMessagingService.kt
+    // touch Firebase; tests use a fake and the logic around them.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
     // The RFIDAPI3 .aar is wired in as a raw local artifact (see
     // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency.
     implementation(project(":RFIDAPI3Library"))

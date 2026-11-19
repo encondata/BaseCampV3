@@ -1,15 +1,23 @@
 /**
  * Kiosk Setup wizard. On a laptop it starts by asking what the station is
- * (StationTypeStep): a Label Station goes straight on; an RFID Station
- * first finds, connects to, and pairs a Zebra FX reader (ReaderStep,
- * ConnectStep, PairStep — under components/setup/), then a Network check
- * (NetworkCheckStep); a Dock Station walks the same reader steps. Every
- * path then continues the same way: pick a move, then which of that move's sites this
- * kiosk is at ("step 1A" — the move's source or destination site), then
- * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
- * An RFID Station or a Dock offers only RFID scan types and ends at
- * Confirm & verify, whose Start Reader opens `/rfid_status` — or, for a
- * Dock, its pass screen `/dock`.
+ * (StationTypeStep). Most paths then pick a move, then which of that move's
+ * sites this kiosk is at ("step 1A" — the move's source or destination
+ * site), then a scan type, and stamp this kiosk's Device row
+ * (POST /kiosk/setup).
+ * An RFID Station next asks its RFID type (RfidTypeStep): a Doorway or a
+ * Dock Portal (Truck Portal is shown as coming soon). It then picks the
+ * move, and only after that finds, connects to, and pairs a Zebra FX
+ * reader (ReaderStep, ConnectStep, PairStep — under components/setup/)
+ * and runs a Network check (NetworkCheckStep), then picks the site. A
+ * Doorway then picks one of the RFID scan types; a Dock Portal has no
+ * Scan type step: picking the site saves RFID 10 - Dock to Truck, and
+ * refuses to save when the portal doesn't offer that scan type. Both end
+ * at Confirm & verify, whose Start Reader opens `/rfid_status`. The RFID
+ * type is kept with the saved selection (an RFID Station saved before
+ * RFID types reads as a Doorway).
+ * A Dock Station walks the reader steps first (Select reader → Connect →
+ * Pair → Network check), then Move → Site → Scan type (RFID scan types
+ * only) → Confirm & verify, whose Start Reader opens its pass screen `/dock`.
  * A Label Station has no scan type: its setup is saved right after Site
  * (always Labeled), then it picks what it prints (LabelKindStep) and its
  * printer (PrinterStep); setup only counts as complete once the printer
@@ -39,7 +47,7 @@
  * LAN address, the page says it changes the laptop itself.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
@@ -48,8 +56,10 @@ import ConnectStep from '../components/setup/ConnectStep';
 import LabelKindStep from '../components/setup/LabelKindStep';
 import NetworkCheckStep from '../components/setup/NetworkCheckStep';
 import PairStep from '../components/setup/PairStep';
+import PrintLabelsStep from '../components/setup/PrintLabelsStep';
 import PrinterStep from '../components/setup/PrinterStep';
 import ReaderStep from '../components/setup/ReaderStep';
+import RfidTypeStep from '../components/setup/RfidTypeStep';
 import StationTypeStep from '../components/setup/StationTypeStep';
 import {
   ApiError, CLOUD_SIGN_IN_TEXT, getLabelStation, getSetupOptions, submitKioskSetup,
@@ -58,8 +68,8 @@ import {
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import {
-  isReaderStation, readerLabel, stationLabel, useKioskSetup, type KioskSetupSelection,
-  type StationType,
+  isReaderStation, readerLabel, rfidTypeLabel, stationLabel, useKioskSetup,
+  type KioskSetupSelection, type RfidType, type StationType,
 } from '../lib/kioskSetup';
 import { isLaptop, platform } from '../lib/platform';
 import { dismissSetupClearNotice, useSetupClearNotice } from '../lib/setupClear';
@@ -67,7 +77,9 @@ import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
 import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
-import { readWebLabelKind, writeWebLabelKind } from '../lib/webLabelSettings';
+import {
+  readWebLabelKind, readWebLabelPrinting, writeWebLabelKind, writeWebLabelPrintingOff,
+} from '../lib/webLabelSettings';
 
 /** Shown when Kiosk Setup is reached from another device on the LAN. */
 const LAN_NOTICE = "You're changing the setup of the laptop itself.";
@@ -76,11 +88,11 @@ const LAN_NOTICE = "You're changing the setup of the laptop itself.";
 const NO_PRINTER_NOTICE = 'Printer not set up — run Change setup to finish this Label Station.';
 
 type Step =
-  'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan' | 'confirm'
-  | 'kind' | 'printer';
+  'type' | 'rfidType' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan'
+  | 'confirm' | 'kind' | 'printer';
 
 const STEP_LABEL: Record<Step, string> = {
-  type: 'Station type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
+  type: 'Station type', rfidType: 'RFID type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
   network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm & verify',
   kind: 'What it prints', printer: 'Printer',
 };
@@ -89,13 +101,31 @@ const STEP_LABEL: Record<Step, string> = {
  *  its path has no Scan type step. The portal saves the same key anyway. */
 const LABEL_STATION_SCAN_STATUS = 'labeled';
 
+/** A Dock Portal always scans this built-in status (api migration 0019):
+ *  its path has no Scan type step. */
+const DOCK_PORTAL_SCAN_STATUS = 'rfid_10_dock_to_truck';
+const DOCK_PORTAL_SCAN_LABEL = 'RFID 10 - Dock to Truck (Auto Container Pack)';
+/** Shown on a Dock Portal's Site step when the portal doesn't offer it. */
+const DOCK_PORTAL_SCAN_MISSING = "RFID 10 - Dock to Truck isn't available as a scan type. Turn it on in the portal, then try again.";
+
+/** A web kiosk's Scan type step leaves out Active (Jimmy, 2026-11-17),
+ *  as well as every scan type with RFID in its name. */
+const WEB_HIDDEN_SCAN_STATUS = 'active';
+
 /** The steps this kiosk walks. Web mode skips the station type (RFID
- *  needs the laptop edge) and ends by asking what it prints, which the
- *  web kiosk keeps for itself rather than sending to the portal. An RFID
- *  Station and a Dock walk the same reader path. */
-function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
+ *  needs the laptop edge) and ends by asking whether it prints labels and,
+ *  only after a Yes, what it prints; the web kiosk keeps both answers for
+ *  itself rather than sending them to the portal. An RFID Station asks its
+ *  RFID type, then pairs its reader after the move; a Dock Portal has no
+ *  Scan type step. Until an RFID type is picked the path counts as a
+ *  Doorway's. A Dock Station pairs its reader first. */
+function pathFor(laptop: boolean, stationType: StationType | '', rfidType: RfidType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan', 'kind'];
-  if (isReaderStation(stationType)) return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
+  if (stationType === 'rfid') {
+    const scan: Step[] = rfidType === 'dock_portal' ? [] : ['scan'];
+    return ['type', 'rfidType', 'move', 'reader', 'connect', 'pair', 'network', 'site', ...scan, 'confirm'];
+  }
+  if (stationType === 'dock') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
   if (stationType === 'label') return ['type', 'move', 'site', 'kind', 'printer'];
   if (stationType === 'timeclock') return ['type', 'move', 'site'];
   return ['type', 'move', 'site', 'scan'];
@@ -133,7 +163,12 @@ export default function KioskSetup() {
   const laptop = isLaptop();
   const [stationType, setStationType] = useState<StationType | ''>(
     laptop ? selection?.stationType ?? '' : '');
-  const path = pathFor(laptop, stationType);
+  // An RFID Station's RFID type ('' until picked; a saved RFID Station
+  // without one is a Doorway, see lib/kioskSetup.ts).
+  const [rfidType, setRfidType] = useState<RfidType | ''>(
+    laptop && selection?.stationType === 'rfid' ? selection.rfidType ?? 'doorway' : '');
+  const dockPortal = laptop && stationType === 'rfid' && rfidType === 'dock_portal';
+  const path = pathFor(laptop, stationType, rfidType);
   const [step, setStep] = useState<Step>(path[0]);
   const [readerIp, setReaderIp] = useState('');
   const [laptopIp, setLaptopIp] = useState('');
@@ -149,6 +184,10 @@ export default function KioskSetup() {
   const [submitError, setSubmitError] = useState('');
   // A Label Station's step 4 choice, and its saved settings (Change setup).
   const [labelKind, setLabelKind] = useState<LabelKind>('top');
+  // A web kiosk's step 4 asks first whether it prints labels; `askKind`
+  // is set once it answers Yes, which brings up what it prints.
+  const [printsLabels, setPrintsLabels] = useState(true);
+  const [askKind, setAskKind] = useState(false);
   const [labelStation, setLabelStation] = useState<LabelStationSettings | null>(null);
   // The saved settings load after the Site save. A late answer only
   // preselects the label kind while the kind step is still open and nobody
@@ -159,10 +198,14 @@ export default function KioskSetup() {
   useEffect(() => { stepRef.current = step; }, [step]);
   const sync = useSyncStatus();
   // An RFID station or a Dock only offers scan types with RFID in the name.
+  // A web kiosk has no reader, so it offers none of those, and not Active.
+  const hasRfid = (t: { label: string }) => t.label.toLowerCase().includes('rfid');
   const scanTypes = options
     ? (isReaderStation(stationType) && laptop
-      ? options.scan_types.filter((t) => t.label.toLowerCase().includes('rfid'))
-      : options.scan_types)
+      ? options.scan_types.filter(hasRfid)
+      : laptop
+        ? options.scan_types
+        : options.scan_types.filter((t) => !hasRfid(t) && t.key !== WEB_HIDDEN_SCAN_STATUS))
     : [];
   // A phone on the LAN changes the laptop's own setup, which every browser shares.
   const lanAccess = laptop && window.__KIOSK_CONFIG__?.lanAccess === true;
@@ -215,6 +258,7 @@ export default function KioskSetup() {
     setNoSite(false);
     setScanStatus('');
     setStationType('');
+    setRfidType('');
     setReaderIp('');
     setLaptopIp('');
     setConnected(null);
@@ -267,6 +311,7 @@ export default function KioskSetup() {
       setNoSite(savedTimeclock && !selection.siteId);
       setScanStatus(selection.scanStatus);
       setStationType(laptop ? selection.stationType ?? '' : '');
+      setRfidType(laptop && selection.stationType === 'rfid' ? selection.rfidType ?? 'doorway' : '');
       setReaderIp(selection.reader?.ip ?? '');
     } else {
       setInitiativeId('');
@@ -275,6 +320,7 @@ export default function KioskSetup() {
       setNoSite(false);
       setScanStatus('');
       setStationType('');
+      setRfidType('');
       setReaderIp('');
     }
     setLaptopIp('');
@@ -295,8 +341,19 @@ export default function KioskSetup() {
   const selectStationType = (type: StationType) => {
     touched.current = true;
     setStationType(type);
-    setStep(pathFor(laptop, type)[1]);
+    setSubmitError('');
+    setStep(pathFor(laptop, type, rfidType)[1]);
   };
+
+  const selectRfidType = (type: RfidType) => {
+    touched.current = true;
+    setRfidType(type);
+    setSubmitError('');
+    setStep('move');
+  };
+
+  /** The step after the given one on the current path. */
+  const stepAfter = (from: Step) => path[Math.min(path.length - 1, path.indexOf(from) + 1)];
 
   /** A reader picked from the scan or typed in; a different reader (or
    *  laptop address) means connecting and pairing again. */
@@ -332,7 +389,9 @@ export default function KioskSetup() {
     }
     setInitiativeId(id);
     setNoMove(false);
-    setStep('site');
+    // An RFID Station pairs its reader after the move; every other path
+    // goes on to the site.
+    setStep(stepAfter('move'));
   };
 
   /** A Time Clock station's "No move": its site list is every site. */
@@ -350,10 +409,20 @@ export default function KioskSetup() {
   const selectSite = (id: string) => {
     setSiteId(id);
     setNoSite(false);
+    setSubmitError('');
     // A Time Clock station has no scan type: picking the site saves it.
     if (timeclock) void finishTimeclock(id);
     // A Label Station has nothing to choose: save Labeled straight away.
     else if (laptop && stationType === 'label') void finish(LABEL_STATION_SCAN_STATUS, id);
+    // A Dock Portal always scans RFID 10 - Dock to Truck, and never saves
+    // a setup the portal doesn't offer that scan type for.
+    else if (dockPortal) {
+      if (options?.scan_types.some((t) => t.key === DOCK_PORTAL_SCAN_STATUS)) {
+        void finish(DOCK_PORTAL_SCAN_STATUS, id);
+      } else {
+        setSubmitError('dock_portal_scan_missing');
+      }
+    }
     else setStep('scan');
   };
 
@@ -397,9 +466,12 @@ export default function KioskSetup() {
       const identity = getIdentity();
       // The edge adds the paired reader itself for an RFID station or a Dock.
       const station = laptop && stationType ? stationType : undefined;
+      // The edge keeps an RFID Station's RFID type with the shared setup.
+      const rfid = station === 'rfid' ? rfidType || 'doorway' : undefined;
       const result = await submitKioskSetup({
         serial: identity.serial, initiative_id: initiativeId, site_id: chosenSiteId,
         scan_status: scanKey, ...(station ? { station_type: station } : {}),
+        ...(rfid ? { rfid_type: rfid } : {}),
       });
       const saved: KioskSetupSelection = {
         // The wizard only submits a move, site, and scan type today, so the
@@ -410,6 +482,7 @@ export default function KioskSetup() {
         scanStatus: result.scan_status ?? '', scanLabel: result.scan_status_label ?? '',
       };
       if (station) saved.stationType = station;
+      if (rfid) saved.rfidType = rfid;
       if (isReaderStation(station)) {
         // Only a reader this run actually paired; the Pair step can't be
         // passed without one.
@@ -443,7 +516,12 @@ export default function KioskSetup() {
         // reader; a web kiosk still has to say what it prints (preselecting
         // what it already prints), after which the wizard closes.
         if (isReaderStation(station)) setStep('confirm');
-        else if (!laptop) { setLabelKind(readWebLabelKind()); setStep('kind'); }
+        else if (!laptop) {
+          setPrintsLabels(readWebLabelPrinting());
+          setAskKind(false);
+          setLabelKind(readWebLabelKind());
+          setStep('kind');
+        }
         else setWizardOpen(false);
       }
       // Fire-and-forget: the summary appears immediately and the
@@ -464,6 +542,9 @@ export default function KioskSetup() {
   if (!wizardOpen && selection) {
     const resync = () => { void runSync(selection.initiativeId, selection.initiativeName); };
     const timeclockSummary = selection.stationType === 'timeclock';
+    const savedRfidType = laptop && selection.stationType === 'rfid'
+      ? selection.rfidType ?? 'doorway' : null;
+    const portalSummary = savedRfidType === 'dock_portal';
     return (
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
@@ -484,6 +565,14 @@ export default function KioskSetup() {
               <b>{selection.initiativeId ? selection.initiativeName : 'no move'}</b> at{' '}
               <b>{selection.siteId ? selection.siteName : 'no site'}</b>.
             </p>
+          ) : portalSummary ? (
+            <>
+              <p>
+                This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
+                <b>{selection.siteName}</b> ({selection.siteRole})
+              </p>
+              <p>Scan type: <b>{selection.scanLabel || DOCK_PORTAL_SCAN_LABEL}</b></p>
+            </>
           ) : (
             <p>
               This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
@@ -494,6 +583,7 @@ export default function KioskSetup() {
           {laptop && selection.stationType && (
             <p>
               Station: <b>{stationLabel(selection.stationType, platform().label)}</b>
+              {savedRfidType && <> · RFID type <b>{rfidTypeLabel(savedRfidType)}</b></>}
               {isReaderStation(selection.stationType) && selection.reader && (
                 <> · reader <b>{readerLabel(selection.reader)}</b></>
               )}
@@ -547,8 +637,34 @@ export default function KioskSetup() {
   // Before a station type is picked the path's length isn't known yet.
   const stepLabel = step === 'type' && !stationType
     ? `Step 1 · ${STEP_LABEL.type}`
-    : `Step ${stepIndex + 1} of ${path.length} · ${STEP_LABEL[step]}`;
+    : `Step ${stepIndex + 1} of ${path.length} · ${step === 'kind' && !laptop ? 'Label printing' : STEP_LABEL[step]}`;
   const moveStep = step === 'move' || step === 'site' || step === 'scan';
+  // Why the last save didn't happen, shown on the step that saves.
+  let saveError: ReactNode = null;
+  if (submitError === 'dock_portal_scan_missing') {
+    saveError = <p className="form-error" role="alert">{DOCK_PORTAL_SCAN_MISSING}</p>;
+  } else if (submitError === 'reader_required') {
+    // The edge had no paired reader for an RFID station or a Dock.
+    saveError = (
+      <div className="form-error" role="alert">
+        <p>Pair a reader first</p>
+        {path.includes('reader') && (
+          <button type="button" className="mini-btn"
+                  onClick={() => { setSubmitError(''); setStep('reader'); }}>
+            Back to the reader step
+          </button>
+        )}
+      </div>
+    );
+  } else if (submitError) {
+    saveError = (
+      <p className="form-error" role="alert">
+        {submitError === 'cloud_sign_in_required'
+          ? CLOUD_SIGN_IN_TEXT
+          : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
+      </p>
+    );
+  }
   const canCancel = Boolean(selection) && setupState === 'complete';
 
   return (
@@ -575,6 +691,10 @@ export default function KioskSetup() {
               </div>
             )}
           </div>
+        )}
+
+        {step === 'rfidType' && (
+          <div><RfidTypeStep selected={rfidType} onSelect={selectRfidType} onBack={back} /></div>
         )}
 
         {step === 'reader' && (
@@ -605,7 +725,7 @@ export default function KioskSetup() {
                 ? { ip: paired.reader.ip, serial: paired.reader.serial,
                     model: paired.reader.model, endpoint_url: paired.endpoint_url }
                 : null}
-              onBack={() => setStep('scan')}
+              onBack={back}
               onPairAgain={() => setStep('reader')}
               onStarted={() => {
                 setWizardOpen(false);
@@ -615,7 +735,25 @@ export default function KioskSetup() {
           </div>
         )}
 
-        {step === 'kind' && (
+        {step === 'kind' && !laptop && !askKind && (
+          <div>
+            <PrintLabelsStep selected={printsLabels}
+                             onChoose={(prints) => {
+                               setPrintsLabels(prints);
+                               if (prints) {
+                                 setAskKind(true);
+                               } else {
+                                 // Saved and complete already: the kiosk
+                                 // only has to remember it prints nothing.
+                                 writeWebLabelPrintingOff();
+                                 setWizardOpen(false);
+                               }
+                             }}
+                             onBack={back} />
+          </div>
+        )}
+
+        {step === 'kind' && (laptop || askKind) && (
           <div>
             <LabelKindStep selected={labelKind} device={laptop ? 'station' : 'kiosk'}
                            onChoose={(kind) => {
@@ -630,7 +768,7 @@ export default function KioskSetup() {
                                setWizardOpen(false);
                              }
                            }}
-                           onBack={back} />
+                           onBack={laptop ? back : () => setAskKind(false)} />
           </div>
         )}
 
@@ -737,14 +875,10 @@ export default function KioskSetup() {
                 This move has no sites yet. Ask a coordinator to add them.
               </p>
             )}
-            {/* A Label or Time Clock station saves straight from this step. */}
-            {submitError && laptop && (stationType === 'label' || stationType === 'timeclock') && (
-              <p className="form-error" role="alert">
-                {submitError === 'cloud_sign_in_required'
-                  ? CLOUD_SIGN_IN_TEXT
-                  : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
-              </p>
-            )}
+            {/* A Label or Time Clock station, or a Dock Portal, saves
+                straight from this step. */}
+            {laptop && (stationType === 'label' || stationType === 'timeclock' || dockPortal)
+              && saveError}
             <div className="pf-form-actions">
               <button type="button" className="mini-btn" onClick={back} disabled={submitting}>Back</button>
             </div>
@@ -774,25 +908,7 @@ export default function KioskSetup() {
                 on the portal&apos;s Variables page.
               </p>
             )}
-            {submitError && submitError !== 'reader_required' && (
-              <p className="form-error" role="alert">
-                {submitError === 'cloud_sign_in_required'
-                  ? CLOUD_SIGN_IN_TEXT
-                  : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
-              </p>
-            )}
-            {/* The edge had no paired reader for an RFID station. */}
-            {submitError === 'reader_required' && (
-              <div className="form-error" role="alert">
-                <p>Pair a reader first</p>
-                {path.includes('reader') && (
-                  <button type="button" className="mini-btn"
-                          onClick={() => { setSubmitError(''); setStep('reader'); }}>
-                    Back to the reader step
-                  </button>
-                )}
-              </div>
-            )}
+            {saveError}
             <div className="pf-form-actions">
               <button type="button" className="mini-btn" onClick={back}
                       disabled={submitting}>

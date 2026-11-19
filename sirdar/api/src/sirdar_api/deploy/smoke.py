@@ -26,7 +26,7 @@ import httpx
 from sirdar_api.deploy import home
 
 PATHS = {"api": "/healthz", "portal": "/", "kiosk": "/", "wiki": "/healthz", "learn": "/",
-         "spaces": "/healthz", "status": "/healthz"}
+         "spaces": "/healthz", "status": "/healthz", "devices": "/healthz"}
 ATTEMPTS = 6
 DELAY = 10
 TIMEOUT = 10

@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.input.datawedge
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import com.serversherpa.kiosk.input.ScanEvent
 import com.serversherpa.kiosk.input.ScanSource
@@ -55,6 +56,17 @@ object DataWedge {
         context.sendBroadcast(Intent(API_ACTION).setPackage(PACKAGE).putExtra("com.symbol.datawedge.api.SET_CONFIG", profileConfig(context.packageName)))
     }
 
+    /**
+     * Switches the handheld's own scanner input back on (ruling 2): one
+     * `SCANNER_INPUT_PLUGIN` / `ENABLE_PLUGIN` broadcast, which repairs a
+     * scanner an earlier build may have left off. Sent without checking
+     * [isPresent]: on an MC2200 where detection is off it must still go.
+     */
+    fun enableScannerInput(context: Context) {
+        context.sendBroadcast(Intent(API_ACTION).setPackage(PACKAGE)
+            .putExtra("com.symbol.datawedge.api.SCANNER_INPUT_PLUGIN", "ENABLE_PLUGIN"))
+    }
+
     /** Fires the scan engine as if the trigger were pressed. */
     fun softScan(context: Context, start: Boolean) {
         if (!isPresent(context)) return
@@ -69,3 +81,8 @@ object DataWedge {
         return ScanEvent(value, ScanSource.DATAWEDGE, label)
     }
 }
+
+/** A Zebra handheld (DataWedge installed, or a Zebra manufacturer): its own scanner reads
+ *  barcodes, so the sled always gets the RFID layout and no scanner session (ruling 2). */
+fun isZebraHost(context: Context): Boolean =
+    DataWedge.isPresent(context) || Build.MANUFACTURER.startsWith("Zebra", ignoreCase = true)

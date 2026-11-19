@@ -77,7 +77,7 @@ import {
   getAll, readMeta, readRawBody, writeLabelSet, type MetaRow, type RawBodyRow,
 } from '../localDb';
 import { readSyncStatus, subscribeSyncStatus } from '../sync';
-import { readWebLabelSettings, subscribeWebLabelSettings } from '../webLabelSettings';
+import { readWebLabelPrinting, readWebLabelSettings, subscribeWebLabelSettings } from '../webLabelSettings';
 import {
   errorMessage, planOnly, runBuild, type LabelBuildResult, type WorkerRequest, type WorkerResponse,
 } from './buildCore';
@@ -423,7 +423,8 @@ async function decide(seq: number): Promise<void> {
   }
   const settings = readWebLabelSettings();
   const moveId = readKioskSetup()?.initiativeId ?? '';
-  if (settings === null || moveId === '') {
+  // a kiosk set up not to print labels builds none
+  if (settings === null || moveId === '' || !readWebLabelPrinting()) {
     stopActive();
     setNothing();
     return;

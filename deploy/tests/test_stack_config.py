@@ -14,12 +14,12 @@ from conftest import ENV_EXAMPLE, STACK_DIR, docker_cli_ok, readme_restore_comma
 
 pytestmark = pytest.mark.skipif(not docker_cli_ok(), reason="docker CLI not available")
 
-STACKS = ("db", "storage", "api", "web", "status")
+STACKS = ("db", "storage", "api", "web", "devices", "status")
 ENV = "uat"                      # STACK_ENV in env.example
 DOMAIN = "uat.serversherpa.com"  # STACK_DOMAIN in env.example
 PROXY_IP = "10.0.0.2"            # STACK_PROXY_IP in env.example
 TAG = "local"                    # STACK_IMAGE_TAG in env.example
-PUBLIC = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")
+PUBLIC = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "devices")
 WORKERS = {
     "import-worker": ["serversherpa", "import-worker"],
     "log-service": ["serversherpa", "log-service"],
@@ -86,7 +86,8 @@ def test_default_published_ports() -> None:
              for name, svc in rendered(stack)["services"].items()
              if svc.get("ports")}
     assert ports == {"api": [8000], "portal": [8091], "kiosk": [8090], "wiki": [8096],
-                     "learn": [8092], "seaweedfs": [9000], "status": [8095], "mailpit": [8025]}
+                     "learn": [8092], "seaweedfs": [9000], "status": [8095], "mailpit": [8025],
+                     "devices": [8093]}
 
 
 def test_postgres_is_16_and_unpublished() -> None:
@@ -115,7 +116,7 @@ def test_migrate_runs_alembic_from_the_image() -> None:
 
 
 def test_runtime_images_are_tagged_and_never_built() -> None:
-    for stack in ("api", "web", "status"):
+    for stack in ("api", "web", "devices", "status"):
         for name, svc in rendered(stack)["services"].items():
             assert "build" not in svc, f"{stack}/{name} builds; only build.yml may"
             assert svc["image"].endswith(f":{TAG}"), f"{stack}/{name}: {svc['image']}"
@@ -124,14 +125,16 @@ def test_runtime_images_are_tagged_and_never_built() -> None:
 def test_build_file_builds_exactly_the_runtime_images() -> None:
     built = {svc["image"] for svc in rendered("build")["services"].values()}
     used = {svc["image"]
-            for stack in ("api", "web", "status")
+            for stack in ("api", "web", "devices", "status")
             for svc in rendered(stack)["services"].values()}
     assert built == used == {f"serversherpa-{x}:{TAG}"
-                             for x in ("api", "portal", "kiosk", "wiki", "learn", "status")}
+                             for x in ("api", "portal", "kiosk", "wiki", "learn", "status",
+                                       "devices")}
 
 
 @pytest.mark.parametrize("stack,service", [("api", "api"), ("api", "report-worker"),
-                                           ("api", "wiki-export-worker"), ("status", "status")])
+                                           ("api", "wiki-export-worker"), ("status", "status"),
+                                           ("devices", "devices"), ("devices", "devices-worker")])
 def test_public_names_resolve_to_the_proxy(stack: str, service: str) -> None:
     hosts = extra_hosts(rendered(stack)["services"][service])
     assert hosts == {f"{name}.{DOMAIN}": PROXY_IP for name in PUBLIC}
@@ -166,8 +169,9 @@ def test_api_environment_points_at_the_stack() -> None:
     assert env["SS_DATABASE_CA_B64"] == ""
     assert env["SS_DATABASE_URL"].endswith("@postgres:5432/serversherpa")
     assert env["SS_WIKI_RENDER_URL"] == "http://wiki:8080"
+    assert env["SS_DEVICES_ORIGIN"] == f"https://devices.{DOMAIN}"
     assert set(env["SS_ALLOWED_ORIGINS"].split(",")) == {
-        f"https://{n}.{DOMAIN}" for n in ("portal", "kiosk", "wiki", "learn")}
+        f"https://{n}.{DOMAIN}" for n in ("portal", "kiosk", "wiki", "learn", "devices")}
 
 
 def test_api_trusts_forwarded_headers_only_from_the_proxy() -> None:
@@ -221,6 +225,15 @@ def test_env_example_secrets_are_placeholders() -> None:
     for key in ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
                 "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN"):
         assert lines[key] == "CHANGEME", key
+
+
+def test_env_example_leaves_the_devices_secrets_commented() -> None:
+    """Needed only when the devices app runs (ss-stack checks); a .env
+    without them (Sirdar's, an existing one) keeps working with it off."""
+    text = ENV_EXAMPLE.read_text().splitlines()
+    for key in ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY", "DEVICES_IOS_OWNER_URL"):
+        assert f"# {key}=" in text, key
+        assert not any(line.startswith(f"{key}=") for line in text), key
 
 
 def test_storage_runs_seaweedfs_and_mailpit_pinned() -> None:
@@ -306,6 +319,19 @@ def test_the_proxy_routes_the_learn_site() -> None:
     assert "reverse_proxy @learn learn:8080 {" in caddyfile
 
 
+def test_the_proxy_routes_the_devices_site_with_a_body_cap() -> None:
+    caddyfile = (STACK_DIR / "proxy" / "Caddyfile").read_text()
+    assert "@devices host devices.{$STACK_DOMAIN}" in caddyfile
+    route = caddyfile.split("reverse_proxy @devices devices:8080 {", 1)
+    assert len(route) == 2, "no reverse_proxy for @devices"
+    assert route[1].split("\n\t\t}", 1)[0].split() == ["header_up", "X-Forwarded-For",
+                                                       "{client_ip}"]
+    # defense in depth: the app refuses bodies over 1 MiB itself
+    cap = route[0].rsplit("request_body @devices {", 1)
+    assert len(cap) == 2, "no request_body cap before the devices route"
+    assert cap[1].split("}", 1)[0].split() == ["max_size", "2MB"]
+
+
 def test_the_api_reads_the_apps_and_the_signing_digests_from_the_env_file(tmp_path) -> None:
     env = rendered("api")["services"]["api"]["environment"]
     assert (env["SS_APPS"], env["SS_KIOSK_SIGNING_DIGESTS"]) == ("", "")
@@ -319,3 +345,116 @@ def test_the_api_reads_the_apps_and_the_signing_digests_from_the_env_file(tmp_pa
     assert out.returncode == 0, out.stderr
     got = json.loads(out.stdout)["services"]["api"]["environment"]
     assert (got["SS_APPS"], got["SS_KIOSK_SIGNING_DIGESTS"]) == ("wiki,learn,mailpit", digest)
+
+
+# ---- the devices service (devices.<domain>): one image, the API + SPA and a worker ----
+
+DEVICES_SRC = STACK_DIR.parents[1] / "devices" / "api" / "src"
+
+
+def devices_settings_fields() -> dict[str, Any]:
+    import sys
+    if str(DEVICES_SRC) not in sys.path:
+        sys.path.insert(0, str(DEVICES_SRC))
+    from serversherpa_devices.config import Settings
+    return Settings.model_fields
+
+
+def test_devices_stack_runs_the_service_and_its_worker_from_one_image() -> None:
+    services = rendered("devices")["services"]
+    assert set(services) == {"devices", "devices-worker"}
+    web, worker = services["devices"], services["devices-worker"]
+    assert web["image"] == worker["image"] == f"serversherpa-devices:{TAG}"
+    assert worker["command"] == ["worker"]
+    assert not worker.get("ports")
+    assert web["environment"] == worker["environment"]
+    assert web["restart"] == worker["restart"] == "unless-stopped"
+    assert [(p["target"], int(p["published"])) for p in web["ports"]] == [(8080, 8093)]
+    assert web["healthcheck"]["test"][:2] == ["CMD", "python"]
+    assert "http://127.0.0.1:8080/healthz" in web["healthcheck"]["test"][-1]
+    # the image's /healthz check is the web server's: the worker serves no HTTP
+    assert worker["healthcheck"] == {"disable": True}
+    # the worker starts once the service has migrated the database
+    assert worker["depends_on"]["devices"]["condition"] == "service_healthy"
+
+
+def test_devices_environment_points_at_the_stack() -> None:
+    env = rendered("devices")["services"]["devices"]["environment"]
+    assert env["DEVICES_DATABASE_URL"].startswith("postgresql+asyncpg://serversherpa:")
+    assert env["DEVICES_DATABASE_URL"].endswith("@postgres:5432/serversherpa_devices")
+    assert env["DEVICES_DATABASE_SSL"] == "disable"
+    assert env["DEVICES_MAIN_API_URL"] == "http://api:8000"
+    assert env["DEVICES_PUBLIC_URL"] == f"https://devices.{DOMAIN}"
+    assert env["DEVICES_IOS_OWNER_URL"] == ""
+    assert env["DEVICES_SPACES_ENDPOINT"] == f"https://spaces.{DOMAIN}"
+    assert env["DEVICES_SPACES_REGION"] == "us-east-1"
+    assert env["DEVICES_SPACES_BUCKET"] == "serversherpa-devices"
+    assert env["DEVICES_SPACES_USE_PATH_STYLE"] == "true"
+    assert env["FORWARDED_ALLOW_IPS"] == PROXY_IP
+
+
+def _render_with(tmp_path, stack: str, extra: str) -> dict[str, Any]:
+    env_file = tmp_path / f"{stack}.env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + extra)
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f",
+         str(STACK_DIR / stack / "compose.yml"), "config", "--format", "json"],
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_devices_and_the_api_share_the_service_token_and_storage(tmp_path) -> None:
+    extra = "SS_DEVICES_SERVICE_TOKEN=0123token\nDEVICES_SECRET_KEY=fernet-key\n"
+    dev = _render_with(tmp_path, "devices", extra)["services"]["devices"]["environment"]
+    api = _render_with(tmp_path, "api", extra)["services"]["api"]["environment"]
+    sw = rendered("storage")["services"]["seaweedfs"]["environment"]
+    assert dev["DEVICES_SERVICE_TOKEN"] == api["SS_DEVICES_SERVICE_TOKEN"] == "0123token"
+    assert dev["DEVICES_SECRET_KEY"] == "fernet-key"
+    assert dev["DEVICES_SPACES_ACCESS_KEY"] == sw["AWS_ACCESS_KEY_ID"] == "serversherpa"
+    assert dev["DEVICES_SPACES_SECRET_KEY"] == sw["AWS_SECRET_ACCESS_KEY"] == "CHANGEME"
+
+
+def test_devices_environment_covers_every_required_setting() -> None:
+    env = rendered("devices")["services"]["devices"]["environment"]
+    fields = devices_settings_fields()
+    required = {f"DEVICES_{n.upper()}" for n, f in fields.items() if f.is_required()}
+    assert required - set(env) == set()
+    known = {f"DEVICES_{n.upper()}" for n in fields}
+    assert {k for k in env if k.startswith("DEVICES_")} - known == set()
+
+
+def test_devices_ios_owner_comes_from_the_env_file(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text()
+                        + "DEVICES_IOS_OWNER_URL=https://devices.serversherpa.com\n")
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f",
+         str(STACK_DIR / "devices/compose.yml"), "config", "--format", "json"],
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    env = json.loads(out.stdout)["services"]["devices"]["environment"]
+    assert env["DEVICES_IOS_OWNER_URL"] == "https://devices.serversherpa.com"
+
+
+def test_the_devices_secrets_may_be_absent() -> None:
+    """ss-stack requires them only when the devices app runs; without them
+    the main API's internal devices endpoints stay off (an empty token) and
+    the devices stack still renders (to stop it)."""
+    api = rendered("api")["services"]["api"]["environment"]
+    dev = rendered("devices")["services"]["devices"]["environment"]
+    assert api["SS_DEVICES_SERVICE_TOKEN"] == ""
+    assert (dev["DEVICES_SERVICE_TOKEN"], dev["DEVICES_SECRET_KEY"]) == ("", "")
+
+
+@pytest.mark.parametrize("stack, key", [("devices", "STACK_PROXY_IP")])
+def test_devices_settings_are_required(tmp_path, stack: str, key: str) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("\n".join(line for line in ENV_EXAMPLE.read_text().splitlines()
+                                  if not line.startswith(f"{key}=")) + "\n")
+    env = {k: v for k, v in os.environ.items() if k != key}
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f",
+         str(STACK_DIR / stack / "compose.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env=env)
+    assert out.returncode != 0 and key in out.stderr

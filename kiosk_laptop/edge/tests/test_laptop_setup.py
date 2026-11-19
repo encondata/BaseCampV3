@@ -107,3 +107,37 @@ async def test_reader_required_is_422_like_the_cloud(app, client, cloud):
     r = await setup(client, app, station_type="rfid")
     assert r.status_code == 422 and r.json()["detail"]["code"] == "reader_required"
     assert not route.called
+
+
+async def test_an_rfid_setup_keeps_its_rfid_type_and_the_cloud_never_sees_it(app, client, cloud):
+    await paired(app, client)
+    route = ready(app, cloud)
+    assert (await setup(client, app, station_type="rfid", rfid_type="dock_portal")).status_code == 200
+    sent = json.loads(route.calls.last.request.content)
+    assert "rfid_type" not in sent and sent["station_type"] == "rfid"
+    body = (await client.get("/edge/setup", headers=make_session(app))).json()
+    assert body["rfid_type"] == "dock_portal"
+    assert (await setup(client, app, station_type="rfid", rfid_type="doorway")).status_code == 200
+    assert (await client.get("/edge/setup", headers=make_session(app))).json()[
+        "rfid_type"] == "doorway"
+
+
+async def test_an_rfid_setup_with_no_or_an_unknown_rfid_type_is_a_doorway(app, client, cloud):
+    await paired(app, client)
+    ready(app, cloud)
+    for rfid_type in (None, "truck_portal", 7):
+        extra = {} if rfid_type is None else {"rfid_type": rfid_type}
+        assert (await setup(client, app, station_type="rfid", **extra)).status_code == 200
+        assert (await client.get("/edge/setup", headers=make_session(app))).json()[
+            "rfid_type"] == "doorway"
+
+
+async def test_only_an_rfid_station_keeps_an_rfid_type(app, client, cloud):
+    await paired(app, client)
+    route = ready(app, cloud)
+    for station in ("dock", "label"):
+        assert (await setup(client, app, station_type=station,
+                            rfid_type="dock_portal")).status_code == 200
+        assert "rfid_type" not in json.loads(route.calls.last.request.content)
+        assert (await client.get("/edge/setup", headers=make_session(app))).json()[
+            "rfid_type"] is None

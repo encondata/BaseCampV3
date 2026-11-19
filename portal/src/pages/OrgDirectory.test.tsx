@@ -37,6 +37,7 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   listPartnerTypes: vi.fn(),
+  addContactLink: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -415,4 +416,37 @@ it('supplied workers picker: trade chips then the level, "no profile" when both 
   expect(subOf('Cy Level').textContent).toBe('L3');
   expect(subOf('Di Nothing').textContent).toBe('no profile');
   expect(subOf('Ed Blank').textContent).toBe('no profile');
+});
+
+it('add contact: a worker refused with client_worker_conflict shows the plain message', async () => {
+  auth.global = true;
+  const { ApiError } = await import('../lib/api');
+  api.addContactLink.mockRejectedValueOnce(new ApiError(409, 'client_worker_conflict', 'x'));
+  api.apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (path === '/clients' && !init?.method) return jsonResponse([ORG]);
+    if (path === '/clients/c1/contacts') return jsonResponse([]);
+    if (path === '/people') {
+      return jsonResponse([{ person_id: 'p9', display_name: 'Wes Worker', email: null,
+        job_title: null, has_account: true }]);
+    }
+    return jsonResponse([], 200);
+  });
+  render(
+    <MemoryRouter>
+      <OrgDirectory cfg={{
+        kind: 'client', apiBase: '/clients', title: 'Clients', blurb: '',
+        addLabel: 'Add client', hasType: false,
+      }} />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(document.querySelector('.dir-row .row-main')).not.toBeNull());
+  fireEvent.click(document.querySelector('.dir-row .row-main') as HTMLElement);
+  fireEvent.click(await screen.findByRole('button', { name: '+ Add contact' }));
+  const combo = await screen.findByPlaceholderText('Type to search people…');
+  fireEvent.focus(combo);
+  fireEvent.mouseDown(await screen.findByText('Wes Worker', { selector: '.combo-menu .kbar-item' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
+  await waitFor(() => expect(api.addContactLink).toHaveBeenCalledWith('client', 'c1', 'p9', 'viewer'));
+  expect(await screen.findByText(
+    "This person is a worker. A worker can't also be a client contact.")).not.toBeNull();
 });

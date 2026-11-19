@@ -17,7 +17,7 @@ WIKI_TABLES = (
 
 ALL_ROLES = {
     "developer", "founder", "super_admin", "admin", "staff",
-    "client_owner", "client_admin", "client_viewer",
+    "client_owner", "client_admin", "client_viewer", "client_individual",
     "vendor_owner", "vendor_admin", "vendor_viewer", "worker", "external",
     "learning_admin",
 }
@@ -60,7 +60,7 @@ async def test_wiki_view_granted_to_every_role(db):
     ))).all())
     assert add_roles == {"developer", "founder", "super_admin", "admin", "staff"}
     assert add_roles.isdisjoint({
-        "client_owner", "client_admin", "client_viewer",
+        "client_owner", "client_admin", "client_viewer", "client_individual",
         "vendor_owner", "vendor_admin", "vendor_viewer", "worker", "external"})
 
     delete_roles = set((await db.scalars(text(

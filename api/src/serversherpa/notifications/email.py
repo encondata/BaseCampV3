@@ -74,6 +74,8 @@ class EffectiveSwitches:
     email: bool
     inbox_source: str
     email_source: str
+    push: bool = False
+    push_source: str = "default"
 
 
 @dataclass(frozen=True)
@@ -149,23 +151,28 @@ def effective_switches(info: KindInfo | None, contact: Contact | None,
                        company: CompanySettings) -> EffectiveSwitches:
     """The recipient's switches for this kind: their own value where they set
     one, else the company default. Email needs Inbox: it is on only when the
-    person's Email value (own, else default) is on and Inbox is on too. Account
+    person's Email value (own, else default) is on and Inbox is on too; Push
+    needs Inbox the same way. Account
     security and a kind the registry does not list (inbox-only, never emailed)
     are fixed on and on, answered before the defaults are consulted: they hold
     no entry for either. A recipient with no contact has no values of their own."""
     if info is None or info.category == "security":
-        return EffectiveSwitches(True, True, "fixed", "fixed")
+        return EffectiveSwitches(True, True, "fixed", "fixed", False, "fixed")
     default = company.defaults[info.category]
     own = (contact.choice_prefs.notif.switches.get(info.category)
            if contact is not None else None)
     own_inbox = own.inbox if own is not None else None
     own_email = own.email if own is not None else None
+    own_push = own.push if own is not None else None
     inbox = default.inbox if own_inbox is None else own_inbox
     email = default.email if own_email is None else own_email
+    push = default.push if own_push is None else own_push
     return EffectiveSwitches(
         inbox=inbox, email=email and inbox,
         inbox_source="default" if own_inbox is None else "own",
-        email_source="default" if own_email is None else "own")
+        email_source="default" if own_email is None else "own",
+        push=push and inbox,
+        push_source="default" if own_push is None else "own")
 
 
 def contact_schedule(contact: Contact | None) -> Schedule:
@@ -349,8 +356,8 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
     person's switches or the company defaults may have changed. The checks run
     in order and the first that fails decides: notification_gone, resolved,
     back_online (Device offline only), hidden, read, recipient_inactive,
-    no_access (a notification the event sweep wrote, or a wiki notice about a
-    page, folder or file: wiki/notify.access_recheck) and not_watching (the
+    no_access (a notification the event sweep wrote, an asset watch's notice,
+    or a wiki notice about a page, folder or file: wiki/notify.access_recheck) and not_watching (the
     event sweep's only), then category_turned_down (the effective Email switch
     is now off). `contact` is the recipient, loaded when None is passed.
     Timing is not re-computed. Writes nothing.

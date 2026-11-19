@@ -26,7 +26,7 @@ async def test_status_is_public_and_defaults_off(client):
         "read_only": False, "read_only_message": "",
         "workers_paused": False, "banner": None,
         "totp_trust_days": 7,
-        "email_enabled": False, "password_reset_ttl_minutes": 15,
+        "email_enabled": False, "push_enabled": False, "password_reset_ttl_minutes": 15,
         "password_min_length": get_settings().password_min_length,
         "background": None,
         "apps": {"wiki": True, "kiosk": True, "learn": True},
@@ -77,7 +77,7 @@ async def test_put_merges_trims_and_audits(client, db, seeded_user):
     status = (await client.get("/system/status")).json()
     assert status == {"read_only": True, "read_only_message": "Cutover until 14:00",
                       "workers_paused": False, "banner": "Hello all",
-                      "totp_trust_days": 7, "email_enabled": False,
+                      "totp_trust_days": 7, "email_enabled": False, "push_enabled": False,
                       "password_reset_ttl_minutes": 15,
                       "password_min_length": get_settings().password_min_length,
                       "background": None, "apps": {"wiki": True, "kiosk": True, "learn": True}}

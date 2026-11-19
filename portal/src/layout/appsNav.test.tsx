@@ -16,9 +16,24 @@ it('the Kiosk and Wiki links name their app', () => {
   expect(item('Wiki').app).toBe('wiki');
 });
 
+it('the Devices link names its app and the Apps permission', () => {
+  expect(item('Devices').app).toBe('devices');
+  expect(item('Devices').resource).toBe('app_distribution');
+  expect(item('Devices').href).toBeTruthy();
+});
+
+it('the Devices link hides when its app is off or app_distribution view is missing', () => {
+  const devices = item('Devices');
+  expect(isNavItemVisible(devices, can, false, 100, true)).toBe(true);
+  const off = { ...DEFAULT_SYSTEM_STATUS, apps: { wiki: true, kiosk: true, learn: true, devices: false } };
+  expect(isNavItemVisible(devices, can, false, 100, true, (a) => appOn(off, a))).toBe(false);
+  const denied = (r: string) => r !== 'app_distribution';
+  expect(isNavItemVisible(devices, denied, false, 100, true)).toBe(false);
+});
+
 it('an app that is off hides its link; unknown counts as on', () => {
   const off = { ...DEFAULT_SYSTEM_STATUS, apps: { wiki: false, kiosk: true, learn: true } };
-  const on = (a: 'wiki' | 'kiosk') => appOn(off, a);
+  const on = (a: 'wiki' | 'kiosk' | 'devices') => appOn(off, a);
   expect(isNavItemVisible(item('Wiki'), can, false, 100, true, on)).toBe(false);
   expect(isNavItemVisible(item('Kiosk'), can, false, 100, true, on)).toBe(true);
   expect(isNavItemVisible(item('Wiki'), can, false, 100, true, (a) => appOn(DEFAULT_SYSTEM_STATUS, a))).toBe(true);

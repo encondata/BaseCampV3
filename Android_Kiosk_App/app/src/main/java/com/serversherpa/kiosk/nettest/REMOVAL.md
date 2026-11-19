@@ -19,7 +19,7 @@ Run these from `Android_Kiosk_App/`.
 
 2. **Delete every line marked `// INTERNET-TEST`.** Each marked line holds only
    Internet Test code, on a line of its own, so deleting the whole line is the
-   whole change. There are 25 of them in the nine files listed below:
+   whole change. There are 26 of them in the nine files listed below:
 
    ```
    grep -rl "// INTERNET-TEST" app/src | xargs sed -i '' '/\/\/ INTERNET-TEST/d'
@@ -38,7 +38,7 @@ Run these from `Android_Kiosk_App/`.
    ```
    export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
    export ANDROID_HOME=~/Library/Android/sdk
-   ./gradlew testDebugUnitTest assembleDebug
+   ./gradlew testPlayDebugUnitTest assembleDebug
    ```
 
 ## What stays
@@ -66,7 +66,7 @@ lines around it is the same with or without it.
 | File | Marked lines | What they do |
 |---|---|---|
 | `AppContainer.kt` | 7 | Two imports; `val internetTest`; `route = InternetTestRoutes::portal,` (an argument to `OkHttpKioskApi`); `internetTest.start(...)`; `onDropped = internetTest::onSetupDropped,` (an argument to `MoveSetupGuard`); `internetTest.beforeSignOut()` at the start of `logout()` |
-| `data/api/OkHttpKioskApi.kt` | 2 | The `route` constructor parameter (default `{ it }`) and the `.let(route)` step in `execute()` |
+| `data/api/OkHttpKioskApi.kt` | 3 | The `route` constructor parameter (default `{ it }`), the `.let(route)` step in `execute()`, and the same step in `pushKeyCall()` (the push key's cookie-less client: the alert buttons and token updates go through the link conditioner like every other API call) |
 | `data/auth/MoveSetupGuard.kt` | 2 | The `onDropped` constructor parameter (default `{}`) and the `onDropped()` call after a setup drop |
 | `data/printer/NetworkZebra.kt` | 2 | An import and the `.let(InternetTestRoutes::local)` step in `zebraSession()` |
 | `ui/screens/timeclock/TimeclockScreen.kt` | 2 | An import and the `NetTestChipNavigation(nav)` call, which opens Settings › Developer when the Time Clock header's chip is tapped |
@@ -83,7 +83,7 @@ hands back the very same client and socket factory.
 
 Deleting the lines leaves a few cosmetic seams. All of it compiles and behaves
 as before; join the lines if you like the tidier form: `executeCall(client` and
-`, request)` in `OkHttpKioskApi.execute()`; `socketFactory` and `.createSocket()`
+`, request)` in `OkHttpKioskApi.execute()` and in `pushKeyCall()`; `socketFactory` and `.createSocket()`
 in `zebraSession()`; `client` and `.newCall(...)` in `loadPhoto()`; and the
 `OkHttpKioskApi(httpClient, config, session,` call and `MoveSetupGuard(...)`
 call in `AppContainer.kt`, whose closing `)` now sits on its own line after a

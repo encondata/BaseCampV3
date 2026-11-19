@@ -16,6 +16,11 @@ import androidx.core.content.ContextCompat
  * precise location alone (as `BluetoothPermissions` does). What the sled needs
  * granted stays [REQUIRED]: approximate is only asked for beside precise, never
  * checked on its own, so a device that already had precise keeps connecting.
+ *
+ * [REQUIRED] is the stored gate for the automatic connect. The Connect button,
+ * the adapter's pre-check and the paired-sled list need only [NEARBY] (ruling
+ * 22): the two Nearby devices permissions whose absence makes the Bluetooth
+ * calls throw.
  */
 object RfidPermissions {
     /** What must be granted before the sled connects. */
@@ -24,14 +29,19 @@ object RfidPermissions {
     /** What the prompt asks for. */
     val REQUESTED: List<String> get() = requestedFor(Build.VERSION.SDK_INT)
 
-    /** The permissions [sdk] needs granted. */
-    fun requiredFor(sdk: Int): List<String> = buildList {
+    /** Nearby devices: what Bluetooth calls need on this device. */
+    val NEARBY: List<String> get() = nearbyFor(Build.VERSION.SDK_INT)
+
+    /** Nearby devices on [sdk]: connect and scan from API 31 up, nothing below. */
+    fun nearbyFor(sdk: Int): List<String> =
         if (sdk >= Build.VERSION_CODES.S) {
-            add(Manifest.permission.BLUETOOTH_CONNECT)
-            add(Manifest.permission.BLUETOOTH_SCAN)
+            listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
+        } else {
+            emptyList()
         }
-        add(Manifest.permission.ACCESS_FINE_LOCATION)
-    }
+
+    /** The permissions [sdk] needs granted. */
+    fun requiredFor(sdk: Int): List<String> = nearbyFor(sdk) + Manifest.permission.ACCESS_FINE_LOCATION
 
     /** What the prompt asks for on [sdk]: precise location together with approximate. */
     fun requestedFor(sdk: Int): List<String> = requiredFor(sdk) + Manifest.permission.ACCESS_COARSE_LOCATION
@@ -41,4 +51,9 @@ object RfidPermissions {
     }
 
     fun granted(context: Context): Boolean = missing(context).isEmpty()
+
+    /** True when everything in [NEARBY] is granted; location is not checked. */
+    fun nearbyGranted(context: Context): Boolean = NEARBY.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
 }

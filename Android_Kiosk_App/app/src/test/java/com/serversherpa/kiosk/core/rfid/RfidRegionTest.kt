@@ -23,6 +23,16 @@ class RfidRegionTest {
         assertEquals("This reader supports only United States (USA).", regionLine(choice))
     }
 
+    /** A one-region sled with no region set (`NeedsRegion`, which reads back "NA") has a
+     *  choice to make, or it could never be given one; with the region set it stays Locked. */
+    @Test fun oneRegionOnASledWithNoneSetIsAChoiceToMake() {
+        val choice = regionChoice(RfidRegions(listOf(usa), "NA"), needsRegion = true)
+        assertEquals(RegionChoice.Choosable(listOf(usa), null), choice)
+        assertEquals("No region set on this reader yet.", regionLine(choice))
+        assertEquals(RegionChoice.Locked(usa), regionChoice(RfidRegions(listOf(usa), "USA"), needsRegion = true))
+        assertEquals("not NeedsRegion: still a fact to state", RegionChoice.Locked(usa), regionChoice(RfidRegions(listOf(usa), "NA")))
+    }
+
     @Test fun severalRegionsAreChoosableAndTheActiveOneIsResolved() {
         val choice = regionChoice(RfidRegions(listOf(usa, eu), "ETSI"))
         assertEquals(RegionChoice.Choosable(listOf(usa, eu), eu), choice)

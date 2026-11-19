@@ -105,5 +105,6 @@ async def test_role_grants_seeded(db):
     model_rows = (await db.execute(text(
         "SELECT role FROM role_permissions WHERE resource = 'asset_models'"
     ))).all()
-    assert all(r[0] not in ("client_owner", "client_admin", "client_viewer")
+    assert all(r[0] not in ("client_owner", "client_admin", "client_viewer",
+                                  "client_individual")
                for r in model_rows)

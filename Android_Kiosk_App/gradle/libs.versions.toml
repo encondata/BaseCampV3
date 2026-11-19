@@ -25,6 +25,11 @@ biometric = "1.1.0"
 # FragmentActivity for BiometricPrompt. Pinned explicitly: biometric only asks for 1.2.5, whose
 # FragmentActivity rejects the 32-bit request codes every ActivityResult launcher uses.
 fragment = "1.8.6"
+# Push notifications (FCM): the last 33.x BoM (firebase-messaging 24.1.2) and a 4.4 plugin, which
+# build with this AGP, Kotlin 2.0 and compileSdk 36. The plugin is applied only when
+# app/google-services.json exists (app/build.gradle.kts).
+firebaseBom = "33.16.0"
+googleServices = "4.4.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -67,6 +72,8 @@ robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "
 androidx-javascriptengine = { group = "androidx.javascriptengine", name = "javascriptengine", version.ref = "javascriptengine" }
 androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragment" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -74,3 +81,4 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

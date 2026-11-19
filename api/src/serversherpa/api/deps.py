@@ -170,6 +170,8 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # listed for completeness): a learn session's writes freeze like any
     # other (learning/sessions.learn_actor)
     "/learn/auth/code", "/learn/auth/link", "/learn/auth/logout",
+    # matching rules: a check or a test run reads a flow and the test set and stores nothing
+    "/devtools/matching-rules/check", "/devtools/matching-rules/test-run",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
                              "/auth/me/biometric-keys/", "/kiosk/pair")
@@ -337,6 +339,30 @@ def require_permission(resource: str, action: str):
     async def guard(user: CurrentUser) -> AuthContext:
         if not user.access.can(resource, action):
             raise HTTPException(status_code=403, detail={"code": "forbidden"})
+        return user
+
+    return Depends(guard)
+
+
+def ensure_kiosk_data_allowed(actor: AuthContext) -> None:
+    """403 `forbidden` unless the actor holds kiosk:view and has no client
+    group limits. The kiosk routes that hand out roster or asset data (or a
+    key or password that would reach it) apply no group rule, so a person
+    whose `access.restricted_clients()` is non-empty (an individual, or a
+    viewer with chips) never gets them, however they came to hold
+    kiosk:view: a legacy worker role, a cloned role, an override. Station
+    key and device-only routes have no person and don't come here.
+    Spec: docs/superpowers/specs/2026-11-10-client-groups-design.md"""
+    if not actor.access.can("kiosk", "view") or actor.access.restricted_clients():
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+
+
+def require_kiosk_data():
+    """Route guard: kiosk:view and no client group limits
+    (`ensure_kiosk_data_allowed`)."""
+
+    async def guard(user: CurrentUser) -> AuthContext:
+        ensure_kiosk_data_allowed(user)
         return user
 
     return Depends(guard)

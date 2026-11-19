@@ -9,12 +9,19 @@
 # SS_SMTP_HOST and the rest of the SS_SMTP_* keys...) as environment variables on
 # the Slipway instance. With mailpit off, ss-stack needs SS_SMTP_HOST; learn needs wiki.
 #
+# The devices app (deploy/stack/devices) isn't offered here yet: STACK_APPS, which
+# Slipway writes, never lists it, so ss-stack up keeps it off. Its own database
+# (serversherpa_devices) and bucket aren't in Slipway's backups, restores or
+# snapshots, so it stays off until they are. Its image and project are listed below
+# because ss-stack builds and walks them either way.
+#
 # The data section and the data commands let Slipway back up the database and the
 # uploaded files before every change, restore them, reset them and seed new
 # instances from snapshots (deploy/stack/ss-stack has-data, accepts, verify-dump,
 # clear-sessions, export-objects and import-objects exist for it). Slipway's
 # docs/manifest.md describes every key; its docs/examples/serversherpa.slipway.yml
-# is a copy of this file.
+# is its own version of this file, which also has the DigitalOcean keys (edge,
+# data.managed).
 #
 # Environments: data.migrations, data.attach and data.server let Slipway run
 # ServerSherpa as Blue/Green app slots that share a data server (its db and
@@ -72,6 +79,7 @@ projects:
   - "ss-{STACK_ENV}-storage"
   - "ss-{STACK_ENV}-api"
   - "ss-{STACK_ENV}-web"
+  - "ss-{STACK_ENV}-devices"
   - "ss-{STACK_ENV}-status"
 
 # What ss-stack build makes for a release; Slipway removes them with the release.
@@ -82,6 +90,7 @@ images:
   - "serversherpa-wiki:{STACK_IMAGE_TAG}"
   - "serversherpa-learn:{STACK_IMAGE_TAG}"
   - "serversherpa-status:{STACK_IMAGE_TAG}"
+  - "serversherpa-devices:{STACK_IMAGE_TAG}"
 
 data:
   app: serversherpa                       # never change it: snapshots seed only an app with the same id

@@ -68,7 +68,7 @@ _CLOCK = re.compile(r"(?P<hm>(?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d)?")
 
 
 class SwitchOverride(BaseModel):
-    """A person's own Inbox and Email values for one category. A value left
+    """A person's own Inbox, Email and Push values for one category. A value left
     None follows the company default, and is left out of what is stored and
     returned: the saved blob holds only what the person chose."""
 
@@ -76,6 +76,7 @@ class SwitchOverride(BaseModel):
 
     inbox: bool | None = None
     email: bool | None = None
+    push: bool | None = None
 
     @model_serializer(mode="wrap")
     def _only_own_values(self, handler: SerializerFunctionWrapHandler):
@@ -134,7 +135,7 @@ class NotifPrefs(BaseModel):
 
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
-    # The person's own Inbox and Email values per category (notifications/kinds.py
+    # The person's own Inbox, Email and Push values per category (notifications/kinds.py
     # CATEGORIES): only what they changed. A category with no entry, or a value left
     # unset, follows the company default (notifications/company.py). Account security
     # is always on, so it is never stored.
@@ -149,7 +150,8 @@ class NotifPrefs(BaseModel):
         """Drop unknown categories, account security and entries that hold no
         value; the rest in the registry's order."""
         return {k: v[k] for k in _SWITCH_CATEGORIES
-                if k in v and (v[k].inbox is not None or v[k].email is not None)}
+                if k in v and (v[k].inbox is not None or v[k].email is not None
+                       or v[k].push is not None)}
 
 
 NAMED_ACCENTS = {"amber", "aqua", "blue", "violet", "pink", "green"}
@@ -228,6 +230,8 @@ class ScopeOut(BaseModel):
     global_: bool = Field(alias="global")
     client_ids: list[uuid.UUID] = []
     partner_ids: list[uuid.UUID] = []
+    # clients where this login sees only some client groups' assets
+    restricted_client_ids: list[uuid.UUID] = []
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -791,6 +795,57 @@ class UserCreateIn(BaseModel):
     invite: bool = False
 
 
+# ── client groups ──────────────────────────────────────────────────
+
+class ClientGroupOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    aliases: list[str]
+    asset_count: int
+    people_count: int
+
+
+class ClientGroupIn(BaseModel):
+    name: str
+    aliases: list[str] = []
+
+
+class ClientGroupPatchIn(BaseModel):
+    name: str | None = None
+    aliases: list[str] | None = None
+
+
+class GroupReviewValueOut(BaseModel):
+    value: str
+    value_key: str
+    asset_count: int
+    move_ids: list[uuid.UUID]
+    move_names: list[str]
+    dismissed: bool
+
+
+class GroupMergeIn(BaseModel):
+    source_id: uuid.UUID
+    dry_run: bool = True
+
+
+class GroupMergePlanOut(BaseModel):
+    aliases_added: list[str]
+    rows_moved: int
+    people_moved: int
+    conflicts: list[str]
+
+
+class GroupReviewMatchIn(BaseModel):
+    value: str
+    group_id: uuid.UUID
+
+
+class GroupReviewDismissIn(BaseModel):
+    value: str
+    dismissed: bool = True
+
+
 # ── stakeholders (clients & partners) ──────────────────────────────
 
 ORG_STATUSES = {"prospect", "active", "inactive"}
@@ -926,26 +981,29 @@ class ContactItem(BaseModel):
     avatar_url: str | None
     has_account: bool
     granted_at: datetime
-    tier: Literal["owner", "admin", "viewer"]
+    tier: Literal["owner", "admin", "viewer", "individual"]
     org_title: str | None = None
     functions: list[str] = []
+    group_ids: list[uuid.UUID] = []
+    restricted: bool = False
 
 
 class ContactAddIn(BaseModel):
     person_id: uuid.UUID
-    tier: Literal["owner", "admin", "viewer"] = "viewer"
+    tier: Literal["owner", "admin", "viewer", "individual"] = "viewer"
 
 
 class ContactUpdateIn(BaseModel):
-    """Any subset of {tier, org_title, functions}. Rank rules apply only
+    """Any subset of {tier, org_title, functions, group_ids}. Rank rules apply only
     when tier is present; org_title=null clears; functions replaces the
     whole tag list (validated/normalized server-side)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    tier: Literal["owner", "admin", "viewer"] | None = None
+    tier: Literal["owner", "admin", "viewer", "individual"] | None = None
     org_title: str | None = None
     functions: list[str] | None = None
+    group_ids: list[uuid.UUID] | None = None
 
 
 class ClientActivityItem(BaseModel):
@@ -968,13 +1026,21 @@ class ClientActivityOut(BaseModel):
     activity_7d: int
 
 
+class AssetTotalsOut(BaseModel):
+    """True asset counts for a move's roster or a client's assets, never
+    narrowed by client groups: `total` and a count per status key."""
+
+    total: int
+    by_status: dict[str, int]
+
+
 # ── external directory (client/partner contacts + external role) ──
 
 class ExternalLinkItem(BaseModel):
     kind: Literal["client", "partner"]
     org_id: uuid.UUID
     org_name: str
-    tier: Literal["owner", "admin", "viewer"]
+    tier: Literal["owner", "admin", "viewer", "individual"]
     org_title: str | None
     functions: list[str]
 
@@ -1097,6 +1163,8 @@ class UserRoleGrant(BaseModel):
     org: OrgRefOut | None
     granted_by: PersonRef | None
     granted_at: datetime
+    # client grants only, global callers only; [] otherwise
+    group_ids: list[uuid.UUID] = []
 
 
 class UserWorkerCard(BaseModel):
@@ -1731,6 +1799,17 @@ class AssetMoveRow(BaseModel):
     scheduled_start: datetime | None
     scheduled_end: datetime | None
     added_at: datetime
+
+
+class ContainerPositionOut(BaseModel):
+    """Where a container is on a map: its truck's newest GPS report, its
+    site's pin, or nothing (kind "none")."""
+    kind: Literal["truck", "site", "none"]
+    name: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    recorded_at: datetime | None = None
+    approximate_address: str = ""
 
 
 class ContainerItem(BaseModel):
@@ -2510,6 +2589,14 @@ class PlacementRecheckOut(BaseModel):
     cleared: int
 
 
+class ImportCommitIn(BaseModel):
+    """Optional body of POST /initiatives/assets/import-jobs/{id}/commit.
+    Values are checked by the route (not here) so a bad one answers with the
+    exact `invalid_client_choice` code instead of FastAPI's validation shape."""
+
+    client_choices: dict[str, str] | None = None
+
+
 class ImportJobOut(BaseModel):
     """import_jobs row as served to the portal's polling loop."""
 
@@ -2651,6 +2738,7 @@ class AppsStatusOut(BaseModel):
     wiki: bool = True
     kiosk: bool = True
     learn: bool = True
+    devices: bool = True
 
 
 class SystemStatusOut(BaseModel):
@@ -2662,6 +2750,7 @@ class SystemStatusOut(BaseModel):
     banner: str | None
     totp_trust_days: int
     email_enabled: bool = False
+    push_enabled: bool = False
     password_reset_ttl_minutes: int = 15
     password_min_length: int = 8
     background: BackgroundStatusOut | None = None
@@ -3143,11 +3232,12 @@ class DeliveryCheckSwitchOut(BaseModel):
 
 
 class DeliveryCheckSwitchesOut(BaseModel):
-    """The person's Inbox and Email switches for the category. Email needs
-    Inbox: it is off whenever Inbox is."""
+    """The person's Inbox, Email and Push switches for the category. Email
+    and Push need Inbox: each is off whenever Inbox is."""
 
     inbox: DeliveryCheckSwitchOut
     email: DeliveryCheckSwitchOut
+    push: DeliveryCheckSwitchOut
 
 
 class DeliveryCheckScheduleOut(BaseModel):
@@ -3182,6 +3272,15 @@ class CheckWatchOut(BaseModel):
     via: WatchViaOut
 
 
+class DeliveryCheckPushOut(BaseModel):
+    """The push answer: `now` (queued for the person's phones) or `not_sent`
+    with the reason code. `phones` counts the person's live phones."""
+
+    outcome: Literal["now", "not_sent"]
+    reason: str | None = None
+    phones: int
+
+
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
     kind. Nothing is written. `inbox` is notify()'s answer, with the source of
@@ -3191,6 +3290,10 @@ class DeliveryCheckOut(BaseModel):
     a held email, the schedule state that holds it). A project plan notice
     follows the plans' own rule (plans/notices.py): its email is `direct`,
     sent when the plan sends it and never held by the schedule.
+    `push` is decide_push()'s answer for every kind, plan notices included
+    (they are written with notify(), which pushes): `now` or `not_sent` with
+    the reason, and the person's live phone count. `push_enabled` is whether
+    the server has a push key configured at all.
     `after_summary` marks an email sent now only because it falls in the last
     hour before the person is back online, when that morning's summary has
     already gone. `owner_copy` is the copy that was modeled; `critical`
@@ -3212,6 +3315,7 @@ class DeliveryCheckOut(BaseModel):
     inbox_reason: str | None = None
     inbox_source: Literal["default", "own", "fixed"]
     email_enabled: bool
+    push_enabled: bool
     critical: bool
     switches: DeliveryCheckSwitchesOut
     schedule: DeliveryCheckScheduleOut
@@ -3222,6 +3326,7 @@ class DeliveryCheckOut(BaseModel):
     reason: str | None = None
     address: str | None = None
     address_source: str | None = None
+    push: DeliveryCheckPushOut
     watches: list[CheckWatchOut] | None = None
 
 
@@ -3246,10 +3351,11 @@ class NotificationKindOut(BaseModel):
 
 
 class SwitchPair(BaseModel):
-    """One category's two switches: written to the inbox, and emailed."""
+    """One category's switches: written to the inbox, emailed, and pushed."""
 
     inbox: bool
     email: bool
+    push: bool = False
 
 
 class NotificationKindSettingOut(BaseModel):
@@ -3627,6 +3733,8 @@ class DeviceDetail(DeviceItem):
     # person's fingerprint key on it is live (null when nobody's)
     personal_person: PersonalPersonOut | None = None
     personal_biometric: PersonalBiometricOut | None = None
+    # whether that person's push registration exists on this device
+    push_registered: bool = False
     # a Label, RFID or Time Clock station, or any kiosk holding a station
     # key: never anyone's personal phone (biometric.shared_station)
     shared_station: bool = False
@@ -6167,3 +6275,29 @@ class HealthStorageOut(BaseModel):
     total_objects: int
     total_bytes: int
     measured_at: datetime
+
+
+# ── App distribution (the separate Devices service) ──────────────────
+
+
+class AppDistAuthorizeOut(BaseModel):
+    """What the Devices service learns about a user's bearer token."""
+    person_id: uuid.UUID
+    display_name: str
+    email: str | None
+    client: Literal["portal", "kiosk"]
+    kiosk_serial: str | None
+    actions: list[Literal["view", "add", "change", "delete"]]
+    password_change_required: bool
+    read_only: bool
+    read_only_message: str | None
+
+
+class AppDistAuditIn(BaseModel):
+    actor_person_id: uuid.UUID | None = None
+    entity_type: Literal["appdist_app", "appdist_version", "appdist_device",
+                         "appdist_apple"]
+    entity_id: str
+    action: Annotated[str, StringConstraints(max_length=64)]
+    changes: dict = {}
+    ip: str | None = None

@@ -4,7 +4,11 @@ phone on the LAN loads the laptop's setup instead of starting blank.
 Saved after the cloud accepts `/kiosk/setup`: the fields the kiosk caches
 (move, site and role, scan type with its label, station type) plus, for a
 reader station (RFID or Dock), the paired reader's summary (never its
-token). Wipe clears it.
+token). An RFID Station also keeps its RFID type (`rfid_type`: `doorway`
+or `dock_portal`; the browser sends it and the cloud never sees it); any
+other station keeps null. A setup saved before RFID types existed has no
+`rfid_type`, and the kiosk reads that RFID Station as a Doorway. Wipe
+clears it.
 
 A Label Station's label settings (`label_station`: label kind, printer, DPI,
 offsets and peel-off printing) are saved with PUT /edge/label-station once the setup exists.
@@ -33,6 +37,7 @@ from edge.dock import state as dock_state
 from edge.rfid import alarm, pairing
 
 STATION_TYPES = ("label", "rfid", "timeclock", "dock")
+RFID_TYPES = ("doorway", "dock_portal")   # an RFID Station's kinds
 READER_TYPES = ("rfid", "dock")   # the station types that pair an RFID reader
 LABEL_KINDS = ("top", "front")
 PRINTER_TYPES = ("usb", "network")
@@ -44,9 +49,13 @@ SETUP_FIELDS = ("initiative_id", "initiative_name", "site_id", "site_name", "sit
                 "scan_status", "scan_status_label")
 
 
-def save(store: Store, result: dict, station_type: str | None) -> dict:
+def save(store: Store, result: dict, station_type: str | None, *, rfid_type=None) -> dict:
     setup = {key: result.get(key) for key in SETUP_FIELDS}
     setup["station_type"] = station_type if station_type in STATION_TYPES else None
+    # an RFID Station sent no (or an unknown) RFID type: it is a Doorway
+    setup["rfid_type"] = (
+        (rfid_type if rfid_type in RFID_TYPES else "doorway")
+        if setup["station_type"] == "rfid" else None)
     reader = pairing.cloud_reader(store) if setup["station_type"] in READER_TYPES else None
     setup["reader"] = reader
     setup["updated_at"] = now_iso()

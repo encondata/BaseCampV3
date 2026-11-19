@@ -393,4 +393,39 @@ struct AppContainerTests {
         #expect(keys.deleted == 0)
         #expect(c.enrollOffer.sheet == nil)
     }
+
+    /// The update check runs after sign-in and on foreground once due (inside 6 hours a
+    /// foreground sends nothing), from the installed app and the API URL's Devices site; a
+    /// sign-out forgets it.
+    @Test func theUpdateCheckRunsAfterSignInAndForgetsOnSignOut() async throws {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = "http://api.localhost:9"   // nothing listens
+        let devices = FakeDevicesApi()
+        let installed = InstalledApp(bundleId: "b", versionName: "1.0", build: "1", profile: .adhoc)
+        let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
+                             labelEngine: FakeLabelEngine(), devicesApi: devices, installed: installed)
+        #expect(c.updates.installed == installed)
+        #expect(c.updates.devicesHost == "devices.localhost")
+        c.onActive()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(devices.callCount == 0)                       // signed out
+        await c.auth.completePair(fakeSession())
+        c.authChanged()
+        #expect(await waitUntil { c.updates.state == .done(.upToDate) })
+        #expect(devices.queries == [UpdateQuery(bundleId: "b", build: "1", profile: .adhoc)])
+        c.onBackground()
+        c.onActive()                                          // back inside 6 hours
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(devices.callCount == 1)
+
+        c.prefs.apiUrl = "https://api.example.test"
+        #expect(c.updates.devicesHost == "devices.example.test")   // read live
+
+        c.auth.endSession()
+        c.authChanged()
+        #expect(c.updates.state == .idle)
+        #expect(c.updates.lastChecked == nil)
+        c.onBackground()
+    }
 }

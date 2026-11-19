@@ -5,7 +5,13 @@ import { naturalCompare } from './naturalSort';
 
 export type Action = 'view' | 'add' | 'change' | 'delete';
 export type PermMap = Record<string, Record<Action, boolean>>;
-export interface ScopeInfo { global: boolean; client_ids: string[]; partner_ids: string[] }
+export interface ScopeInfo {
+  global: boolean; client_ids: string[]; partner_ids: string[];
+  /** Clients on which this login sees only part of the assets (chips or an
+   *  Individual tier). Empty for unrestricted and global logins. Optional so
+   *  older payloads and fixtures still type-check. */
+  restricted_client_ids?: string[];
+}
 
 export const ACTIONS: Action[] = ['view', 'add', 'change', 'delete'];
 
@@ -46,6 +52,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/dev': 'devtools',
   '/dev/database': 'devtools',
   '/dev/database/variables': 'devtools',
+  '/dev/matching-rules': 'devtools',
 };
 
 export function computeCan(

@@ -603,6 +603,28 @@ async def test_device_detail_shows_personal_person_and_biometric(client, db, see
     assert "personal_person" not in rows[0]
 
 
+async def test_device_detail_push_registered(client, db, seeded_user):
+    from serversherpa.db.models import PushRegistration
+    a = await _worker(db)
+    b = await _worker(db, "bio-b@test.example.com", "Bee")
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    body = (await client.get(f"/devices/{device_id}", headers=sa)).json()
+    assert body["push_registered"] is False
+    assert (await _put_personal(client, sa, device_id, a.id)).status_code == 200
+    body = (await client.get(f"/devices/{device_id}", headers=sa)).json()
+    assert body["push_registered"] is False
+    db.add(PushRegistration(device_id=device_id, person_id=a.id, platform="android",
+                            provider="fcm", token="tok-detail", secret_hash="h"))
+    await db.commit()
+    body = (await client.get(f"/devices/{device_id}", headers=sa)).json()
+    assert body["push_registered"] is True
+    # a registration left by someone other than the personal person does not count
+    assert (await _put_personal(client, sa, device_id, b.id)).status_code == 200
+    body = (await client.get(f"/devices/{device_id}", headers=sa)).json()
+    assert body["push_registered"] is False
+
+
 @pytest.mark.parametrize("station", [None, "timeclock", "label", "rfid", "station_key"])
 async def test_device_detail_says_whether_it_is_a_shared_station(
         client, db, seeded_user, station):

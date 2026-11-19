@@ -1,18 +1,12 @@
 package com.serversherpa.kiosk.input.rfid
 
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
-import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegion
 import com.serversherpa.kiosk.core.rfid.RfidRegions
-import com.serversherpa.kiosk.core.rfid.RfidSettings
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -96,12 +90,7 @@ class RfidRegionControllerTest {
      * vendor link) can be driven deterministically. Everything else
      * delegates straight to [inner].
      */
-    private class SlowRegionReader(private val inner: FakeRfidReader) : RfidReader {
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
-        override val tags: Flow<String> get() = inner.tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
-
+    private class SlowRegionReader(private val inner: FakeRfidReader) : RfidReader by inner {
         /** Completes the instant `setRegion()` is called. */
         val regionStarted = CompletableDeferred<Unit>()
 
@@ -109,13 +98,6 @@ class RfidRegionControllerTest {
          *  return. */
         val proceedRegion = CompletableDeferred<Unit>()
 
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
-            inner.connect(triggerPersonality, scannerPluginMode)
-        override suspend fun disconnect() = inner.disconnect()
-        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
-        override suspend fun startInventory() = inner.startInventory()
-        override suspend fun stopInventory() = inner.stopInventory()
-        override suspend fun regions() = inner.regions()
         override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> {
             regionStarted.complete(Unit)
             proceedRegion.await()

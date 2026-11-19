@@ -3,15 +3,11 @@ package com.serversherpa.kiosk.nettest
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assertTouchHeightIsEqualTo
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasAnyAncestor
@@ -26,9 +22,6 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTextClearance
-import androidx.compose.ui.test.performTextInput
-import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
@@ -59,6 +52,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -77,11 +71,29 @@ import org.robolectric.annotation.GraphicsMode
  * Settings › Developer, the amber Net test chip in the top bar and in the Time
  * Clock's header, and the footer item. Settings round-trip through the real controller and its DataStore, so
  * the tests wait for each write to land.
+ *
+ * The composition runs on a [StandardTestDispatcher], not the rule's default
+ * UnconfinedTestDispatcher. The controller's settings change on a
+ * Dispatchers.IO thread (the container scope's DataStore collector). Under the
+ * unconfined default, each collectAsStateWithLifecycle collector resumes inline
+ * on that IO thread and writes its state there, racing the main thread's
+ * composition. Now and then a shell scope then stopped following the settings
+ * for good: the footer kept "3G · Custom" with the switch long off (the
+ * chipAndFooterOnlyWhileOn full-run flake; chipAndFooterFollowEverySwitch hit
+ * it within 15 switches every time). On a device the composition's dispatcher
+ * is the main thread, so the resume is always posted there. The standard test
+ * dispatcher does the same: it queues the resume for the main test clock.
+ *
+ * Custom's boxes are tested in InternetTestCustomBoxesTest, on the default
+ * dispatcher. Here a typed edit would only land on a later frame, and a box
+ * test that ran to its end here left Compose never idle for the tests after
+ * it.
  */
+@OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class InternetTestUiTest {
-    private val compose = createComposeRule()
+    private val compose = createComposeRule(StandardTestDispatcher())
 
     @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
@@ -197,88 +209,6 @@ class InternetTestUiTest {
         assertEquals(2, count("no limit · 0 ms · 0% drop", substring = true))
     }
 
-    @Test fun customBoxesRemember() {
-        runBlocking { c.internetTest.setEnabled(true) }
-        var generation by mutableIntStateOf(0)
-        show { key(generation) { InternetTestSection() } }
-        awaitTag("net-test-dial-local")
-
-        chip("local", "Custom").performClick()
-
-        awaitTag("net-test-local-down-speed")
-        for (label in listOf("Download", "Upload", "Speed (kbps)", "Delay (ms)", "Drop (%)")) compose.onNodeWithText(label).assertExists()
-        // The six boxes start from the dial's saved Custom values.
-        val boxes = mapOf(
-            "down-speed" to "256", "up-speed" to "128", "down-delay" to "300", "up-delay" to "300", "down-drop" to "5", "up-drop" to "5",
-        )
-        for ((box, text) in boxes) compose.onNodeWithTag("net-test-local-$box").assertTextEquals(text)
-
-        compose.onNodeWithTag("net-test-local-down-speed").performTextReplacement("64")
-        compose.waitUntil(5_000) { settings().local.custom.downKbps == 64 }
-
-        // A brand-new section reads the saved values back.
-        compose.runOnIdle { generation++ }
-        awaitTag("net-test-local-down-speed")
-        compose.onNodeWithTag("net-test-local-down-speed").assertTextEquals("64")
-        assertEquals(64, settings().local.custom.downKbps)
-        assertEquals(DEFAULT_CUSTOM.copy(downKbps = 64), settings().local.custom)
-        // The other dial's Custom values are its own.
-        assertEquals(DEFAULT_CUSTOM, settings().internet.custom)
-    }
-
-    @Test fun dropBoxRejectsLetters() {
-        runBlocking {
-            c.internetTest.setEnabled(true)
-            c.internetTest.choosePreset(Dial.INTERNET, Preset.CUSTOM)
-        }
-        show { InternetTestSection() }
-        awaitTag("net-test-internet-down-drop")
-        val drop = compose.onNodeWithTag("net-test-internet-down-drop")
-
-        drop.performTextReplacement("1a.5.2")
-        drop.assertTextEquals("1.52")
-        compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 1.52 }
-
-        // Typed one key at a time, the same: letters and a second point never land.
-        drop.performTextClearance()
-        for (key in "2b.5.") drop.performTextInput(key.toString())
-        drop.assertTextEquals("2.5")
-        compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 2.5 }
-
-        // A comma-decimal keyboard (de, fr, es, pt-BR...) offers "," as its point:
-        // it lands as ".", still one point at most.
-        drop.performTextReplacement("0,5")
-        drop.assertTextEquals("0.5")
-        compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 0.5 }
-        drop.performTextClearance()
-        for (key in "2,5,") drop.performTextInput(key.toString())
-        drop.assertTextEquals("2.5")
-        compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 2.5 }
-        drop.performTextReplacement("1,5.2")
-        drop.assertTextEquals("1.52")
-        drop.performTextReplacement("1.5,2")
-        drop.assertTextEquals("1.52")
-
-        // Speed and Delay take digits only.
-        val speed = compose.onNodeWithTag("net-test-internet-up-speed")
-        speed.performTextReplacement("1a2.3")
-        speed.assertTextEquals("123")
-        compose.waitUntil(5_000) { settings().internet.custom.upKbps == 123 }
-        val delay = compose.onNodeWithTag("net-test-internet-up-delay")
-        delay.performTextReplacement("4-5.0")
-        delay.assertTextEquals("450")
-        compose.waitUntil(5_000) { settings().internet.custom.upDelayMs == 450 }
-        // Whole numbers only there: a comma is dropped like any other non-digit.
-        delay.performTextReplacement("4,5")
-        delay.assertTextEquals("45")
-        compose.waitUntil(5_000) { settings().internet.custom.upDelayMs == 45 }
-
-        // A blank speed means no limit, and a blank delay means none.
-        speed.performTextClearance()
-        delay.performTextClearance()
-        compose.waitUntil(5_000) { settings().internet.custom.upKbps == null && settings().internet.custom.upDelayMs == 0 }
-    }
-
     @Test fun chipAndFooterOnlyWhileOn() {
         c.auth.completePair(fakeSession())
         show { KioskShell(rememberNavController()) { Text("page body") } }
@@ -300,6 +230,27 @@ class InternetTestUiTest {
 
         compose.waitUntil(5_000) { count("3G · Custom") == 0 }
         assertEquals(0, count("Net test", substring = true, ignoreCase = true))
+    }
+
+    /**
+     * The footer and the chip follow every switch, on and off, a hundred times
+     * over: each write lands in the store on an IO thread, and the shell never
+     * stops following it (see the class comment).
+     */
+    @Test fun chipAndFooterFollowEverySwitch() {
+        c.auth.completePair(fakeSession())
+        show { KioskShell(rememberNavController()) { Text("page body") } }
+        runBlocking {
+            c.internetTest.choosePreset(Dial.INTERNET, Preset.THREE_G)
+            c.internetTest.choosePreset(Dial.LOCAL, Preset.CUSTOM)
+        }
+
+        repeat(100) { round ->
+            runBlocking { c.internetTest.setEnabled(true) }
+            compose.waitUntil("switch $round on: the footer shows", 5_000) { count("3G · Custom") == 1 && count("Net test") == 1 }
+            runBlocking { c.internetTest.setEnabled(false) }
+            compose.waitUntil("switch $round off: the footer clears", 5_000) { count("3G · Custom") == 0 && count("Net test") == 0 }
+        }
     }
 
     @Test fun chipHiddenWhileSignedOut() {

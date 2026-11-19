@@ -52,6 +52,9 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val rfid = stringPreferencesKey("ss.kiosk.rfid")
         val labels = stringPreferencesKey("ss.kiosk.labels")
         val devMode = booleanPreferencesKey("ss.kiosk.devMode")
+        val offerSledBothToEveryone = booleanPreferencesKey("ss.kiosk.offerSledBothToEveryone")
+        val sledFlash = booleanPreferencesKey("ss.kiosk.sledFlash")
+        val notificationPermissionAsked = booleanPreferencesKey("ss.kiosk.notificationPermissionAsked")
         val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
         val serial = stringPreferencesKey("ss.kiosk.serial")
@@ -134,7 +137,16 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     suspend fun setSound(s: SoundSettings) { store.edit { it[Keys.sound] = s.toJson() } }
 
     val rfid: Flow<RfidSettings> = store.data.map { parseRfidSettings(it[Keys.rfid]) }
+
+    /** Writes a whole snapshot. A snapshot built from a stale read can undo a change made
+     *  meanwhile, so settings changes go through [updateRfid]; this stays for tests. */
     suspend fun setRfid(s: RfidSettings) { store.edit { it[Keys.rfid] = s.toJson() } }
+
+    /** Reads and writes in one edit (ruling 31), so two changes landing together never
+     *  overwrite each other's field. */
+    suspend fun updateRfid(transform: (RfidSettings) -> RfidSettings) {
+        store.edit { it[Keys.rfid] = transform(parseRfidSettings(it[Keys.rfid])).toJson() }
+    }
 
     private fun decodeLabels(raw: String?): LabelOptions =
         raw?.let { try { json.decodeFromString<LabelOptions>(it) } catch (e: Exception) { null } } ?: LabelOptions()
@@ -155,6 +167,24 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
 
     val devMode: Flow<Boolean> = store.data.map { it[Keys.devMode] ?: false }
     suspend fun setDevMode(on: Boolean) { store.edit { it[Keys.devMode] = on } }
+
+    /** The Developer tab's "Offer Both in Sled triggers to everyone" (H6): off, only developers see
+     *  the Both option (a sled already set to Both keeps it). Its own key, never part of [rfid], so
+     *  it is never part of a sled push. */
+    val offerSledBothToEveryone: Flow<Boolean> = store.data.map { it[Keys.offerSledBothToEveryone] ?: false }
+    suspend fun setOfferSledBothToEveryone(on: Boolean) { store.edit { it[Keys.offerSledBothToEveryone] = on } }
+
+    /** The RFID tab's "Flash when the sled connects or drops" (H7): on, a full-screen red "Sled
+     *  disconnected" or green "Ready to scan". Its own key, never part of [rfid], so it is never
+     *  part of a sled push. */
+    val sledFlash: Flow<Boolean> = store.data.map { it[Keys.sledFlash] ?: true }
+    suspend fun setSledFlash(on: Boolean) { store.edit { it[Keys.sledFlash] = on } }
+
+    /** Whether Settings › This Kiosk has asked for POST_NOTIFICATIONS on this phone: a phone made
+     *  personal in the portal is asked once, the first time Settings finds it registered for push
+     *  without the permission (the switch's turn-on always asks). */
+    val notificationPermissionAsked: Flow<Boolean> = store.data.map { it[Keys.notificationPermissionAsked] ?: false }
+    suspend fun setNotificationPermissionAsked() { store.edit { it[Keys.notificationPermissionAsked] = true } }
 
     /** How the person signed in here last ("password" | "link" | "biometric"), as the last sign-in heartbeat
      *  told the portal; a restored session is that same sign-in. */

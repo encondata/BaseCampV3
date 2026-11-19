@@ -1,9 +1,9 @@
 /**
- * Where the sibling apps live, for the nav's Kiosk and Wiki links.
+ * Where the sibling apps live, for the nav's Kiosk, Wiki and Devices links.
  *
  * Same rule the API lookup uses: on a real hostname, swap the first label
  * (portal.dev.serversherpa.com → kiosk.dev.serversherpa.com); on localhost
- * or an IP, fall back to the app's dev port. VITE_KIOSK_URL / VITE_WIKI_URL
+ * or an IP, fall back to the app's dev port. VITE_KIOSK_URL / VITE_WIKI_URL / VITE_DEVICES_URL
  * override both, for a stack that hosts an app somewhere else.
  */
 
@@ -11,6 +11,7 @@ import { siblingOrigin, type LocationLike } from './siblingOrigin';
 
 export const KIOSK_DEV_PORT = 5174;
 export const WIKI_DEV_PORT = 5176;
+export const DEVICES_DEV_PORT = 5180;
 
 function trim(url: string | undefined): string | undefined {
   const v = url?.trim().replace(/\/+$/, '');
@@ -40,4 +41,8 @@ export function kioskUrl(loc: LocationLike = pageLocation()): string {
 
 export function wikiUrl(loc: LocationLike = pageLocation()): string {
   return appOrigin('wiki', WIKI_DEV_PORT, loc, import.meta.env.VITE_WIKI_URL as string | undefined);
+}
+
+export function devicesUrl(loc: LocationLike = pageLocation()): string {
+  return appOrigin('devices', DEVICES_DEV_PORT, loc, import.meta.env.VITE_DEVICES_URL as string | undefined);
 }

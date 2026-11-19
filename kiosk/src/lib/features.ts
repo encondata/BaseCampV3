@@ -73,14 +73,14 @@ export const DOCK_FEATURE: KioskFeature = {
 };
 
 /** What a laptop station's Home shows (Jimmy, 2026-10-02): an RFID Station
- *  only RFID Reader, Kiosk Setup and Settings; a Label Station only Kiosk
- *  Setup, Label Printing and Settings; a Time Clock station only Time
+ *  only RFID Reader, Kiosk Setup and Settings; a Label Station only Label
+ *  Printing, Kiosk Setup and Settings (its station tile first, 2026-11-17); a Time Clock station only Time
  *  Clock, Kiosk Setup and Settings; a Dock its Dock screen, then RFID
  *  Reader (start/stop and live reads), Kiosk Setup and Settings. Anything
  *  else (web mode, or a laptop not set up yet) shows every feature. */
 const STATION_TILES: Record<StationType, KioskFeature['id'][]> = {
   rfid: ['rfid', 'setup', 'settings'],
-  label: ['setup', 'labels', 'settings'],
+  label: ['labels', 'setup', 'settings'],
   timeclock: ['clock', 'setup', 'settings'],
   dock: ['dock', 'rfid', 'setup', 'settings'],
 };

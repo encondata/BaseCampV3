@@ -280,8 +280,8 @@ async def test_admin_edit_profile(client, seeded_user, db):
 from sqlalchemy import select  # noqa: E402
 
 from serversherpa.db.models import (  # noqa: E402
-    AccessGroup, AccessGroupMember, AuditLog, Client, Notification, NotificationGroup,
-    NotificationGroupMember, NotificationMembershipRequest, PasswordHistory,
+    AccessGroup, AccessGroupMember, AuditLog, Notification, NotificationGroup,
+    NotificationGroupMember, NotificationMembershipRequest, Partner, PasswordHistory,
     PermissionOverride, TrustedDevice,
 )
 from serversherpa.notifications.requests import create_request  # noqa: E402
@@ -417,10 +417,12 @@ async def test_demote_keeps_org_contact_roles(client, seeded_user, db):
     user = await _mk_user(db, first="Cora", last="Contact", email="cora@test.example.com",
                           roles=("staff",))
     user_id = user.id
-    org = Client(name="Contact Org")
+    # a partner contact: a client contact can't also be a worker, so demoting
+    # one is refused (tests/test_client_worker_conflict.py)
+    org = Partner(name="Contact Org")
     db.add(org)
     await db.flush()
-    db.add(PersonRole(person_id=user_id, role="client_viewer", client_id=org.id))
+    db.add(PersonRole(person_id=user_id, role="vendor_viewer", partner_id=org.id))
     await db.commit()
     admin = await login_admin(client, db, seeded_user)
 
@@ -428,7 +430,7 @@ async def test_demote_keeps_org_contact_roles(client, seeded_user, db):
     assert resp.status_code == 204, resp.text
 
     db.expire_all()
-    assert await _active_roles(db, user_id) == ["client_viewer", "worker"]
+    assert await _active_roles(db, user_id) == ["vendor_viewer", "worker"]
     revoked = set(await db.scalars(select(PersonRole.role).where(
         PersonRole.person_id == user_id, PersonRole.revoked_at.is_not(None))))
     assert revoked == {"staff"}

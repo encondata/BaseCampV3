@@ -1,0 +1,97 @@
+"""Package inspection: what an uploaded APK or IPA says about itself."""
+
+from __future__ import annotations
+
+import functools
+import zipfile
+import zlib
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from serversherpa_devices.packages.provision import ProvisionInfo
+
+NOT_A_PACKAGE = "This isn't an APK or IPA"
+# What zipfile and zlib raise on a damaged archive or member.
+ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, OSError, ValueError, NotImplementedError,
+              EOFError, RuntimeError, KeyError)
+
+
+class PackageError(Exception):
+    """An upload that can't be read as an app. `message` is user-facing copy."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+@dataclass
+class PackageInfo:
+    platform: Literal["android", "ios"]
+    identifier: str
+    name: str
+    version_name: str
+    build: str
+    build_sort: int
+    min_os: str | None
+    icon_png: bytes | None
+    signing_digest: str | None   # Android: SHA-256 hex of the signer certificate DER
+    provision: ProvisionInfo | None
+
+
+def converts_errors[**P, R](message: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A public parse entry point raises only PackageError: anything else a
+    hostile file provokes in zipfile, zlib, plistlib, asn1crypto or androguard
+    becomes PackageError(message), never the library's text. MemoryError is
+    left alone, so the isolated worker dies on it."""
+    def wrap(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def guarded(*args: P.args, **kwargs: P.kwargs) -> R:
+            try:
+                return fn(*args, **kwargs)
+            except (PackageError, MemoryError):
+                raise
+            except Exception:  # noqa: BLE001 (the boundary: every other failure is "can't read")
+                raise PackageError(message) from None
+        return guarded
+    return wrap
+
+
+def open_zip(path: Path) -> zipfile.ZipFile:
+    """The upload as a zip, or PackageError(NOT_A_PACKAGE)."""
+    try:
+        return zipfile.ZipFile(path)
+    except ZIP_ERRORS:
+        raise PackageError(NOT_A_PACKAGE) from None
+
+
+def read_member(zf: zipfile.ZipFile, name: str, *, limit: int) -> bytes | None:
+    """A zip member's bytes, or None when it is larger than `limit` (its
+    declared size or what it actually inflates to) or can't be inflated."""
+    try:
+        info = zf.getinfo(name)
+        if info.file_size > limit:
+            return None
+        with zf.open(info) as f:
+            data = f.read(limit + 1)
+    except ZIP_ERRORS:
+        return None
+    return data if len(data) <= limit else None
+
+
+@converts_errors(NOT_A_PACKAGE)
+def inspect_package(path: Path) -> PackageInfo:
+    """Inspect an APK or IPA in this process, telling them apart by their
+    contents. Uploads go through isolated.inspect_package_isolated instead."""
+    from serversherpa_devices.packages.apk import inspect_apk
+    from serversherpa_devices.packages.ipa import inspect_ipa
+
+    with open_zip(path) as zf:
+        names = zf.namelist()
+    if "AndroidManifest.xml" in names:
+        return inspect_apk(path)
+    if any(name.startswith("Payload/") for name in names):
+        return inspect_ipa(path)
+    raise PackageError(NOT_A_PACKAGE)

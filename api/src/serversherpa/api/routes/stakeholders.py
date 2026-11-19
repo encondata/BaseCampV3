@@ -13,9 +13,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.role_mix import RoleMixError, assert_no_client_worker_mix, holds_worker
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    AssetTotalsOut,
     ClientActivityItem,
     ClientActivityOut,
     ContactAddIn,
@@ -32,9 +34,12 @@ from serversherpa.api.schemas import (
     PersonListItem,
     WorkerItem,
 )
+from serversherpa.clientgroups.service import lock_clients
 from serversherpa.db.models import (
     Asset,
     Client,
+    ClientContactGroup,
+    ClientGroup,
     ContactProfile,
     Partner,
     Person,
@@ -98,7 +103,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     # "vendor_viewer") — derive the owner/admin/viewer sibling role names
     # from it so "contact" always means "holds any of the three".
     _prefix = contact_role.rsplit("_", 1)[0]
-    tier_roles = {tier: f"{_prefix}_{tier}" for tier in ("owner", "admin", "viewer")}
+    # Individual (a restricted, chip-scoped client login) is a client-only tier.
+    tier_roles = {tier: f"{_prefix}_{tier}" for tier in
+                  ("owner", "admin", "viewer") + (() if is_partner else ("individual",))}
     tier_role_names = list(tier_roles.values())
 
     def _tier_of(role_name: str) -> str:
@@ -140,6 +147,37 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                 if visible is None:
                     raise _err(404, "org_not_found")
         return org
+
+    def _tier_role(tier: str) -> str:
+        if tier not in tier_roles:
+            raise _err(422, "tier_not_for_partners")
+        return tier_roles[tier]
+
+    async def _chip_ids(db: AsyncSession, org_id: uuid.UUID,
+                        person_ids: list[uuid.UUID]) -> dict:
+        out: dict[uuid.UUID, list[uuid.UUID]] = {}
+        if is_partner or not person_ids:
+            return out
+        rows = (await db.execute(
+            select(ClientContactGroup.person_id, ClientContactGroup.group_id)
+            .where(ClientContactGroup.client_id == org_id,
+                   ClientContactGroup.person_id.in_(person_ids))
+            .order_by(ClientContactGroup.group_id))).all()
+        for pid, gid in rows:
+            out.setdefault(pid, []).append(gid)
+        return out
+
+    async def _is_restricted(db: AsyncSession, org_id: uuid.UUID,
+                             person_id: uuid.UUID, role: str) -> bool:
+        """Individual at this client, or holding any group chip here — a
+        client login must not lift a restriction staff set."""
+        if is_partner:
+            return False
+        if _tier_of(role) == "individual":
+            return True
+        return await db.scalar(select(ClientContactGroup.group_id).where(
+            ClientContactGroup.client_id == org_id,
+            ClientContactGroup.person_id == person_id).limit(1)) is not None
 
     async def _contact_counts(db: AsyncSession, org_ids: list[uuid.UUID]) -> dict:
         col = getattr(PersonRole, scope_col)
@@ -488,6 +526,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                    PersonRole.revoked_at.is_(None))
             .order_by(natural(Person.last_name), natural(Person.first_name))
         )).all()
+        chips = await _chip_ids(db, org_id, [r[0].id for r in rows])
         return [
             ContactItem(
                 person_id=person.id,
@@ -501,6 +540,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                 tier=_tier_of(role),
                 org_title=org_title,
                 functions=list(functions or []),
+                group_ids=chips.get(person.id, []) if actor.access.is_global else [],
+                restricted=(not is_partner and (
+                    _tier_of(role) == "individual" or person.id in chips)),
             )
             for person, granted_at, role, account_id, org_title, functions in rows
         ]
@@ -515,7 +557,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         await _get_org(db, org_id, actor)
         if await db.get(Person, body.person_id) is None:
             raise _err(404, "person_not_found")
-        role_name = tier_roles[body.tier]
+        role_name = _tier_role(body.tier)
+        if body.tier == "individual" and not actor.access.is_global:
+            raise _err(422, "individual_is_staff_only")
         await _check_rank(db, actor, body.person_id, role_name)
 
         col = getattr(PersonRole, scope_col)
@@ -527,6 +571,8 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                 PersonRole.revoked_at.is_(None)))
         if existing is not None:
             raise _err(409, "already_a_contact")
+        # a worker can't also be a client contact (409 client_worker_conflict)
+        await assert_no_client_worker_mix(db, body.person_id, role_name)
 
         grant = PersonRole(
             person_id=body.person_id,
@@ -577,7 +623,19 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             data["org_title"] = data["org_title"].strip() or None
 
         new_tier = data.get("tier")
-        new_role_name = tier_roles[new_tier] if new_tier is not None else None
+        new_role_name = _tier_role(new_tier) if new_tier is not None else None
+        group_ids = data.pop("group_ids", None) if "group_ids" in data else None
+        if "group_ids" in body.model_fields_set:
+            if is_partner:
+                raise _err(422, "groups_not_for_partners")
+            if not actor.access.is_global:
+                raise _err(403, "forbidden")
+            group_ids = list(dict.fromkeys(body.group_ids or []))
+        if not actor.access.is_global and new_tier is not None:
+            if new_tier == "individual":
+                raise _err(422, "individual_is_staff_only")
+            if await _is_restricted(db, org_id, person_id, current.role):
+                raise _err(403, "restricted_contact")
         # rank rules apply whenever a tier is requested (even a no-op one,
         # to match prior behavior); metadata-only edits skip the new-role
         # check but still enforce the target-person rank rule
@@ -586,6 +644,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         old_tier = _tier_of(current.role)
         result_tier = old_tier
         if new_tier is not None and new_tier != old_tier:
+            # a new tier is a new grant: refused beside a worker role, even
+            # one held from before the rule (which stays as it is)
+            await assert_no_client_worker_mix(db, person_id, new_role_name)
             now = datetime.now(UTC)
             current.revoked_at = now
             current.revoked_by = actor.person.id
@@ -601,6 +662,36 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                   changes={"person_id": {"from": None, "to": str(person_id)},
                            "tier": {"from": old_tier, "to": new_tier}})
             result_tier = new_tier
+
+        if group_ids is not None:
+            # chips limit what a viewer sees, but the kiosk applies no group
+            # rule: refused beside a worker role, even a legacy one
+            if group_ids and await holds_worker(db, person_id):
+                raise RoleMixError()
+            # the client's group lock: a group can't be deleted between the
+            # check below and this commit (clientgroups.service.delete_group)
+            await lock_clients(db, [org_id])
+            found = set((await db.scalars(select(ClientGroup.id).where(
+                ClientGroup.client_id == org_id,
+                ClientGroup.id.in_(group_ids)))).all())
+            if found != set(group_ids):
+                raise _err(422, "group_not_in_client")
+            before_ids = set((await db.scalars(select(ClientContactGroup.group_id)
+                .where(ClientContactGroup.client_id == org_id,
+                       ClientContactGroup.person_id == person_id))).all())
+            if before_ids != found:
+                await db.execute(delete(ClientContactGroup).where(
+                    ClientContactGroup.client_id == org_id,
+                    ClientContactGroup.person_id == person_id))
+                for gid in group_ids:
+                    db.add(ClientContactGroup(
+                        person_id=person_id, client_id=org_id, group_id=gid))
+                audit(db, actor_id=actor.person.id, entity_type=entity_type,
+                      entity_id=str(org_id), action="contact.groups",
+                      changes={"person_id": {"from": None, "to": str(person_id)},
+                               "group_ids": {
+                                   "from": sorted(str(g) for g in before_ids),
+                                   "to": sorted(str(g) for g in found)}})
 
         prof_col = getattr(ContactProfile, scope_col)
         prof = (await db.scalars(select(ContactProfile).where(
@@ -647,6 +738,14 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     ) -> None:
         await _get_org(db, org_id, actor)
         col = getattr(PersonRole, scope_col)
+        if not actor.access.is_global and not is_partner:
+            cur_role = await db.scalar(select(PersonRole.role).where(
+                PersonRole.person_id == person_id,
+                PersonRole.role.in_(tier_role_names),
+                col == org_id, PersonRole.revoked_at.is_(None)))
+            if cur_role is not None and await _is_restricted(
+                    db, org_id, person_id, cur_role):
+                raise _err(403, "restricted_contact")
         result = await db.execute(
             update(PersonRole)
             .where(PersonRole.person_id == person_id,
@@ -657,6 +756,10 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         )
         if result.rowcount == 0:
             raise _err(404, "contact_not_found")
+        if not is_partner:
+            await db.execute(delete(ClientContactGroup).where(
+                ClientContactGroup.client_id == org_id,
+                ClientContactGroup.person_id == person_id))
         prof_col = getattr(ContactProfile, scope_col)
         await db.execute(delete(ContactProfile).where(
             ContactProfile.person_id == person_id, prof_col == org_id))
@@ -681,16 +784,8 @@ partners_router = _make_org_router(
 # here — duplicate its org-lookup + scope-404 shape instead, same as
 # list_partner_workers does below for the partners side.
 
-@clients_router.get("/{org_id}/activity", response_model=ClientActivityOut)
-async def client_activity(
-    org_id: uuid.UUID, db: DbSession,
-    actor: AuthContext = require_permission("clients", "view"),
-    limit: int = Query(30, ge=1, le=100),
-) -> ClientActivityOut:
-    """Recent processed scans on the client's assets — the dashboard's
-    read-only activity feed. activity_7d spans the trailing 7 days
-    regardless of limit. Lives under `clients` so client anchors need no
-    scans grant."""
+async def _client_in_scope(db: AsyncSession, org_id: uuid.UUID,
+                           actor: AuthContext) -> None:
     if await db.get(Client, org_id) is None:
         raise _err(404, "org_not_found")
     cond = scope_conditions("clients", actor.access, actor.person.id)
@@ -700,8 +795,25 @@ async def client_activity(
         if visible is None:
             raise _err(404, "org_not_found")
 
+
+@clients_router.get("/{org_id}/activity", response_model=ClientActivityOut)
+async def client_activity(
+    org_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("clients", "view"),
+    limit: int = Query(30, ge=1, le=100),
+) -> ClientActivityOut:
+    """Recent processed scans on the client's assets — the dashboard's
+    read-only activity feed. activity_7d spans the trailing 7 days
+    regardless of limit. Lives under `clients` so client anchors need no
+    scans grant. Only assets the actor can see count (the asset scope,
+    client groups included)."""
+    await _client_in_scope(db, org_id, actor)
+
     asset_ids = select(Asset.id).where(Asset.client_id == org_id,
                                        Asset.archived_at.is_(None))
+    asset_cond = scope_conditions("assets", actor.access, actor.person.id)
+    if asset_cond is not None:
+        asset_ids = asset_ids.where(asset_cond)
     base = (ProcessedScan.asset_id.in_(asset_ids)
             & ProcessedScan.archived_at.is_(None))
     week_ago = datetime.now(UTC) - timedelta(days=7)
@@ -732,6 +844,21 @@ async def client_activity(
             status_color=sv.color if sv else "#51606f",
             site_name=sites.get(s.site_id), device_id=s.device_id))
     return ClientActivityOut(events=events, activity_7d=activity_7d)
+
+
+@clients_router.get("/{org_id}/asset-totals", response_model=AssetTotalsOut)
+async def client_asset_totals(
+    org_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("clients", "view"),
+) -> AssetTotalsOut:
+    """True counts of the client's live assets, never narrowed by client
+    groups (the dashboard's "Total assets" and "In transit")."""
+    await _client_in_scope(db, org_id, actor)
+    counts = dict((await db.execute(
+        select(Asset.status, func.count())
+        .where(Asset.client_id == org_id, Asset.archived_at.is_(None))
+        .group_by(Asset.status))).all())
+    return AssetTotalsOut(total=sum(counts.values()), by_status=counts)
 
 
 # ── partner-supplied workers (rollup via worker_profiles.partner_id) ─
@@ -850,6 +977,7 @@ _ORG_TIER_ROLES: dict[str, tuple[str, str]] = {
     "client_owner": ("client", "owner"),
     "client_admin": ("client", "admin"),
     "client_viewer": ("client", "viewer"),
+    "client_individual": ("client", "individual"),
     "vendor_owner": ("partner", "owner"),
     "vendor_admin": ("partner", "admin"),
     "vendor_viewer": ("partner", "viewer"),

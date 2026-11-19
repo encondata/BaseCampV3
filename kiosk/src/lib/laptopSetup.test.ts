@@ -42,7 +42,7 @@ it('a laptop browser with no setup loads the laptop\'s, then downloads the move 
   expect(readKioskSetup()).toEqual({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration', siteId: 's-2',
     siteName: 'NAP22 Hall', siteRole: 'destination', scanStatus: 'rfid_1_cage_exit',
-    scanLabel: 'RFID 1 - Cage Exit', stationType: 'rfid',
+    scanLabel: 'RFID 1 - Cage Exit', stationType: 'rfid', rfidType: 'doorway',
     reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
   });
   expect(readSetupState()).toBe('complete');
@@ -231,4 +231,20 @@ it('a Dock setup maps with its paired reader', () => {
     scanLabel: 'RFID 1 - Cage Exit', stationType: 'dock',
     reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
   });
+});
+
+it('an RFID setup keeps the edge\'s RFID type; none (an older edge) reads as Doorway', () => {
+  expect(selectionFromEdge({ ...SHARED, rfid_type: 'dock_portal' } as unknown as EdgeSetup)?.rfidType)
+    .toBe('dock_portal');
+  expect(selectionFromEdge({ ...SHARED, rfid_type: 'doorway' } as unknown as EdgeSetup)?.rfidType)
+    .toBe('doorway');
+  expect(selectionFromEdge(SHARED as unknown as EdgeSetup)?.rfidType).toBe('doorway');
+  expect(selectionFromEdge({ ...SHARED, rfid_type: 'bogus' } as unknown as EdgeSetup)?.rfidType)
+    .toBe('doorway');
+});
+
+it('an RFID type on a setup that is not an RFID station is dropped', () => {
+  const dock = selectionFromEdge(
+    { ...SHARED, station_type: 'dock', rfid_type: 'dock_portal' } as unknown as EdgeSetup);
+  expect(dock).not.toHaveProperty('rfidType');
 });

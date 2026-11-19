@@ -1,20 +1,67 @@
 /** Pure helpers for the move-assets import page: report shaping, progress
  *  math, and API error mapping. The page stays thin per repo convention. */
 
-import { ApiError, type ImportJobOut, type ImportRowDetail } from './api';
+import { compareOrdinal } from './naturalSort';
+import {
+  ApiError, type ClientChoice, type ImportJobOut, type ImportRowDetail, type StoredClientChoice,
+} from './api';
 
 export interface ImportCounts {
   created: number;
   updated: number;
   review: number;
   error: number;
+  conflict: number;
+  skipped: number;
 }
 
 export function countDetails(details: ImportRowDetail[]): ImportCounts {
-  const counts: ImportCounts = { created: 0, updated: 0, review: 0, error: 0 };
+  const counts: ImportCounts = {
+    created: 0, updated: 0, review: 0, error: 0, conflict: 0, skipped: 0,
+  };
   for (const d of details) counts[d.status] += 1;
   return counts;
 }
+
+/** The distinct (lower-cased) serials the check flagged as belonging to
+ *  another client — one choice covers every row that repeats a serial. */
+export function conflictSerials(details: ImportRowDetail[]): string[] {
+  const seen = new Set<string>();
+  for (const d of details) {
+    if (d.status === 'conflict' && d.serial_number) seen.add(d.serial_number.toLowerCase());
+  }
+  return [...seen];
+}
+
+/** A stable string for a choice map, to tell whether what was saved is what
+ *  is on screen. */
+export function choicesKey(choices: Record<string, string>): string {
+  return JSON.stringify(
+    Object.entries(choices).sort(([a], [b]) => compareOrdinal(a, b)));
+}
+
+/** serial → choice from the API's stored map (each entry also names the
+ *  owner the check saw, which the screen does not need). */
+export function choiceMap(
+  stored: Record<string, StoredClientChoice | ClientChoice> | null | undefined,
+): Record<string, ClientChoice> {
+  const out: Record<string, ClientChoice> = {};
+  for (const [serial, v] of Object.entries(stored ?? {})) {
+    const choice = typeof v === 'string' ? v : v?.choice;
+    if (choice === 'continue' || choice === 'skip') out[serial] = choice;
+  }
+  return out;
+}
+
+/** The move's client a check ran against: the wizard stamps it on the
+ *  job's options; otherwise the check's summary names it. */
+export function checkClientId(job: ImportJobOut): string | null {
+  if (job.options && 'client_id' in job.options) return job.options.client_id ?? null;
+  const v = (job.results?.summary as Record<string, unknown> | undefined)?.client_id;
+  return typeof v === 'string' ? v : null;
+}
+
+export const CHOICES_HINT = 'Choose Continue or Skip for every flagged row before importing.';
 
 export function jobIsActive(job: ImportJobOut): boolean {
   return job.status === 'queued' || job.status === 'running';
@@ -64,6 +111,9 @@ export const IMPORT_ERRORS: Record<string, string> = {
   job_already_finished: 'This import has already finished.',
   unknown_format: 'Unknown template format.',
   no_review_rows: 'Nothing is flagged for review.',
+  client_choices_required: 'Choose Continue or Skip for every flagged row before importing.',
+  invalid_client_choice: 'Each flagged row needs Continue or Skip.',
+  check_stale_client: "The move's client changed after the file was checked. Check the file again.",
   check_only: 'This file check belongs to a move setup. Its rows are imported when the move is created.',
 };
 

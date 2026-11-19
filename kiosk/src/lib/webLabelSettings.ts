@@ -10,10 +10,13 @@
  * (`ApiError` `storage` / `bad_dpi`), so the printer step says it wasn't
  * saved instead of moving on as if it were.
  *
- * Two things are kept, and they arrive at different times:
- *   - the label KIND (Top or Front), chosen in Kiosk Setup's last step.
- *     It is always readable: `readWebLabelKind()` is `'top'` until one is
- *     saved.
+ * Three things are kept, and they arrive at different times:
+ *   - whether this kiosk prints labels at all, Kiosk Setup's last
+ *     question. `readWebLabelPrinting()` is true until a No is saved, so a
+ *     kiosk set up before the question existed keeps printing. A No hides
+ *     Label Printing on this kiosk and stops its background label build.
+ *   - the label KIND (Top or Front), asked only after a Yes. It is always
+ *     readable: `readWebLabelKind()` is `'top'` until one is saved.
  *   - the PRINTER (model, serial, dpi, offsets, peel), saved by the
  *     Printing Station's printer step. `readWebLabelSettings()` is `null`
  *     until a printer and a positive whole-number dpi are both saved —
@@ -35,11 +38,12 @@ type Listener = () => void;
 const listeners = new Set<Listener>();
 
 interface Parsed {
+  printing: boolean;
   kind: LabelKind;
   settings: LabelStationSettings | null;
 }
 
-const DEFAULTS: Parsed = { kind: 'top', settings: null };
+const DEFAULTS: Parsed = { printing: true, kind: 'top', settings: null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -63,11 +67,14 @@ function parse(raw: string | null): Parsed {
   }
   if (!isRecord(value)) return DEFAULTS;
   const kind: LabelKind = value.label_kind === 'front' ? 'front' : 'top';
+  // only a stored false turns printing off: no answer yet means Yes
+  const printing = value.label_printing !== false;
   const { printer, dpi } = value;
   if (!isRecord(printer) || typeof dpi !== 'number' || !Number.isInteger(dpi) || dpi <= 0) {
-    return { kind, settings: null };
+    return { printing, kind, settings: null };
   }
   return {
+    printing,
     kind,
     settings: {
       label_kind: kind,
@@ -118,17 +125,33 @@ export function readWebLabelKind(): LabelKind {
   return load().kind;
 }
 
-/** Saves the kind and keeps any saved printer, so changing Top to Front in
- *  Kiosk Setup never forgets which printer the kiosk uses. */
-export function writeWebLabelKind(kind: LabelKind): void {
-  let current: unknown = null;
+/** Whether this kiosk prints labels: true until Kiosk Setup saves a No. */
+export function readWebLabelPrinting(): boolean {
+  return load().printing;
+}
+
+/** The stored record, or {} when there is none or it can't be read. */
+function currentRecord(): Record<string, unknown> {
   try {
     const raw = localStorage.getItem(KEY);
-    current = raw ? JSON.parse(raw) : null;
+    const current: unknown = raw ? JSON.parse(raw) : null;
+    return isRecord(current) ? current : {};
   } catch {
-    current = null;   // unreadable: start the record fresh
+    return {};   // unreadable: start the record fresh
   }
-  persist({ ...(isRecord(current) ? current : {}), label_kind: kind });
+}
+
+/** Saves the kind, which also means the kiosk prints labels, and keeps any
+ *  saved printer, so changing Top to Front in Kiosk Setup never forgets
+ *  which printer the kiosk uses. */
+export function writeWebLabelKind(kind: LabelKind): void {
+  persist({ ...currentRecord(), label_printing: true, label_kind: kind });
+}
+
+/** Kiosk Setup's No: this kiosk doesn't print labels. The kind and any
+ *  saved printer are kept, so a later Yes picks up where it left off. */
+export function writeWebLabelPrintingOff(): void {
+  persist({ ...currentRecord(), label_printing: false });
 }
 
 /** The saved kind and printer, or null until a printer and a positive
@@ -168,4 +191,8 @@ export function subscribeWebLabelSettings(fn: Listener): () => void {
 
 export function useWebLabelSettings(): LabelStationSettings | null {
   return useSyncExternalStore(subscribeWebLabelSettings, readWebLabelSettings);
+}
+
+export function useWebLabelPrinting(): boolean {
+  return useSyncExternalStore(subscribeWebLabelSettings, readWebLabelPrinting);
 }

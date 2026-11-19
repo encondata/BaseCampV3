@@ -122,6 +122,11 @@ _RESOURCES = [
     # template. A tab, not a page, so no routes. Internal users only; every
     # plan route also checks the actor can see the initiative.
     Resource("project_plans", "Project plans", visible_to=frozenset({"global"})),
+    # The Devices app-distribution service (devices/): view = sign in, add an
+    # iPhone, install; add = upload; change = notes, make current, Apple
+    # settings; delete = delete versions, disable devices. Reached through the
+    # service, not a portal page, so no routes. Internal users only.
+    Resource("app_distribution", "Apps", visible_to=frozenset({"global"})),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}

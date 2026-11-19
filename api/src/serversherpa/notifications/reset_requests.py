@@ -13,8 +13,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Notification, Person
+from serversherpa.notifications.company import load_company_settings
+from serversherpa.notifications.email import load_contact
 from serversherpa.notifications.inbox import notify
+from serversherpa.notifications.kinds import kind_info
 from serversherpa.notifications.live import signal_inbox, signal_inboxes
+from serversherpa.notifications.push import maybe_push, on_rows_read
 from serversherpa.notifications.requests import approver_ids
 
 KIND = "password_reset_request"
@@ -37,8 +41,17 @@ async def open_or_bump(db: AsyncSession, person: Person) -> int:
             card.read_at = None
             card.dismissed_at = None
             card.created_at = now
+            # a bump pushes now (below): an old snooze no longer applies
+            card.push_snoozed_until = None
             await signal_inbox(db, card.person_id)
         await db.flush()
+        # A bumped card is unread and back on top: it pushes again, by the
+        # same rules as a new one (notify() loads these the same way).
+        info = kind_info(KIND)
+        company = await load_company_settings(db)
+        for card in existing:
+            contact = await load_contact(db, card.person_id)
+            await maybe_push(db, card, info=info, contact=contact, company=company)
         return len(existing)
     title = f"{person.first_name} {person.last_name} asked for a password reset"
     payload = {"target_person_id": str(person.id), "state": "open", "count": 1,
@@ -54,11 +67,16 @@ async def resolve(db: AsyncSession, person_id: uuid.UUID, resolved_by: str) -> N
     """Mark every open card for this person resolved, and read for every
     approver: nothing is left to act on. A card already read keeps its first
     read time; the card still says who resolved it."""
+    where = ("WHERE kind = :kind AND payload ->> 'target_person_id' = CAST(:pid AS text) "
+             "AND payload ->> 'state' = 'open'")
+    params = {"by": resolved_by, "kind": KIND, "pid": str(person_id)}
+    newly_read = [(r.id, r.person_id) for r in await db.execute(text(
+        "SELECT id, person_id FROM notifications " + where + " AND read_at IS NULL"),
+        params)]
     changed = await db.scalars(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', 'resolved', 'resolved_by', CAST(:by AS text)), "
         "read_at = COALESCE(read_at, now()) "
-        "WHERE kind = :kind AND payload ->> 'target_person_id' = CAST(:pid AS text) "
-        "AND payload ->> 'state' = 'open' RETURNING person_id"),
-        {"by": resolved_by, "kind": KIND, "pid": str(person_id)})
+        + where + " RETURNING person_id"), params)
     await signal_inboxes(db, changed.all())
+    await on_rows_read(db, newly_read)

@@ -1,6 +1,8 @@
 package com.serversherpa.kiosk.core.rfid
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RfidSettingsTest {
@@ -14,19 +16,18 @@ class RfidSettingsTest {
         assertEquals(RfidSession.S1, d.session)
         assertEquals(30, d.tagPopulation)
         assertEquals(true, d.uniqueTagReport)
-        assertEquals(true, d.ledOnRead)
         assertEquals(true, d.dpo)
         assertEquals(null, d.region)
-        assertEquals(RfidTriggerPersonality.RFID, d.triggerPersonality)
-        assertEquals(ScannerPluginMode.AUTO, d.scannerPluginMode)
+        assertEquals(SledTriggerLayout.RFID, d.triggerLayout)
+        assertEquals(null, d.readerAddress)
     }
 
     @Test fun roundTripsThroughJson() {
         val s = RfidSettings(
             enabled = true, triggerMode = RfidTriggerMode.TOGGLE, repeatPolicy = RepeatSweepPolicy.SKIP_AND_COUNT,
             beeper = SledBeeper.OFF, powerDbm = 12, session = RfidSession.S2, tagPopulation = 200,
-            uniqueTagReport = false, ledOnRead = false, dpo = false, region = "USA",
-            triggerPersonality = RfidTriggerPersonality.BARCODE, scannerPluginMode = ScannerPluginMode.ON,
+            uniqueTagReport = false, dpo = false, region = "USA",
+            triggerLayout = SledTriggerLayout.SPLIT, readerAddress = "00:11:22:33:44:55",
         )
         assertEquals(s, parseRfidSettings(s.toJson()))
     }
@@ -38,13 +39,56 @@ class RfidSettingsTest {
         // An unknown enum value is not a reason to lose the rest of the settings.
         val partial = parseRfidSettings(
             """{"enabled":true,"triggerMode":"nonsense","powerDbm":19,""" +
-                """"triggerPersonality":"nonsense","scannerPluginMode":"nonsense"}""",
+                """"triggerLayout":"nonsense","readerAddress":17}""",
         )
         assertEquals(true, partial.enabled)
         assertEquals(RfidTriggerMode.HOLD, partial.triggerMode)
         assertEquals(19, partial.powerDbm)
-        assertEquals(RfidTriggerPersonality.RFID, partial.triggerPersonality)
-        assertEquals(ScannerPluginMode.AUTO, partial.scannerPluginMode)
+        assertEquals(SledTriggerLayout.RFID, partial.triggerLayout)
+        assertEquals(null, partial.readerAddress)
+    }
+
+    /** A kiosk that had "Trigger drives: Barcode" comes up in the Barcode layout (ruling 16). */
+    @Test fun anOldTriggerPersonalityOfBarcodeReadsAsTheBarcodeLayout() {
+        assertEquals(SledTriggerLayout.BARCODE, parseRfidSettings("""{"triggerPersonality":"barcode"}""").triggerLayout)
+        assertEquals(SledTriggerLayout.RFID, parseRfidSettings("""{"triggerPersonality":"rfid"}""").triggerLayout)
+    }
+
+    @Test fun triggerLayoutWinsOverTheOldKey() {
+        val s = parseRfidSettings("""{"triggerLayout":"split","triggerPersonality":"barcode"}""")
+        assertEquals(SledTriggerLayout.SPLIT, s.triggerLayout)
+        val rfid = parseRfidSettings("""{"triggerLayout":"rfid","triggerPersonality":"barcode"}""")
+        assertEquals(SledTriggerLayout.RFID, rfid.triggerLayout)
+    }
+
+    @Test fun anUnknownTriggerLayoutFallsBackToTheOldKeyThenTheDefault() {
+        assertEquals(
+            SledTriggerLayout.BARCODE,
+            parseRfidSettings("""{"triggerLayout":"sideways","triggerPersonality":"barcode"}""").triggerLayout,
+        )
+        assertEquals(
+            SledTriggerLayout.RFID,
+            parseRfidSettings("""{"triggerLayout":"sideways","triggerPersonality":"sideways"}""").triggerLayout,
+        )
+        assertEquals(SledTriggerLayout.RFID, parseRfidSettings("""{"triggerLayout":"sideways"}""").triggerLayout)
+    }
+
+    /** Documents from before this build still carry the removed keys; they are ignored. */
+    @Test fun oldDocumentsWithRemovedKeysStillParse() {
+        val s = parseRfidSettings("""{"scannerPluginMode":"on","ledOnRead":false,"powerDbm":20}""")
+        assertEquals(20, s.powerDbm)
+        assertEquals(DEFAULT_RFID_SETTINGS.copy(powerDbm = 20), s)
+    }
+
+    @Test fun jsonOmitsReaderAddressWhenNull() {
+        val json = DEFAULT_RFID_SETTINGS.toJson()
+        assertTrue(json, json.contains("\"triggerLayout\":\"rfid\""))
+        assertFalse(json, json.contains("readerAddress"))
+        assertFalse(json, json.contains("triggerPersonality"))
+        assertFalse(json, json.contains("scannerPluginMode"))
+        assertFalse(json, json.contains("ledOnRead"))
+        val withAddress = DEFAULT_RFID_SETTINGS.copy(readerAddress = "00:11:22:33:44:55").toJson()
+        assertTrue(withAddress, withAddress.contains("\"readerAddress\":\"00:11:22:33:44:55\""))
     }
 
     /** A saved file from an older build, or a slider bug, must not ask the

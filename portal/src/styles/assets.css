@@ -91,6 +91,10 @@
 .mm-table tr.filled td:last-child { color: var(--c-green); }
 .mm-conflicts { margin: 0; padding-left: 18px; color: var(--c-red); }
 
+/* ── client group dialogs ─────────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.group-modal-card { width: min(520px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.group-modal-card.group-modal-open { overflow: visible; max-height: none; }
+
 /* ── catalog review view ──────────────────────────────────── */
 .rv-panel { display: flex; flex-direction: column; gap: 16px; }
 /* directory.css scopes .eyebrow-sm to .detail-block — mirror it here */

@@ -28,11 +28,16 @@ sealed class RegionChoice {
     data class Choosable(val regions: List<RfidRegion>, val active: RfidRegion?) : RegionChoice()
 }
 
-fun regionChoice(regions: RfidRegions): RegionChoice {
+/**
+ * The Admin row for [regions]. One region is [RegionChoice.Locked], except on a sled with no
+ * region set ([needsRegion], the sled's `NeedsRegion` state, with no active region it names):
+ * there that one region is a choice to make, or the sled could never be given one.
+ */
+fun regionChoice(regions: RfidRegions, needsRegion: Boolean = false): RegionChoice {
     val supported = regions.supported
     if (supported.isEmpty()) return RegionChoice.Unknown
     val active = regions.active?.trim()?.let { code -> supported.firstOrNull { it.code.equals(code, ignoreCase = true) } }
-    if (supported.size == 1) return RegionChoice.Locked(supported.first())
+    if (supported.size == 1 && (active != null || !needsRegion)) return RegionChoice.Locked(supported.first())
     return RegionChoice.Choosable(supported, active)
 }
 

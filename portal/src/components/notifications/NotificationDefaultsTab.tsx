@@ -5,12 +5,14 @@
  * is the model), each with its own Save, disabled until that card differs from
  * what the server last answered:
  *
- *  - "What people get by default": the Inbox / Email grid (SwitchGrid in
+ *  - "What people get by default": the Inbox / Email / Push grid (SwitchGrid in
  *    defaults mode) on a draft. Save sends `{defaults}` and nothing else, and
  *    only the categories changed here: the server merges per category, so a
  *    tab loaded before another admin's save leaves their change alone.
  *    Admins set the defaults whether or not the server can send email right
- *    now, so Email is never switched off here for that.
+ *    now, so Email is never switched off here for that. Push is: while the
+ *    server can't push, its switches are disabled ("Push isn't set up on the
+ *    server"), as on /me.
  *  - "Critical notifications": every kind that can be emailed, with a Critical
  *    switch. The two account security kinds say "Always" instead of a switch:
  *    they are critical in code and never stored. Save sends `{critical_kinds}`
@@ -31,6 +33,7 @@ import {
   type NotificationKindSetting, type SwitchPair,
 } from '../../lib/api';
 import { categoryLabel } from '../../lib/notificationKinds';
+import { useSystemStatus } from '../../lib/systemStatusContext';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../DataTable';
 import { Switch } from '../Switch';
 import SwitchGrid from './SwitchGrid';
@@ -79,7 +82,7 @@ function message(err: unknown): string {
 }
 
 const samePair = (a: SwitchPair | undefined, b: SwitchPair | undefined): boolean =>
-  a?.inbox === b?.inbox && a?.email === b?.email;
+  a?.inbox === b?.inbox && a?.email === b?.email && (a?.push ?? false) === (b?.push ?? false);
 
 function sameDefaults(a: Record<string, SwitchPair>, b: Record<string, SwitchPair>): boolean {
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].every((key) => samePair(a[key], b[key]));
@@ -93,6 +96,7 @@ function sameKinds(draft: ReadonlySet<string>, saved: readonly string[]): boolea
 export default function NotificationDefaultsTab() {
   const { can } = useAuth();
   const canChange = can('notifications', 'change');
+  const { status, loaded: statusLoaded } = useSystemStatus();
   const defaultsTitle = useId();
   const criticalTitle = useId();
 
@@ -209,7 +213,9 @@ export default function NotificationDefaultsTab() {
             that switch themselves.
           </p>
         </div>
-        <SwitchGrid mode="defaults" defaults={draft.defaults} emailEnabled disabled={locked}
+        <SwitchGrid mode="defaults" defaults={draft.defaults} emailEnabled
+                    pushEnabled={statusLoaded && status.push_enabled !== undefined ? status.push_enabled : null}
+                    disabled={locked}
                     onChange={setPair} />
         {foot('defaults', defaultsDirty)}
       </section>

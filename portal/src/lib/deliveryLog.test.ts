@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeliveryLogEntry } from './api';
 import {
-  DELIVERY_LOG_EVENTS, EVENT_LABELS, REASON_LABELS, SCHEDULE_STATES, SWITCH_SOURCE_LABELS,
+  DELIVERY_LOG_EVENTS, EVENT_LABELS, LOG_CHANNEL_LABELS, REASON_LABELS, channelLabel, SCHEDULE_STATES, SWITCH_SOURCE_LABELS,
   describeEntry, outcomeOf, reasonLabel, scheduleStateOf, shortWhen, sinceFor, switchSourceLabel,
 } from './deliveryLog';
 
@@ -37,8 +37,48 @@ describe('labels', () => {
       email_skipped: 'Dropped',
       email_retry: 'Retrying',
       email_failed: 'Failed',
+      push_queued: 'Push queued',
+      push_not_queued: 'Not pushed',
+      push_sent: 'Push sent',
+      push_dropped: 'Push dropped',
+      push_failed: 'Push failed',
+      push_retry: 'Push retrying',
+      push_token_removed: 'Phone removed',
+      push_snoozed: 'Push snoozed',
+      push_cleared: 'Push cleared',
     });
     expect([...DELIVERY_LOG_EVENTS].sort()).toEqual(Object.keys(EVENT_LABELS).sort());
+  });
+
+  it('labels push events', () => {
+    expect(outcomeOf(entry({ event: 'push_sent', channel: 'push' })))
+      .toEqual({ label: 'Push sent', chip: 'c-green' });
+    expect(outcomeOf(entry({ event: 'push_failed', channel: 'push' })))
+      .toEqual({ label: 'Push failed', chip: 'c-red' });
+    expect(outcomeOf(entry({ event: 'push_retry', channel: 'push' })).chip).toBe('c-amber');
+    expect(outcomeOf(entry({ event: 'push_queued', channel: 'push' })).chip).toBe('c-blue');
+    expect(outcomeOf(entry({ event: 'push_not_queued', channel: 'push' })).chip).toBe('c-slate');
+    expect(channelLabel('push')).toBe('Push');
+    expect(LOG_CHANNEL_LABELS).toEqual({ inbox: 'Inbox', email: 'Email', push: 'Push' });
+    for (const code of ['push_not_set_up', 'security_category', 'category_no_push', 'not_admin',
+      'no_phone']) {
+      expect(REASON_LABELS[code], code).toBeTruthy();
+      expect(REASON_LABELS[code], code).not.toBe(code);
+    }
+    expect(describeEntry(entry({ event: 'push_not_queued', channel: 'push', reason: 'no_phone' })))
+      .toBe('No phone set up for push');
+    // a queued clear dropped because the item was pushed again first
+    expect(describeEntry(entry({ event: 'push_dropped', channel: 'push',
+      reason: 'alerted_again', detail: { message_type: 'clear' } })))
+      .toBe('Pushed again before the phone cleared it');
+    expect(describeEntry(entry({ event: 'push_retry', channel: 'push', detail: { attempts: 2 } })))
+      .toBe('Attempt 2 failed — retrying');
+    expect(describeEntry(entry({ event: 'push_failed', channel: 'push', detail: { attempts: 3 } })))
+      .toBe('Gave up after 3 attempts');
+    expect(describeEntry(entry({ event: 'push_sent', channel: 'push', detail: { phones: 2 } })))
+      .toBe('Sent to 2 phones');
+    expect(describeEntry(entry({ event: 'push_sent', channel: 'push', detail: { phones: 1 } })))
+      .toBe('Sent to 1 phone');
   });
 
   it('names every reason code the API writes, in words', () => {
@@ -148,7 +188,7 @@ describe('outcomeOf', () => {
   });
 
   it('shows an event it does not know as the code itself', () => {
-    expect(outcomeOf(entry({ event: 'push_sent' }))).toEqual({ label: 'push_sent', chip: 'c-slate' });
+    expect(outcomeOf(entry({ event: 'push_whatever' }))).toEqual({ label: 'push_whatever', chip: 'c-slate' });
   });
 });
 

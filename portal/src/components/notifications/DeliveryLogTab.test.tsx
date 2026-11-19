@@ -297,8 +297,10 @@ it('the Outcome filter sends the chosen events', async () => {
   expect(optionsAfter('Outcome')).toEqual([
     'In inbox', 'Not in inbox', 'Queued', 'Not emailed', 'Held for summary', 'In summary',
     'Sent', 'Dropped', 'Retrying', 'Failed',
+    'Push queued', 'Not pushed', 'Push sent', 'Push dropped', 'Push failed', 'Push retrying',
+    'Phone removed', 'Push snoozed', 'Push cleared',
   ]);
-  expect(optionsAfter('Channel')).toEqual(['Inbox', 'Email']);
+  expect(optionsAfter('Channel')).toEqual(['Inbox', 'Email', 'Push']);
   expect(optionsAfter('Category')).toEqual([
     'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Assets',
     'Project plans', 'Trucks', 'Devices', 'Status rules', 'Bulk actions', 'Account security',

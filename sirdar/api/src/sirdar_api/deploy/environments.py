@@ -679,7 +679,7 @@ class AdoptReport:
 # Services newer than some hand-built .envs: with no port key, adopt picks
 # the first free port at or above the default (_adopted_late_ports) rather
 # than assume the default is free.
-_LATE_SERVICES = ("learn",)
+_LATE_SERVICES = ("learn", "devices")
 
 
 def _adopted_settings(values: dict[str, str]) -> dict:

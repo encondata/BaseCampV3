@@ -24,7 +24,8 @@ from serversherpa.assets.model_index import (
     display_name,
     normalize_model_key,
 )
-from serversherpa.db.models import Asset, AssetModel, InitiativeAsset
+from serversherpa.clientgroups.service import rematch_rows
+from serversherpa.db.models import Asset, AssetModel, Client, Initiative, InitiativeAsset
 from serversherpa.racks.recheck import recheck_placement
 
 logger = logging.getLogger(__name__)
@@ -143,10 +144,11 @@ class _SimAsset:
 
     id = None
 
-    def __init__(self, serial: str) -> None:
+    def __init__(self, serial: str, client_id: uuid.UUID | None = None) -> None:
         self.serial_number = serial
         self.rfid_tag: str | None = None
         self.pod_number: str | None = None
+        self.client_id = client_id
 
 
 _SIM_ASSOC = object()   # roster marker for validate-mode attachments
@@ -309,6 +311,10 @@ async def run_import(
     commit: bool = True,
     progress_every: int | None = None,
     reuse_by_name: bool = True,
+    client_choices: dict[str, dict] | None = None,
+    client_id: uuid.UUID | None = None,
+    job_id: uuid.UUID | None = None,
+    audit_actor: uuid.UUID | None = None,
 ) -> dict:
     """The shared pipeline. write=False (validate) runs the identical
     decision path with every DB write suppressed — created assets/models
@@ -323,8 +329,34 @@ async def run_import(
 
     reuse_by_name=False stops blank-serial rows from reusing a roster
     asset's gnrtd- serial (a review-rows reprocess passes only a subset of
-    the file, so a name that was ambiguous in the whole file looks unique)."""
-    from serversherpa.services.audit import audit
+    the file, so a name that was ambiguous in the whole file looks unique).
+
+    Client of record (SS-526/527): client_id is the move's client, read from
+    the initiative when not passed (a wizard check has no initiative yet and
+    passes its draft's client). New assets, and existing ones with no client,
+    get it. An existing asset (archived or not) that belongs to another client
+    is a conflict: validate reports it as `conflict`; commit applies
+    client_choices ({serial_lower: {"choice", "from_client_id"}}, see
+    client_choices.py) — continue moves the asset to this client (audited,
+    job_id in the changes) and imports the row as usual, but only while the
+    asset still belongs to from_client_id; skip, no choice, or an owner that
+    changed since the check leaves the row out as `skipped` (naming the
+    current owner) with nothing written. A move without a client behaves
+    exactly as before.
+
+    audit_actor is who the audit rows name (the reassignments and the
+    asset_import summary); it defaults to added_by. The worker passes the
+    job's committer, while added_by stays the uploader on roster rows and
+    created assets."""
+    from serversherpa.imports.client_choices import choice_of
+    from serversherpa.imports.owner_check import unmatched_owner_count
+    from serversherpa.services.audit import audit, diff, snapshot
+
+    if client_id is None and initiative_id is not None:
+        client_id = await db.scalar(
+            select(Initiative.client_id).where(Initiative.id == initiative_id))
+    choices = {str(k).lower(): choice_of(v) for k, v in (client_choices or {}).items()}
+    actor = audit_actor if audit_actor is not None else added_by
 
     await assign_generated_serials(db, rows, initiative_id=initiative_id,
                                    reuse_by_name=reuse_by_name)
@@ -333,8 +365,18 @@ async def run_import(
         db, initiative_id, ok_rows)
     force = make_model_mode in ("force", "hybrid")
 
+    client_names: dict[uuid.UUID, str] = {}
+    if client_id is not None:
+        wanted = {a.client_id for a in assets.values() if a.client_id} | {client_id}
+        client_names = {cid: name for cid, name in await db.execute(
+            select(Client.id, Client.name).where(Client.id.in_(wanted)))}
+
+    def _client_ref(cid: uuid.UUID) -> dict:
+        return {"id": str(cid), "name": client_names.get(cid, "")}
+
     details: list[dict] = []
     created = updated = review = errors = processed = 0
+    conflicts = moved = skipped = 0
     created_models: list[str] = []
     cancelled = False
     now = datetime.now(UTC)
@@ -347,8 +389,11 @@ async def run_import(
     # matches nothing literally.
     resolved_cache: dict[str, tuple] = {}
 
+    touched: list = []      # roster rows written this run (Owner re-match)
+    imported_owners: list[str | None] = []   # Owner of each row that imported
+
     async def _one_row(r: dict) -> None:
-        nonlocal created, updated, review, errors
+        nonlocal created, updated, review, errors, conflicts, moved, skipped
         if r["status"] == "error":
             errors += 1
             details.append({"row": r["row"],
@@ -372,6 +417,52 @@ async def run_import(
                 rfid_to_write = None
 
         asset = assets.get(serial)
+        moved_from = None
+        if (client_id is not None and asset is not None
+                and asset.client_id is not None and asset.client_id != client_id):
+            # The serial belongs to another client: the same physical device.
+            current = _client_ref(asset.client_id)
+            choice, from_client = choices.get(serial, (None, None))
+            # a Continue holds only for the owner the check saw
+            go = (choice == "continue" and from_client is not None
+                  and from_client == str(asset.client_id))
+            if not write or not go:
+                if write:
+                    skipped += 1
+                    status = "skipped"
+                    message = f"Skipped — belongs to {current['name']}"
+                else:
+                    conflicts += 1
+                    status = "conflict"
+                    message = f"Belongs to {current['name']}"
+                    # held as a processed row's tag would be, so a later row
+                    # with the same tag reads the same at check and commit
+                    if rfid_to_write:
+                        rfid_map[rfid_to_write.lower()] = asset
+                details.append({
+                    "row": r["row"], "serial_number": serial, "status": status,
+                    "message": message,
+                    "asset_id": str(asset.id) if getattr(asset, "id", None) else None,
+                    "serial_generated": r["serial_generated"],
+                    "current_client": current,
+                    # the crate estimate counts a row that may come along
+                    "model_id": str(asset.model_id) if getattr(asset, "model_id", None)
+                    else None})
+                return
+            before = snapshot(asset, ["client_id"])
+            asset.client_id = client_id
+            asset.updated_at = now
+            audit(db, actor_id=actor, entity_type="asset", entity_id=str(asset.id),
+                  action="update",
+                  changes={**diff(before, snapshot(asset, ["client_id"])),
+                           "source": {"from": None, "to": "from_to_import"},
+                           "job_id": str(job_id) if job_id else None})
+            moved += 1
+            moved_from = current
+        elif (client_id is not None and asset is not None
+                and asset.client_id is None and write):
+            asset.client_id = client_id
+            asset.updated_at = now
         asset_created = False
         # the model the row ends up with (crate estimate); None = unknown
         model_id = getattr(asset, "model_id", None)
@@ -441,12 +532,13 @@ async def run_import(
                     rfid_tag=rfid_to_write,
                     pod_number=r["source_pod"],
                     model_id=model_obj.id if model_obj is not None else None,
+                    client_id=client_id,
                     source="import", source_ref=source_label or None,
                     created_by=added_by)
                 db.add(asset)
                 await db.flush()
             else:
-                asset = _SimAsset(serial)
+                asset = _SimAsset(serial, client_id)
             asset_created = True
             assets[serial] = asset
             if rfid_to_write:
@@ -467,6 +559,7 @@ async def run_import(
             assoc = roster[serial]
             if write and isinstance(assoc, InitiativeAsset):
                 _apply_row(assoc, r, now)
+                touched.append(assoc)
             updated += 1
             status, message = "updated", "Asset updated in move"
         else:
@@ -476,15 +569,18 @@ async def run_import(
                                         added_by=added_by)
                 _apply_row(assoc, r, now)
                 db.add(assoc)
+                touched.append(assoc)
                 roster[serial] = assoc
             else:
                 roster[serial] = _SIM_ASSOC
             created += 1
             status, message = "created", "Asset added to move"
 
+        if moved_from is not None:
+            notes.insert(0, f"Moved from {moved_from['name']}")
         if notes:
             message = f"{message}. " + "; ".join(notes)
-        details.append({
+        detail = {
             "row": r["row"], "serial_number": serial, "status": status,
             "message": message,
             "asset_id": str(asset.id) if getattr(asset, "id", None) else None,
@@ -492,13 +588,26 @@ async def run_import(
             "serial_generated": r["serial_generated"],
             "match_method": match_method,
             "make_model_final": make_model_final,
-            "model_id": str(model_id) if model_id else None})
+            "model_id": str(model_id) if model_id else None}
+        if moved_from is not None:
+            detail["client_moved_from"] = moved_from
+        details.append(detail)
+        imported_owners.append(r.get("owner"))
+
+    async def _rematch_touched() -> None:
+        # resolve each written row's Owner against its client's groups, in the
+        # same transaction as the rows (so a commit never leaves them stale)
+        if touched:
+            await db.flush()
+            await rematch_rows(db, [a.id for a in touched])
+            touched.clear()
 
     every = progress_every or BATCH_SIZE       # read at call time: tests patch BATCH_SIZE
     for r in rows:
         processed += 1
         await _one_row(r)
         if write and processed % every == 0:
+            await _rematch_touched()
             if progress is not None:
                 await progress(processed, created, updated, errors)
             if commit:
@@ -512,15 +621,27 @@ async def run_import(
                "errors": errors}
     if created_models:
         summary["models_created"] = len(created_models)
+    summary["client_id"] = str(client_id) if client_id else None
+    if write:
+        summary["moved"] = moved
+        summary["skipped"] = skipped
+    else:
+        summary["conflicts"] = conflicts
+    if client_id is not None:
+        # the check counts the whole file; the import only the rows it wrote
+        # (skipped, review and error rows never reach the client's groups)
+        summary["owner_unmatched"] = await unmatched_owner_count(
+            db, client_id, imported_owners if write else [r.get("owner") for r in rows])
 
     if write and not cancelled:
         placement = await recheck_placement(db, initiative_id)
         summary["collisions_flagged"] = placement["collisions"]
         summary["orphans_flagged"] = placement["orphans"]
-        audit(db, actor_id=added_by, entity_type="initiative",
+        audit(db, actor_id=actor, entity_type="initiative",
               entity_id=str(initiative_id), action="asset_import",
               changes={**summary, "source": source_label})
     if write:
+        await _rematch_touched()
         if progress is not None:
             await progress(processed, created, updated, errors)
         if commit:

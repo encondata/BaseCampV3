@@ -441,20 +441,20 @@ kbd {
    makes every new rounded scroll box join this list or say why not. */
 :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
     .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre, .kd-modal-scroll, .lrn-phone,
-    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap)::-webkit-scrollbar {
+    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap, .mr-scroll)::-webkit-scrollbar {
   width: 12px;
   height: 12px;
 }
 :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
     .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre, .kd-modal-scroll, .lrn-phone,
-    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap)::-webkit-scrollbar-track {
+    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap, .mr-scroll)::-webkit-scrollbar-track {
   background: transparent;
   margin-block: 18px;
   margin-inline: 18px;
 }
 :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
     .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre, .kd-modal-scroll, .lrn-phone,
-    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap)::-webkit-scrollbar-thumb {
+    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap, .mr-scroll)::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
@@ -462,12 +462,12 @@ kbd {
 }
 :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
     .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre, .kd-modal-scroll, .lrn-phone,
-    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap)::-webkit-scrollbar-thumb:hover {
+    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap, .mr-scroll)::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
 }
 :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
     .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre, .kd-modal-scroll, .lrn-phone,
-    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap)::-webkit-scrollbar-corner {
+    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap, .mr-scroll)::-webkit-scrollbar-corner {
   background: transparent;
 }
 /* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
@@ -475,7 +475,7 @@ kbd {
 @supports not selector(::-webkit-scrollbar) {
   :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
       .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre, .kd-modal-scroll, .lrn-phone,
-    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap) {
+    .pln-done-tasks, .pln-doomed, .itl-scroll, .dock-list-wrap, .mr-scroll) {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
   }

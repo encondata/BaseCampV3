@@ -8,7 +8,7 @@ def test_registry_shape():
                              "containers", "initiatives", "scans", "status_rules",
                              "scanning_hardware", "labels", "time", "notifications",
                              "ai", "reports", "trucks", "warehouse", "kiosk", "wiki", "learning",
-                             "project_plans"}
+                             "project_plans", "app_distribution"}
     assert ACTIONS == ("view", "add", "change", "delete")
     assert REGISTRY["devtools"].developer_only is True
     assert REGISTRY["access"].always_viewable is True
@@ -21,6 +21,9 @@ def test_registry_shape():
     assert REGISTRY["project_plans"].label == "Project plans"
     assert REGISTRY["project_plans"].visible_to == frozenset({"global"})
     assert REGISTRY["project_plans"].routes == ()
+    assert REGISTRY["app_distribution"].label == "Apps"
+    assert REGISTRY["app_distribution"].visible_to == frozenset({"global"})
+    assert REGISTRY["app_distribution"].routes == ()
 
 
 def test_route_map():
@@ -37,6 +40,17 @@ def test_learning_admin_default_grants():
 
     assert DEFAULT_GRANTS["learning_admin"] == {
         "learning": ("view", "add", "change", "delete"), "wiki": ("view",)}
+
+
+def test_app_distribution_default_grants():
+    from serversherpa.access.defaults import DEFAULT_GRANTS
+
+    full = {"view", "add", "change", "delete"}
+    for role in ("developer", "founder", "super_admin", "admin"):
+        assert set(DEFAULT_GRANTS[role]["app_distribution"]) == full, role
+    assert set(DEFAULT_GRANTS["staff"]["app_distribution"]) == {"view"}
+    for role in ("client_owner", "client_admin", "learning_admin"):
+        assert "app_distribution" not in DEFAULT_GRANTS[role], role
 
 
 def test_project_plans_default_grants():

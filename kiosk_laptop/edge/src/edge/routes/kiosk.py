@@ -65,25 +65,28 @@ async def printer_events(request: Request,
     return Response(status_code=204)
 
 
-def with_station(body: bytes, store) -> tuple[bytes, str | None]:
+def with_station(body: bytes, store) -> tuple[bytes, str | None, object]:
     """The browser picks the station type; the edge alone supplies the reader
-    (from its current pairing), whatever the browser sent. Returns the body
-    and the station type. No pairing for `rfid` or `dock` (the reader
+    (from its current pairing), whatever the browser sent. Returns the body,
+    the station type and the browser's `rfid_type` (an RFID Station's kind,
+    kept with the shared setup only: it is taken out of the body, so the
+    cloud never sees it). No pairing for `rfid` or `dock` (the reader
     stations) is 422 `reader_required`, as the cloud answers it."""
     try:
         data = json.loads(body) if body else None
     except ValueError:
-        return body, None
+        return body, None, None
     if not isinstance(data, dict):
-        return body, None
+        return body, None, None
     data.pop("reader", None)
+    rfid_type = data.pop("rfid_type", None)
     station = data.get("station_type")
     if station in laptop_setup.READER_TYPES:
         reader = pairing.cloud_reader(store)
         if reader is None:
             raise err(422, "reader_required")
         data["reader"] = reader
-    return json.dumps(data).encode(), station if isinstance(station, str) else None
+    return json.dumps(data).encode(), station if isinstance(station, str) else None, rfid_type
 
 
 def _station_name(station: str | None) -> str:
@@ -115,7 +118,7 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     `station_changed`. Every setup revokes the Time Clock's armed screens
     (they go with the key)."""
     st = request.app.state
-    body, station = with_station(await request.body(), st.store)
+    body, station, rfid_type = with_station(await request.body(), st.store)
     body = rewrite_body("/kiosk/setup", body, st.identity)
     try:
         resp = await st.upstream.as_person(session.person_id, "POST", "/kiosk/setup",
@@ -146,7 +149,7 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
         # revokes the Time Clock's armed screens: Start Time Clock arms again
         station_key.clear(st.store)
         if isinstance(result, dict):
-            laptop_setup.save(st.store, result, station)
+            laptop_setup.save(st.store, result, station, rfid_type=rfid_type)
             if result.get("initiative_id") is not None:
                 events.record(st.store, "move_loaded", "Move loaded",
                               str(result.get("initiative_name") or ""))

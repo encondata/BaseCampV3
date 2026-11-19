@@ -17,9 +17,11 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import ClientGroupsPanel from '../components/clients/ClientGroupsPanel';
 import ChildPartnersPanel from '../components/stakeholders/ChildPartnersPanel';
 import StatusHover from '../components/StatusHover';
 import TradeChips from '../components/workers/TradeChips';
+import GroupChips, { useClientGroupNames } from '../components/clients/GroupChips';
 import { TIER_LABEL } from '../components/TierSelect';
 import {
   ApiError,
@@ -198,6 +200,7 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
   const [partnerTypes, setPartnerTypes] = useState<StatusValue[]>([]);
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [contacts, setContacts] = useState<ContactItem[] | null>(null);
+  const groupNames = useClientGroupNames(kind === 'client' ? (id ?? null) : null);
   const [workers, setWorkers] = useState<WorkerItem[] | null>(null);
 
   useEffect(() => {
@@ -407,7 +410,12 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
             {c.display_name}
           </span>
         );
-      case 'tier': return <span className="chip tag">{TIER_LABEL[c.tier]}</span>;
+      case 'tier': return (
+        <div className="chips">
+          <span className="chip tag">{TIER_LABEL[c.tier]}</span>
+          <GroupChips ids={c.group_ids} names={groupNames} />
+        </div>
+      );
       case 'email': {
         const text = c.email ?? '—';
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
@@ -849,6 +857,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
           )}
         </div>
       )}
+
+      {/* ── Groups (clients, global staff only) ─────────────────────── */}
+      {kind === 'client' && canEditHierarchy && <ClientGroupsPanel clientId={org.id} />}
 
       {/* ── Notes & uploads ──────────────────────────────────────────── */}
       <div className="init-panel" style={{ marginTop: 18 }}>
