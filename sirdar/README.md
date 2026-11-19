@@ -1064,7 +1064,10 @@ still needs certificates through NPM, which the create response flags as
   (Pre-deploy dump) starts on the data VM: it checks out the commit there and
   has its `ss-stack hba` rewrite `pg_hba.conf`, so an Update after one to an
   older commit (whose step 7 left the devices database's lines out) can still
-  dump the devices database. A commit
+  dump the devices database. Don't Update the idle server to a commit older
+  than the Devices release while the live server runs Devices: that commit's
+  step 7 drops the devices lines from `pg_hba.conf`, and the live server can't
+  reach its devices database until the next Update to a current commit. A commit
   that changes the Postgres or SeaweedFS image, or the data stacks' compose
   files, recreates those containers, so the live server's database restarts
   before the idle server is smoke-tested; step 7's log says when this happened.
