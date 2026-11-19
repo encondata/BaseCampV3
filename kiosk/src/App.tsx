@@ -27,6 +27,8 @@ import Scan from './pages/Scan';
 import Settings from './pages/Settings';
 import StartTimeclock from './pages/StartTimeclock';
 import TimeclockKiosk from './pages/TimeclockKiosk';
+import Troubleshooting from './pages/Troubleshooting';
+import TroubleshootingTopic from './pages/TroubleshootingTopic';
 import Trucks from './pages/Trucks';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
@@ -80,6 +82,9 @@ export default function App() {
             element={<KioskGuard anonTo="/"><KioskShell><StartTimeclock /></KioskShell></KioskGuard>}
           />
           <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
+          {/* Troubleshooting guides are like Settings: no sign-in, no setup gate. */}
+          <Route path="/troubleshooting" element={<KioskShell><Troubleshooting /></KioskShell>} />
+          <Route path="/troubleshooting/:topicId" element={<KioskShell><TroubleshootingTopic /></KioskShell>} />
           {/* Home — or, on an armed Time Clock station with nobody signed
               in, the signed-out time clock's Welcome screen. */}
           <Route path="/" element={<StationRoot />} />

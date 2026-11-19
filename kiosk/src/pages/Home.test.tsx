@@ -42,7 +42,7 @@ it('renders a tile link for each feature, Kiosk Setup first and Settings last', 
   writeSetupState('complete');
   renderRouted();
   const links = screen.getAllByRole('link');
-  expect(links).toHaveLength(9);
+  expect(links).toHaveLength(10);
   expect(links[0].textContent).toContain('Kiosk Setup');
   expect(links[0].getAttribute('href')).toBe('/setup');
   expect(screen.getByRole('link', { name: /Scanning/ }).getAttribute('href')).toBe('/scan');
@@ -58,8 +58,10 @@ it('renders a tile link for each feature, Kiosk Setup first and Settings last', 
   expect(links[5].getAttribute('href')).toBe('/lookup');
   expect(screen.getByRole('link', { name: /Label Printing/ }).getAttribute('href')).toBe('/labels');
   expect(screen.getByRole('link', { name: /Timeclock/ }).getAttribute('href')).toBe('/timeclock');
-  expect(links[8].textContent).toContain('Settings');
-  expect(links[8].getAttribute('href')).toBe('/settings');
+  expect(links[8].textContent).toContain('Troubleshooting');
+  expect(links[8].getAttribute('href')).toBe('/troubleshooting');
+  expect(links[9].textContent).toContain('Settings');
+  expect(links[9].getAttribute('href')).toBe('/settings');
 });
 
 it('renders the launcher tiles only, with no facts list', () => {
@@ -85,12 +87,13 @@ it('navigates to the placeholder and back', async () => {
   expect(await screen.findByText('What would you like to do?')).toBeTruthy();
 });
 
-it('when setup is incomplete, hides every tile except Kiosk Setup and Settings, and shows the banner', () => {
+it('when setup is incomplete, hides every tile except Kiosk Setup, Troubleshooting and Settings, and shows the banner', () => {
   renderRouted();
-  expect(tileTitles()).toEqual(['Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['Kiosk Setup', 'Troubleshooting', 'Settings']);
+  expect(screen.getByRole('link', { name: /^Troubleshooting/ }).getAttribute('href')).toBe('/troubleshooting');
   expect(screen.getByRole('link', { name: /^Kiosk Setup/ }).getAttribute('href')).toBe('/setup');
   expect(screen.getByRole('link', { name: /^Settings/ }).getAttribute('href')).toBe('/settings');
-  expect(screen.getByText('Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.')).toBeTruthy();
+  expect(screen.getByText('Kiosk setup is incomplete. Only Kiosk Setup, Troubleshooting and Settings are available.')).toBeTruthy();
 });
 
 it('when setup is complete, no tile is disabled and no banner is shown', () => {
@@ -104,11 +107,11 @@ it('when setup is complete, no tile is disabled and no banner is shown', () => {
   expect(screen.queryByText(/Kiosk setup failed/)).toBeNull();
 });
 
-it('when setup failed, shows the failed copy and only Kiosk Setup and Settings', () => {
+it('when setup failed, shows the failed copy and only Kiosk Setup, Troubleshooting and Settings', () => {
   writeSetupState('failed');
   renderRouted();
   expect(screen.getByText('Kiosk setup failed. Open Kiosk Setup to try again.')).toBeTruthy();
-  expect(tileTitles()).toEqual(['Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['Kiosk Setup', 'Troubleshooting', 'Settings']);
 });
 
 it('when setup is incomplete and developer mode is on, no tile is disabled and the dev note replaces the normal banner', () => {
@@ -119,7 +122,7 @@ it('when setup is incomplete and developer mode is on, no tile is disabled and t
     expect(tile.getAttribute('aria-disabled')).toBeNull();
   }
   expect(screen.getByText('Developer mode: all features are available while kiosk setup is incomplete.')).toBeTruthy();
-  expect(screen.queryByText('Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.')).toBeNull();
+  expect(screen.queryByText('Kiosk setup is incomplete. Only Kiosk Setup, Troubleshooting and Settings are available.')).toBeNull();
 });
 
 it('when setup failed and developer mode is on, no tile is disabled and the dev note reflects the failed state', () => {
@@ -162,20 +165,20 @@ it('shows an RFID Reader tile first, linking to /rfid_status, for a laptop with 
   expect(links[1].textContent).toContain('Kiosk Setup');
 });
 
-it('an RFID Station shows only RFID Reader, Kiosk Setup and Settings', () => {
+it('an RFID Station shows only RFID Reader, Kiosk Setup, Troubleshooting and Settings', () => {
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   writeSetupState('complete');
   saveSetup('rfid');
   renderRouted();
-  expect(tileTitles()).toEqual(['RFID Reader', 'Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['RFID Reader', 'Kiosk Setup', 'Troubleshooting', 'Settings']);
 });
 
-it('a Label Station shows Label Printing first, then Kiosk Setup and Settings', () => {
+it('a Label Station shows Label Printing first, then Kiosk Setup, Troubleshooting and Settings', () => {
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   writeSetupState('complete');
   saveSetup('label');
   renderRouted();
-  expect(tileTitles()).toEqual(['Label Printing', 'Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['Label Printing', 'Kiosk Setup', 'Troubleshooting', 'Settings']);
 });
 
 it('a Time Clock station shows only Time Clock, Kiosk Setup and Settings, Time Clock linking to its start page', () => {
@@ -183,7 +186,7 @@ it('a Time Clock station shows only Time Clock, Kiosk Setup and Settings, Time C
   writeSetupState('complete');
   saveSetup('timeclock');
   renderRouted();
-  expect(tileTitles()).toEqual(['Time Clock', 'Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['Time Clock', 'Kiosk Setup', 'Troubleshooting', 'Settings']);
   expect(screen.getAllByRole('link')[0].getAttribute('href')).toBe('/timeclock/station');
 });
 
@@ -191,12 +194,12 @@ it('web mode and an unset laptop still show every feature', () => {
   writeSetupState('complete');
   saveSetup('rfid');
   renderRouted();
-  expect(tileTitles()).toHaveLength(9);
+  expect(tileTitles()).toHaveLength(10);
   cleanup();
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   saveSetup();
   renderRouted();
-  expect(tileTitles()).toHaveLength(9);
+  expect(tileTitles()).toHaveLength(10);
 });
 
 it('hides the RFID Reader tile for a Label Station', () => {
@@ -225,7 +228,7 @@ it('hides the RFID Reader tile while setup is incomplete, like the other tiles',
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   saveSetup('rfid');
   renderRouted();
-  expect(tileTitles()).toEqual(['Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['Kiosk Setup', 'Troubleshooting', 'Settings']);
 });
 
 // -- a web kiosk set up not to print labels ---------------------------------
@@ -234,7 +237,7 @@ it('a web kiosk set up not to print labels has no Label Printing tile', () => {
   writeSetupState('complete');
   writeWebLabelPrintingOff();
   renderRouted();
-  expect(tileTitles()).toHaveLength(8);
+  expect(tileTitles()).toHaveLength(9);
   expect(screen.queryByRole('link', { name: /Label Printing/ })).toBeNull();
 });
 
@@ -252,5 +255,5 @@ it('a laptop Label Station keeps Label Printing whatever the web kiosk answer sa
   writeWebLabelPrintingOff();
   saveSetup('label');
   renderRouted();
-  expect(tileTitles()).toEqual(['Label Printing', 'Kiosk Setup', 'Settings']);
+  expect(tileTitles()).toEqual(['Label Printing', 'Kiosk Setup', 'Troubleshooting', 'Settings']);
 });

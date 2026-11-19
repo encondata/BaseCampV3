@@ -1,7 +1,7 @@
 /** Home launcher — a tile per kiosk feature. The identity facts that used
  *  to live here now live in the shell's footer (KioskShell).
  *
- *  Until kiosk setup is complete only Kiosk Setup and Settings show (the
+ *  Until kiosk setup is complete only Kiosk Setup, Troubleshooting and Settings show (the
  *  other tiles are hidden, not greyed out); developer mode shows them all.
  *  A web kiosk set up not to print labels has no Label Printing tile. */
 
@@ -129,6 +129,15 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
       <path d="M11 10v20M17 10v20M23 10v20M29 10v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   ),
+  // A wrench: fix what's wrong with the kiosk's hardware.
+  troubleshooting: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        d="M25.5 6.5a8 8 0 0 0-8.9 10.6L6.5 27.2a3.3 3.3 0 0 0 4.7 4.7l10.1-10.1a8 8 0 0 0 10.6-8.9l-4.6 4.6-4.4-1.2-1.2-4.4z"
+        stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+      />
+    </svg>
+  ),
   settings: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M6 12h20M31 12h3" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
@@ -164,7 +173,7 @@ export default function Home() {
         <div className="portal-banner kiosk-setup-banner">
           {failed
             ? 'Kiosk setup failed. Open Kiosk Setup to try again.'
-            : 'Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.'}
+            : 'Kiosk setup is incomplete. Only Kiosk Setup, Troubleshooting and Settings are available.'}
         </div>
       )}
       <nav className="kiosk-launcher" aria-label="Kiosk features">

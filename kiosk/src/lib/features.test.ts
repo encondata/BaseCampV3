@@ -77,7 +77,7 @@ it('RFID Enroll sits immediately after Scanning, with its own route', () => {
 });
 
 it('a Time Clock station shows Time Clock, Kiosk Setup and Settings', () => {
-  expect(homeFeatures(true, 'timeclock').map((f) => f.id)).toEqual(['clock', 'setup', 'settings']);
+  expect(homeFeatures(true, 'timeclock').map((f) => f.id)).toEqual(['clock', 'setup', 'troubleshooting', 'settings']);
   expect(TIMECLOCK_STATION_FEATURE).toEqual({
     id: 'clock', path: '/timeclock/station', title: 'Time Clock',
     blurb: 'Start the time clock for workers.',
@@ -86,7 +86,7 @@ it('a Time Clock station shows Time Clock, Kiosk Setup and Settings', () => {
 });
 
 it('a Dock shows Dock, RFID Reader, Kiosk Setup and Settings', () => {
-  expect(homeFeatures(true, 'dock').map((f) => f.id)).toEqual(['dock', 'rfid', 'setup', 'settings']);
+  expect(homeFeatures(true, 'dock').map((f) => f.id)).toEqual(['dock', 'rfid', 'setup', 'troubleshooting', 'settings']);
   expect(DOCK_FEATURE).toEqual({
     id: 'dock', path: '/dock', title: 'Dock',
     blurb: 'Watch crates pass the curtain and what each one packed.',
@@ -97,7 +97,22 @@ it('a Dock shows Dock, RFID Reader, Kiosk Setup and Settings', () => {
 it('every laptop station shows its own tiles first, then Kiosk Setup and Settings last', () => {
   for (const s of ['rfid', 'label', 'timeclock', 'dock'] as const) {
     const ids = homeFeatures(true, s).map((f) => f.id);
-    expect(ids.slice(-2)).toEqual(['setup', 'settings']);
+    expect(ids.slice(-3)).toEqual(['setup', 'troubleshooting', 'settings']);
     expect(ids[0]).not.toBe('setup');
   }
+});
+
+const troubleshooting = FEATURES.find((f) => f.id === 'troubleshooting')!;
+
+it('Troubleshooting sits immediately before Settings and is always available', () => {
+  expect(troubleshooting).toEqual({
+    id: 'troubleshooting', path: '/troubleshooting', title: 'Troubleshooting',
+    blurb: 'Fix common problems with kiosk hardware.', alwaysAvailable: true,
+  });
+  const ids = homeFeatures(false, undefined).map((f) => f.id);
+  expect(ids.slice(-2)).toEqual(['troubleshooting', 'settings']);
+  for (const s of ['rfid', 'label', 'timeclock', 'dock'] as const) {
+    expect(homeFeatures(true, s).map((f) => f.id).slice(-2)).toEqual(['troubleshooting', 'settings']);
+  }
+  expect(featureAvailable(troubleshooting, 'incomplete', false)).toBe(true);
 });
