@@ -1,12 +1,15 @@
 """Shared fixtures and builders for the deploy pipeline tests (phase 2a)."""
 
+import base64
+import json
+
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog, Environment, EnvironmentSecret, EnvironmentService
-from sirdar_api.deploy import envfile, known_hosts, pipeline, vault
+from sirdar_api.deploy import apps, envfile, known_hosts, pipeline, vault
 
 from .fake_provisioner import FakeProvisioner
 from .fake_publisher import FakePublisher
@@ -24,6 +27,23 @@ ENV_SECRETS = {
     "SS_PASSWORD_PEPPER": "d4" * 8 + "99887766" * 6,
     "SS_WIKI_SERVICE_TOKEN": "e5" * 8 + "55443322" * 6,
 }
+
+
+# A Firebase service-account key shaped like Google's download (a made-up
+# private key): SS_FCM_SERVICE_ACCOUNT_B64 is its JSON, base64 on one line.
+FCM_ACCOUNT = {
+    "type": "service_account", "project_id": "ss-push-test", "private_key_id": "0a1b2c3d",
+    # as long as a real 2048-bit key, so the encoded key is ~2.5 KB like Google's
+    "private_key": ("-----BEGIN PRIVATE KEY-----\nMIIEvFAKEfcmKEYmaterial" + "Q" * 1600
+                    + "\n-----END PRIVATE KEY-----\n"),
+    "client_email": "push@ss-push-test.iam.gserviceaccount.com", "client_id": "1234567890",
+}
+
+
+def fcm_key(account: object = None, **over) -> str:
+    """SS_FCM_SERVICE_ACCOUNT_B64 for FCM_ACCOUNT with `over` applied (or for `account`)."""
+    data = {**FCM_ACCOUNT, **over} if account is None else account
+    return base64.b64encode(json.dumps(data, indent=2).encode()).decode()
 
 
 @pytest.fixture
@@ -92,12 +112,14 @@ async def make_environment(db, *, name: str = "uat", target_id: str = "ssh",
                       keep_dumps=5, spaces_bucket="serversherpa", log_level="INFO")
     db.add(env)
     await db.flush()
+    # Hostnames only for the names a real environment publishes: its apps are
+    # Environment.apps' default (every app Sirdar runs), as environments.py does.
+    public = apps.public_services(list(apps.RUNNABLE_APPS))
     for service in envfile.SERVICES:
         db.add(EnvironmentService(
             environment_id=env.id, service=service, host_ip=host,
             port=envfile.DEFAULT_PORTS[service], proxied=False,
-            hostname=(f"{service}.{env.base_domain}"
-                      if service in envfile.PUBLIC_SERVICES else None)))
+            hostname=f"{service}.{env.base_domain}" if service in public else None))
     if with_home:
         db.add(EnvironmentService(
             environment_id=env.id, service="home", host_ip=host,

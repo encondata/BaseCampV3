@@ -14,6 +14,7 @@ from .deploy_factories import (  # noqa: F401
     CAT_ENV,
     ENV_SECRETS,
     REPO_HEAD,
+    fcm_key,
     make_environment,
     remote_env_text,
     secrets_key,
@@ -165,11 +166,12 @@ async def test_adopted_record_renders_the_same_env(db, target):
         bind_ip=env.bind_ip, ports={r.service: r.port for r in rows},
         keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket, log_level=env.log_level,
         secrets=await _secrets(db, env.id))))
-    # SS_SMTP_PASSWORD (phase 8c) and SS_KIOSK_SIGNING_DIGESTS postdate this
+    # SS_SMTP_PASSWORD (phase 8c), SS_FCM_SERVICE_ACCOUNT_B64 and SS_KIOSK_SIGNING_DIGESTS postdate this
     # .env: unset, they render empty; so does the devices port (a late
     # service: its default, free on this host)
     remote = envfile.parse_env(remote_env_text(SS_ANTHROPIC_API_KEY="sk-ant-api03-x",
                                                STACK_API_PORT="8100", SS_SMTP_PASSWORD="",
+                                               SS_FCM_SERVICE_ACCOUNT_B64="",
                                                SS_KIOSK_SIGNING_DIGESTS="",
                                                STACK_DEVICES_PORT="8093"))
     assert rendered == {k: v for k, v in remote.items() if k in envfile.KNOWN_KEYS}
@@ -567,3 +569,66 @@ def test_devices_secrets_are_generated_in_their_shapes():
     assert re.fullmatch(r"[0-9a-f]{64}", made["SS_DEVICES_SERVICE_TOKEN"])
     Fernet(made["DEVICES_SECRET_KEY"].encode())
     assert set(vault.generate_devices_secrets(["DEVICES_SECRET_KEY"])) == {"DEVICES_SECRET_KEY"}
+
+
+# ---- the Firebase push key (SS_FCM_SERVICE_ACCOUNT_B64) ------------------------
+
+FCM = "SS_FCM_SERVICE_ACCOUNT_B64"
+
+
+async def test_create_stores_a_firebase_key(db, target):
+    key = fcm_key()
+    env = await environments.create_new(db, get_settings(), **_new(secrets={FCM: key}),
+                                        actor_id=None)
+    await db.commit()
+    assert (await _secrets(db, env.id))[FCM] == key
+
+
+async def test_patch_sets_and_clears_a_firebase_key(db, target):
+    env = await make_environment(db)
+    key = fcm_key()
+    changed = await environments.update(db, get_settings(), env, {"secrets": {FCM: key}})
+    await db.commit()
+    assert changed == [f"secrets.{FCM}"]
+    assert (await _secrets(db, env.id))[FCM] == key
+    row = await db.get(EnvironmentSecret, (env.id, FCM))
+    assert key.encode() not in row.value_enc                 # vault-encrypted
+
+    changed = await environments.update(db, get_settings(), env, {"secrets": {FCM: ""}})
+    await db.commit()
+    assert changed == [f"secrets.{FCM}"]
+    assert FCM not in await environments.secret_keys_of(db, env.id)
+
+
+@pytest.mark.parametrize("value", [
+    '{"type": "service_account", "project_id": "p", "client_email": "e", "private_key": "k"}',
+    "bm90IGpzb24-",                                          # base64url, not base64
+    fcm_key(type="authorized_user"),
+    fcm_key(private_key=""),
+    fcm_key(padding="x" * 6200),                             # over 8192
+], ids=["raw-json", "base64url", "wrong-type", "empty-key", "too-long"])
+async def test_patch_refuses_a_bad_firebase_key(db, target, value):
+    env = await make_environment(db)
+    with pytest.raises(EnvError) as exc:
+        await environments.update(db, get_settings(), env, {"secrets": {FCM: value}})
+    assert (exc.value.code, exc.value.extra) == ("secret_invalid", {"key": FCM})
+    assert value[:20] not in repr(exc.value) + repr(exc.value.extra)
+
+
+async def test_adopt_imports_a_firebase_key(db, target):
+    key = fcm_key()
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**{FCM: key}))
+    env, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                              target_id="ssh")
+    await db.commit()
+    assert FCM in report.imported_secrets
+    assert (await _secrets(db, env.id))[FCM] == key
+
+
+async def test_adopt_refuses_a_firebase_key_that_isnt_one(db, target):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**{FCM: "sk-ant-api03-x"}))
+    with pytest.raises(EnvError) as exc:
+        await environments.adopt(db, get_settings(), name="uat", type_="dev", target_id="ssh")
+    assert (exc.value.code, exc.value.extra) == ("adopt_value_invalid", {"key": FCM})

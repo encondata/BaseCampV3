@@ -79,7 +79,11 @@ caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
 lan_db() { [[ $(env_value STACK_DB_PUBLISH) == 1 ]]; }
 
 # The optional apps, in STACK_APPS order: the one list (Sirdar's drift test
-# reads it too).
+# reads it too). Sirdar's render.yml and slot_smoke.yml grep this line to
+# tell whether a checkout knows the learning site and the Devices app, so
+# keep it one line in this form or change those greps too:
+# sirdar/api/tests/test_deploy_stack_drift.py and
+# deploy/tests/test_sirdar_greps.py run them against this file.
 OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)
 
 # STACK_APPS is exact: comma-separated names from the list (lowercase, no

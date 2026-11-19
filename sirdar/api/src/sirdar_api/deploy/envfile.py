@@ -5,6 +5,9 @@ environment. Keys and their order follow deploy/stack/env.example.
 Values are written raw (KEY=value, no quotes), exactly as ss-stack and
 docker compose read them. Errors name keys, never values."""
 
+import base64
+import binascii
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -22,10 +25,18 @@ PORT_KEYS = {s: f"STACK_{s.upper()}_PORT" for s in SERVICES}
 
 REQUIRED_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
                     "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN")
-OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD", "SS_SMTP_PASSWORD")
+# The Firebase push key: the service-account JSON, base64 on one line (the
+# API's fcm.FcmClient reads it; push stays off while it's empty).
+FCM_KEY = "SS_FCM_SERVICE_ACCOUNT_B64"
+OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD", "SS_SMTP_PASSWORD",
+                    FCM_KEY)
 # Optional secrets set by hand (API keys, passwords): no whitespace, quotes,
 # "$" (compose interpolation), "#", backslash or backtick.
 SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
+# FCM_KEY: standard base64 (no whitespace), at most FCM_KEY_MAX characters.
+FCM_KEY_MAX = 8192
+_B64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+_FCM_FIELDS = ("project_id", "client_email", "private_key")
 SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
 # Settings that aren't secrets, written right after the optional secrets ("" when
 # unset): the kiosk app's signing certificate digests (apps.env_extra fills it).
@@ -95,6 +106,27 @@ def image_tag(sha: str) -> str:
 
 def unsafe_value(value: str) -> bool:
     return any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in value)
+
+
+def valid_fcm_key(value: object) -> bool:
+    """FCM_KEY's rule, the API's own: base64 of a JSON object with "type":
+    "service_account" and non-empty project_id, client_email and private_key."""
+    if not isinstance(value, str) or len(value) > FCM_KEY_MAX or not _B64_RE.fullmatch(value):
+        return False
+    try:
+        account = json.loads(base64.b64decode(value, validate=True))
+    except (binascii.Error, ValueError):            # bad padding, not UTF-8, not JSON
+        return False
+    return (isinstance(account, dict) and account.get("type") == "service_account"
+            and all(isinstance(account.get(k), str) and account[k] for k in _FCM_FIELDS))
+
+
+def valid_secret(key: str, value: object) -> bool:
+    """A non-empty value an optional secret (`key`) may hold in the .env:
+    FCM_KEY by valid_fcm_key, the others by SECRET_VALUE_RE."""
+    if key == FCM_KEY:
+        return valid_fcm_key(value)
+    return isinstance(value, str) and bool(SECRET_VALUE_RE.fullmatch(value))
 
 
 class RenderError(Exception):

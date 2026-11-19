@@ -1,10 +1,14 @@
 # Step 4 — Render config: the environment's .env (mode 600) from Sirdar's
 # record. It arrives base64-encoded so no value is ever read as a template,
 # and it carries every secret, so the tasks that read it are no_log.
-# A checkout from before the learning site or the Devices app (its ss-stack's
-# STACK_APPS check refuses any app it doesn't know: tasks/known_apps.yml)
-# runs without them, so Roll back, Update, Restore backup and adopt to an
-# older commit still start.
+# A checkout from before the learning site (ss-stack learned learn in
+# 6cc4c8b7) or the Devices app (79674823f) runs without them: its ss-stack's
+# STACK_APPS check refuses any app it doesn't know. So Roll back, Update,
+# Restore backup and adopt to an older commit still start.
+# Each check recognizes the app in ss-stack's check_apps case line (6cc4c8b7
+# through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on); the same
+# patterns are in slot_smoke.yml, and tests/test_deploy_stack_drift.py runs
+# these greps against the real ss-stack.
 - name: Render config
   hosts: target
   gather_facts: false
@@ -23,10 +27,35 @@
              | trim }}
       no_log: true
 
-    - name: Which newer apps this checkout's ss-stack doesn't know
-      ansible.builtin.include_tasks: tasks/known_apps.yml
-      vars:
-        apps_asked: "{{ stack_apps.split(',') }}"
+    - name: Does this checkout's ss-stack know the learning site?
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qE
+          - "^ +([a-z]+[|])*learn([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*learn( [a-z]+)*[)]"
+          - "{{ ss_stack }}"
+      register: knows_learn
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'learn' in stack_apps.split(',')
+
+    - name: Does this checkout's ss-stack know the Devices app?
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qE
+          - "^ +([a-z]+[|])*devices([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*devices( [a-z]+)*[)]"
+          - "{{ ss_stack }}"
+      register: knows_devices
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'devices' in stack_apps.split(',')
+
+    - name: The apps it doesn't know
+      ansible.builtin.set_fact:
+        apps_unknown: >-
+          {{ (['learn'] if knows_learn is not skipped and knows_learn.rc != 0 else [])
+             + (['devices'] if knows_devices is not skipped and knows_devices.rc != 0 else []) }}
 
     - name: Run without them
       ansible.builtin.set_fact:

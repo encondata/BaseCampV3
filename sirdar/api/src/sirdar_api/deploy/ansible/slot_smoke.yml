@@ -7,15 +7,44 @@
 # 10 minutes.
 # On a LAN Blue/Green app VM each name carries its own port (no Caddy).
 # A checkout from before the learning site or the Devices app runs without
-# them (render.yml), so their names aren't tried.
+# them (render.yml), so their names aren't tried. The checks are the same as
+# render.yml's: each recognizes the app in ss-stack's check_apps case line
+# (6cc4c8b7 through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on),
+# and tests/test_deploy_stack_drift.py runs these greps against the real
+# ss-stack.
 - name: Smoke test (slot)
   hosts: target
   gather_facts: false
   tasks:
-    - name: Which newer apps this checkout's ss-stack doesn't know
-      ansible.builtin.include_tasks: tasks/known_apps.yml
-      vars:
-        apps_asked: "{{ public_hosts | map(attribute='service') | list }}"
+    - name: Does this checkout's ss-stack know the learning site?
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qE
+          - "^ +([a-z]+[|])*learn([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*learn( [a-z]+)*[)]"
+          - "{{ ss_stack }}"
+      register: knows_learn
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'learn' in public_hosts | map(attribute='service')
+
+    - name: Does this checkout's ss-stack know the Devices app?
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -qE
+          - "^ +([a-z]+[|])*devices([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*devices( [a-z]+)*[)]"
+          - "{{ ss_stack }}"
+      register: knows_devices
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'devices' in public_hosts | map(attribute='service')
+
+    - name: The apps it doesn't know
+      ansible.builtin.set_fact:
+        apps_unknown: >-
+          {{ (['learn'] if knows_learn is not skipped and knows_learn.rc != 0 else [])
+             + (['devices'] if knows_devices is not skipped and knows_devices.rc != 0 else []) }}
 
     - name: Each public name answers through Caddy
       ansible.builtin.uri:

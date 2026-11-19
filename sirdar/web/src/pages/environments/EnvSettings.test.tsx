@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -469,4 +469,109 @@ it('says which proxy the environment publishes through, beside the proxy IP', as
   cleanup();
   open();
   expect(await screen.findByText('Published through Nginx Proxy Manager, chosen when it was created.')).toBeTruthy();
+});
+
+
+// ---- the Firebase push key (SS_FCM_SERVICE_ACCOUNT_B64) ----
+const FCM = 'SS_FCM_SERVICE_ACCOUNT_B64';
+const FCM_DEFAULTS = { ...DEFAULTS, optional_secrets: [...DEFAULTS.optional_secrets, FCM] };
+const withFcm = (isSet: boolean) => ({ ...ENV, secrets_set: { ...ENV.secrets_set, [FCM]: isSet } });
+// "é" proves the encoding is UTF-8 (btoa alone throws on it).
+const ACCOUNT = {
+  type: 'service_account', project_id: 'ss-push-test', private_key_id: 'clé-1',
+  private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvFAKE\n-----END PRIVATE KEY-----\n',
+  client_email: 'push@ss-push-test.iam.gserviceaccount.com',
+};
+const jsonFile = (body: string, name = 'ss-push-test-0a1b2c3d.json') => new File([body], name, { type: 'application/json' });
+const chooseKey = (file: File) => fireEvent.change(screen.getByTestId(`env-secret-${FCM}-file`), { target: { files: [file] } });
+const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+
+it('the Firebase push key is labeled, explained and picked from a JSON file, not typed', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  open(withFcm(false));
+  const field = secret('Firebase push key: not set');
+  expect(within(field).getByText("The Firebase service-account JSON. Turns on push notifications to admins' phones.")).toBeTruthy();
+  expect(within(field).getByRole('button', { name: 'Choose JSON file' })).toBeTruthy();
+  expect(within(field).queryByRole('button', { name: 'Add' })).toBeNull();
+  expect(screen.queryByLabelText('Firebase push key')).toBeNull();          // no text box
+  expect((screen.getByTestId(`env-secret-${FCM}-file`) as HTMLInputElement).accept).toContain('.json');
+  expect(screen.queryByText(new RegExp(FCM))).toBeNull();
+});
+
+it('a valid key file is base64-encoded (UTF-8) and saved with the other settings', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  const { onSaved } = open(withFcm(false));
+  const text = JSON.stringify(ACCOUNT, null, 2);
+  chooseKey(jsonFile(text));
+  expect(await screen.findByText('Firebase push key: ss-push-test-0a1b2c3d.json chosen')).toBeTruthy();
+  await save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { secrets: { [FCM]: b64(text) } });
+});
+
+it('a file that is not a service-account key shows an error and saves nothing', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  open(withFcm(false));
+  chooseKey(jsonFile('not json at all', 'notes.txt'));
+  expect(await within(secret('Firebase push key: not set')).findByText(
+    "That file isn't JSON. Choose the service-account key file you downloaded from Firebase.")).toBeTruthy();
+  for (const bad of [{ ...ACCOUNT, type: 'authorized_user' }, { ...ACCOUNT, private_key: '' }, [ACCOUNT]]) {
+    chooseKey(jsonFile(JSON.stringify(bad)));
+    expect(await within(secret('Firebase push key: not set')).findByText(
+      'That JSON isn\'t a Firebase service-account key: it needs "type": "service_account", project_id, client_email and private_key.')).toBeTruthy();
+  }
+  chooseKey(jsonFile(JSON.stringify({ ...ACCOUNT, padding: 'x'.repeat(7000) })));
+  expect(await within(secret('Firebase push key: not set')).findByText(
+    'That file is too large to be a Firebase service-account key.')).toBeTruthy();
+  await save();
+  expect(screen.getByText('Nothing to save.')).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+});
+
+it('a bad file after a good one drops the good one', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  open(withFcm(true));
+  chooseKey(jsonFile(JSON.stringify(ACCOUNT)));
+  expect(await screen.findByText('Firebase push key: ss-push-test-0a1b2c3d.json chosen')).toBeTruthy();
+  chooseKey(jsonFile('{'));
+  expect(await screen.findByText(/That file isn't JSON/)).toBeTruthy();
+  expect(secret('Firebase push key: set')).toBeTruthy();
+  await save();
+  expect(screen.getByText('Nothing to save.')).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+});
+
+it('Keep backs out of a chosen file; Clear removes a saved key', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  open(withFcm(true));
+  const field = secret('Firebase push key: set');
+  expect(within(field).getByRole('button', { name: 'Choose JSON file' })).toBeTruthy();
+  chooseKey(jsonFile(JSON.stringify(ACCOUNT)));
+  await screen.findByText('Firebase push key: ss-push-test-0a1b2c3d.json chosen');
+  await userEvent.click(within(secret('Firebase push key: ss-push-test-0a1b2c3d.json chosen')).getByRole('button', { name: 'Keep' }));
+  await userEvent.click(within(secret('Firebase push key: set')).getByRole('button', { name: 'Clear' }));
+  expect(secret('Firebase push key: will be cleared')).toBeTruthy();
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { secrets: { [FCM]: '' } }));
+});
+
+it('the API refusing the key shows the Firebase message beside it', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  api.updateEnvironment.mockRejectedValueOnce(new ApiError(422, 'secret_invalid', { code: 'secret_invalid', key: FCM }));
+  open(withFcm(false));
+  chooseKey(jsonFile(JSON.stringify(ACCOUNT)));
+  await screen.findByText('Firebase push key: ss-push-test-0a1b2c3d.json chosen');
+  await save();
+  expect(await screen.findByText(
+    "Sirdar couldn't save that key. Choose the service-account key file you downloaded from Firebase.")).toBeTruthy();
+  expect(screen.queryByText(/no spaces or quotes/)).toBeNull();
+});
+
+it('a view-only reader sees whether the Firebase key is set, with no file button', () => {
+  perms.change = false;
+  api.getEnvironmentDefaults.mockResolvedValue(FCM_DEFAULTS);
+  open(withFcm(true));
+  expect(secret('Firebase push key: set')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Choose JSON file' })).toBeNull();
+  expect(screen.queryByTestId(`env-secret-${FCM}-file`)).toBeNull();
 });

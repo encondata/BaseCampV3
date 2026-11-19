@@ -5,6 +5,8 @@ import pytest
 from sirdar_api.deploy import envfile
 from sirdar_api.deploy.envfile import EnvConfig, RenderError
 
+from .deploy_factories import fcm_key
+
 ENV_EXAMPLE = Path(__file__).resolve().parents[3] / "deploy" / "stack" / "env.example"
 SECRETS = {
     "POSTGRES_PASSWORD": "a1" * 32,
@@ -244,7 +246,7 @@ def test_the_signing_digests_follow_the_optional_secrets():
     digest = "ab" * 32
     text = envfile.render_env(_cfg(extra={"SS_KIOSK_SIGNING_DIGESTS": digest}))
     keys = _keys(text)
-    assert keys.index("SS_KIOSK_SIGNING_DIGESTS") == keys.index("SS_SMTP_PASSWORD") + 1
+    assert keys.index("SS_KIOSK_SIGNING_DIGESTS") == keys.index(envfile.OPTIONAL_SECRETS[-1]) + 1
     assert envfile.parse_env(text)["SS_KIOSK_SIGNING_DIGESTS"] == digest
     assert envfile.parse_env(envfile.render_env(_cfg()))["SS_KIOSK_SIGNING_DIGESTS"] == ""
 
@@ -276,3 +278,70 @@ def test_the_devices_secrets_render_when_given():
         "DEVICES_SECRET_KEY": key})))
     assert (values["STACK_APPS"], values["SS_DEVICES_SERVICE_TOKEN"],
             values["DEVICES_SECRET_KEY"]) == ("devices,mailpit", token, key)
+
+
+FCM = "SS_FCM_SERVICE_ACCOUNT_B64"
+
+
+def test_the_firebase_key_is_an_optional_secret_after_the_smtp_password():
+    assert envfile.OPTIONAL_SECRETS[-1] == FCM
+    assert FCM in envfile.KNOWN_KEYS and FCM in envfile.SECRET_KEYS
+    key = fcm_key()
+    text = envfile.render_env(_cfg(secrets={**SECRETS, FCM: key}))
+    keys = _keys(text)
+    assert keys.index(FCM) == keys.index("SS_SMTP_PASSWORD") + 1
+    # one line: the whole key, nothing wrapped
+    assert [line for line in text.splitlines() if line.startswith(f"{FCM}=")] == [f"{FCM}={key}"]
+    assert envfile.parse_env(text)[FCM] == key
+    assert envfile.parse_env(envfile.render_env(_cfg()))[FCM] == ""
+
+
+def test_a_firebase_key_is_base64_of_a_service_account():
+    assert envfile.valid_fcm_key(fcm_key())
+    assert envfile.valid_fcm_key(fcm_key(account={
+        "type": "service_account", "project_id": "p", "client_email": "e", "private_key": "k"}))
+
+
+@pytest.mark.parametrize("value", [
+    '{"type": "service_account"}',                          # raw JSON, not base64
+    "not base64!",
+    fcm_key()[:-2],                                         # cut: bad padding
+    fcm_key() + "\n",                                       # whitespace
+    fcm_key()[:40] + "\n" + fcm_key()[40:],
+    fcm_key(type="authorized_user"),
+    fcm_key(project_id=""),
+    fcm_key(client_email=None),
+    fcm_key(private_key=123),
+    fcm_key(account=[1, 2]),                                # JSON, not an object
+    "A" * 8,                                                # base64, not JSON
+    "",
+    fcm_key(padding="x" * 6200),                            # over 8192 encoded
+], ids=["raw-json", "not-base64", "bad-padding", "trailing-newline", "inner-newline",
+        "wrong-type", "empty-project", "null-email", "number-key", "json-list", "not-json",
+        "empty", "too-long"])
+def test_a_bad_firebase_key_is_refused(value):
+    assert envfile.valid_fcm_key(value) is False
+    assert envfile.valid_secret(FCM, value) is False
+
+
+def test_the_firebase_key_limit_is_8192_characters():
+    assert envfile.FCM_KEY_MAX == 8192
+    # the longest key within the limit (3 bytes of JSON make 4 characters)
+    n = (envfile.FCM_KEY_MAX - len(fcm_key(padding=""))) * 3 // 4 - 3
+    while len(fcm_key(padding="x" * (n + 1))) <= envfile.FCM_KEY_MAX:
+        n += 1
+    assert envfile.valid_fcm_key(fcm_key(padding="x" * n))
+    assert len(fcm_key(padding="x" * (n + 3))) > envfile.FCM_KEY_MAX
+    assert envfile.valid_fcm_key(fcm_key(padding="x" * (n + 3))) is False
+
+
+def test_valid_secret_keeps_each_keys_rule():
+    key = fcm_key()
+    assert len(key) > 1024
+    assert envfile.valid_secret(FCM, key)
+    # the other optional secrets keep SECRET_VALUE_RE: no 1024+ values, no "$"
+    for other in ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD", "SS_SMTP_PASSWORD"):
+        assert envfile.valid_secret(other, "sk-ant-api03-x_Y")
+        assert envfile.valid_secret(other, key) is False
+        assert envfile.valid_secret(other, "a$b") is False
+    assert envfile.valid_secret(FCM, "sk-ant-api03-x_Y") is False

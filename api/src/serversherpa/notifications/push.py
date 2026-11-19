@@ -36,6 +36,7 @@ from serversherpa.notifications.email import (
 )
 from serversherpa.notifications.kinds import KindInfo
 from serversherpa.notifications.schedule import state_at
+from serversherpa.push.fcm import b64_account_valid
 from serversherpa.services.biometric import shared_station
 
 # How long the phone's Snooze action waits before the notification pushes again.
@@ -62,8 +63,13 @@ def _now() -> datetime:
 
 
 def push_enabled() -> bool:
-    """Whether the server has a push key configured (SS_FCM_SERVICE_ACCOUNT_FILE)."""
-    return get_settings().fcm_service_account_file != ""
+    """Whether the server has a push key configured (SS_FCM_SERVICE_ACCOUNT_FILE or
+    SS_FCM_SERVICE_ACCOUNT_B64)."""
+    s = get_settings()
+    b64 = s.fcm_service_account_b64.get_secret_value()
+    return s.fcm_service_account_file != "" or (
+        b64 != "" and b64_account_valid(b64)
+    )
 
 
 async def live_registrations(db: AsyncSession, person_id: uuid.UUID,
