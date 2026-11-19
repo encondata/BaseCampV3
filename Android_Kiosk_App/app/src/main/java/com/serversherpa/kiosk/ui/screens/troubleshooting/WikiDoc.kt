@@ -140,7 +140,10 @@ private fun Callout(n: DocNode) {
 
 /**
  * A programming barcode: black on a white panel with a 16 dp quiet zone in either theme, drawn
- * at its `width` dp and shrunk only to fit, with no smoothing; the caption below it.
+ * at its `width` dp and shrunk only to fit; the caption below it. Drawn with smooth filtering
+ * (FilterQuality.High) on purpose: the 400 dpi source is always shrunk, and nearest-neighbor
+ * would drop or double pixel columns and make bars uneven, while a smooth downscale keeps each
+ * bar edge at its true position, which scanners decode reliably.
  */
 @Composable
 private fun Barcode(n: DocNode) {
@@ -154,7 +157,7 @@ private fun Barcode(n: DocNode) {
         Box(Modifier.testTag("barcode-panel").background(Color.White).padding(16.dp)) {
             Image(
                 image, contentDescription = n.attrs.string("alt"),
-                filterQuality = FilterQuality.None, contentScale = ContentScale.Fit,
+                filterQuality = FilterQuality.High, contentScale = ContentScale.Fit,
                 modifier = Modifier.widthIn(max = width).fillMaxWidth().aspectRatio(image.width.toFloat() / image.height).testTag("barcode-$file"),
             )
         }
