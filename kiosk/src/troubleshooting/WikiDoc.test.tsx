@@ -27,7 +27,8 @@ it('renders each barcode image in a wiki-barcode figure at its width', () => {
   imgs.forEach((img, i) => {
     const attrs = expected[i].attrs as { alt: string; width: number; caption?: string };
     expect(img.getAttribute('alt')).toBe(attrs.alt);
-    expect(img.closest('.wiki-barcode')).not.toBeNull();
+    expect(img.parentElement?.className).toBe('wiki-barcode-panel');
+    expect(img.parentElement?.parentElement?.className).toBe('wiki-barcode');
     expect(img.style.width).toBe(`${attrs.width}px`);
     expect(img.getAttribute('src')).toBeTruthy();
   });

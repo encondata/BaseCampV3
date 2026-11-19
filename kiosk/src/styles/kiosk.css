@@ -1553,7 +1553,7 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .wiki-doc p { margin: 0 0 12px; }
 .wiki-doc ul, .wiki-doc ol { margin: 0 0 12px; padding-left: 24px; }
 .wiki-doc li > p { margin: 0 0 4px; }
-.wiki-table-wrap { margin: 0 0 16px; }
+.wiki-table-wrap { margin: 0 0 16px; overflow-x: auto; }
 .wiki-table {
   width: 100%; border-collapse: collapse; font-size: 13.5px;
   background: var(--paper); border: 1px solid var(--paper-line);
@@ -1569,8 +1569,11 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .wiki-callout.is-info, .wiki-callout.is-tip { border-color: var(--paper-line); background: var(--paper); border-left: 3px solid var(--accent); }
 .wiki-callout.is-danger { border-color: color-mix(in srgb, var(--c-red) 50%, transparent); background: color-mix(in srgb, var(--c-red) 10%, transparent); }
 .wiki-barcode { margin: 0 0 18px; }
+.wiki-barcode-panel {
+  display: block; width: fit-content; max-width: 100%; box-sizing: border-box;
+  padding: 16px; background: #fff;
+}
 .wiki-barcode img {
-  display: block; background: #fff; padding: 16px; max-width: 100%; height: auto;
-  image-rendering: pixelated; box-sizing: content-box;
+  display: block; max-width: 100%; height: auto; image-rendering: pixelated;
 }
 .wiki-barcode figcaption { margin-top: 6px; font-size: 13px; color: var(--text-mute); }

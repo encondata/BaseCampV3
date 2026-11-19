@@ -48,7 +48,9 @@ function renderNode(n: DocNode, key: number): ReactNode {
       const caption = typeof a.caption === 'string' ? a.caption : '';
       return (
         <figure key={key} className="wiki-barcode">
-          <img src={topicImageUrl(String(a.assetId ?? ''))} alt={alt} style={width ? { width: `${width}px` } : undefined} />
+          <div className="wiki-barcode-panel">
+            <img src={topicImageUrl(String(a.assetId ?? ''))} alt={alt} style={width ? { width: `${width}px` } : undefined} />
+          </div>
           {caption && <figcaption>{caption}</figcaption>}
         </figure>
       );
