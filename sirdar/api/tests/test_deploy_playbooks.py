@@ -1047,7 +1047,26 @@ check_apps() {
   done
 }
 """
-# check_apps as ss-stack had it from 6cc4c8b7 (learn in its case line) until
+# check_apps as 6cc4c8b7 added learn to its case line (the five names, through
+# 5bf75552b); verbatim
+EARLY_CASE_SS_STACK = """#!/usr/bin/env bash
+check_apps() {
+  local apps app list
+  apps=$(env_value STACK_APPS)
+  [[ -z $apps || $apps == none ]] && return 0
+  [[ $apps =~ ^[^,]+(,[^,]+)*$ ]] \\
+    || die "STACK_APPS must list wiki, kiosk, learn, status or mailpit, comma-separated with no spaces (or none)"
+  IFS=, read -ra list <<<"$apps"
+  for app in "${list[@]}"; do
+    case $app in
+      wiki|kiosk|learn|status|mailpit) ;;
+      none) die "STACK_APPS: none can't be combined with other apps" ;;
+      *) die "STACK_APPS has '$app', not one of wiki, kiosk, learn, status, mailpit (lowercase, no spaces)" ;;
+    esac
+  done
+}
+"""
+# check_apps with devices in the case line (79674823f and 253c882bb), until
 # 4e8ceb1d4 moved the names into OPTIONAL_APPS; abridged from 253c882bb's
 # (its case line, the only part the grep reads, is verbatim)
 CASE_SS_STACK = """#!/usr/bin/env bash
@@ -1068,9 +1087,9 @@ check_apps() {
   fi
 }
 """
-# The list and check_apps as 4e8ceb1d4 wrote them (learn in the OPTIONAL_APPS
-# line); frozen here so a later rewording of ss-stack can't quietly drop
-# checkouts in this form. The OPTIONAL_APPS line is verbatim.
+# The OPTIONAL_APPS line as 4e8ceb1d4 wrote it (verbatim; the only line the
+# grep reads), with its check_apps abridged. Frozen here so a later rewording
+# of ss-stack can't quietly drop checkouts in this form.
 OPTIONAL_APPS_SS_STACK = """#!/usr/bin/env bash
 OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)
 
@@ -1088,10 +1107,11 @@ check_apps() {
 }
 """
 # Every form a checkout that knows learn has had: this checkout's real
-# ss-stack, the OPTIONAL_APPS list (4e8ceb1d4 on) and the case line
-# (6cc4c8b7 through 253c882bb).
+# ss-stack, the OPTIONAL_APPS list (4e8ceb1d4 on), the case line with devices
+# (79674823f, 253c882bb) and the five-name case line (6cc4c8b7 through
+# 5bf75552b).
 KNOWS_LEARN = {"this-checkout": None, "optional-apps": OPTIONAL_APPS_SS_STACK,
-               "case-line": CASE_SS_STACK}
+               "case-line": CASE_SS_STACK, "early-case-line": EARLY_CASE_SS_STACK}
 
 
 def _ss_stack(tmp_path: Path, text: str) -> Path:

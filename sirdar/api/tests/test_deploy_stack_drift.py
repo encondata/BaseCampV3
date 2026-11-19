@@ -44,33 +44,42 @@ def test_learn_is_a_public_app_everywhere():
 
 # deploy/tests/test_sirdar_greps.py has a twin of this walker and these
 # checks (deploy/tests can't import Sirdar): change both together.
-MODULES = ("command", "shell", "raw")
+MODULES = ("command", "shell", "raw", "action", "local_action")
+ODD_MESSAGE = ("grep ss-stack as argv: [grep, ..., \"{{ ss_stack }}\"], and keep other greps out "
+               "of tasks that mention ss-stack:\n")
 
 
 def _scan_stack_greps() -> tuple[list[tuple[str, str, list[str]]], list[str]]:
     """Every task in the playbooks (tasks/ included) that greps the checkout's
     ss-stack. Returns the argv-form greps, (playbook, task name, argv), and
-    any other task that runs grep on ss_stack in a form this walker can't
-    run (free-form, cmd:, shell, raw), named so the test can refuse it."""
+    any other task that runs grep on ss-stack in a form this walker can't
+    run (free-form, cmd:, shell, raw, action strings), named so the test can
+    refuse it."""
     found: list[tuple[str, str, list[str]]] = []
     odd: list[str] = []
 
     def walk(node, playbook: str) -> None:
         if isinstance(node, dict):
             for key, module in node.items():
-                if key.rsplit(".", 1)[-1] not in MODULES:
+                # PyYAML loads keys like 80: or on: as int or bool: never a module.
+                if not isinstance(key, str) or key.rsplit(".", 1)[-1] not in MODULES:
                     continue
+                if module is None or isinstance(module, dict):
+                    # argv can also sit in the task's args:
+                    args = node.get("args")
+                    module = {**(args if isinstance(args, dict) else {}), **(module or {})}
                 argv = module.get("argv") if isinstance(module, dict) else None
+                text = str(module)
                 if argv and argv[0] == "grep" and argv[-1] == SS_STACK_ARG:
                     found.append((playbook, node.get("name"), argv))
-                elif "grep" in str(module) and "ss_stack" in str(module):
+                elif "grep" in text and ("ss_stack" in text or "ss-stack" in text):
                     odd.append(f"{playbook}: {node.get('name')!r} ({key})")
             node = list(node.values())
         if isinstance(node, list):
             for item in node:
                 walk(item, playbook)
 
-    for path in sorted(PLAYBOOK_DIR.rglob("*.yml")):
+    for path in sorted([*PLAYBOOK_DIR.rglob("*.yml"), *PLAYBOOK_DIR.rglob("*.yaml")]):
         walk(yaml.safe_load(path.read_text()), path.relative_to(PLAYBOOK_DIR).as_posix())
     return found, odd
 
@@ -102,7 +111,7 @@ def test_every_ss_stack_grep_is_one_these_tests_can_run():
     """A grep of ss-stack written any other way would be skipped by the
     checks below; write it as `argv: [grep, ..., "{{ ss_stack }}"]`."""
     odd = _scan_stack_greps()[1]
-    assert not odd, "grep ss-stack with an argv list ending in {{ ss_stack }}:\n" + "\n".join(odd)
+    assert not odd, ODD_MESSAGE + "\n".join(odd)
 
 
 def test_every_playbook_grep_finds_its_line_in_ss_stack():
@@ -112,5 +121,10 @@ def test_every_playbook_grep_finds_its_line_in_ss_stack():
 
 
 def test_render_and_slot_smoke_ask_the_same_learn_question():
-    learn = {p: argv for p, _, argv in _stack_greps() if "learn" in argv[-2]}
+    learn: dict[str, list[list[str]]] = {}
+    for playbook, _, argv in _stack_greps():
+        if "learn" in argv[-2]:
+            learn.setdefault(playbook, []).append(argv)
+    assert sorted(learn) == ["render.yml", "slot_smoke.yml"]
+    assert len(learn["render.yml"]) == len(learn["slot_smoke.yml"]) == 1, learn
     assert learn["render.yml"] == learn["slot_smoke.yml"]
