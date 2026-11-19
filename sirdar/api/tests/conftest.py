@@ -75,23 +75,6 @@ def _prepare_environment() -> None:
 _prepare_environment()
 
 
-# TEMPORARY, until migration 0020 (Sirdar deploys Devices, Task 4) lets
-# environments.apps hold "devices": create's default now turns it on. Checked
-# before every test because the migration tests downgrade and upgrade the
-# schema. Remove this (and its call in clean_db) with that migration.
-_APPS_WITH_DEVICES = ("ALTER TABLE environments DROP CONSTRAINT environments_apps_check, "
-                      "ADD CONSTRAINT environments_apps_check CHECK (apps <@ ARRAY['wiki', "
-                      "'kiosk', 'learn', 'status', 'devices', 'mailpit']::text[])")
-
-
-async def _allow_devices_in_apps(session) -> None:
-    found = await session.scalar(text(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-        "WHERE conname = 'environments_apps_check'"))
-    if found is not None and "devices" not in found:
-        await session.execute(text(_APPS_WITH_DEVICES))
-
-
 @pytest.fixture(autouse=True)
 async def clean_db():
     from sirdar_api.access.defaults import restore_default_roles
@@ -102,7 +85,6 @@ async def clean_db():
         if not str(connected).startswith("sirdar_test"):
             raise RuntimeError(f"refusing to TRUNCATE: connected to {connected!r}")
         await session.execute(text(f"TRUNCATE {SIRDAR_TABLES} CASCADE"))
-        await _allow_devices_in_apps(session)
         # The two DigitalOcean accounts are fixed rows: reset them, never drop them.
         await session.execute(text(
             "UPDATE do_accounts SET label = CASE key WHEN 'production' THEN 'Production' "

@@ -15,9 +15,9 @@ from .publish_helpers import PUBLIC_IP, managed, publish_fakes  # noqa: F401
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 NAMES = [f"{s}.uat2.serversherpa.com" for s in
-         ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")]
+         ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "devices")]
 PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "learn": 8092,
-         "spaces": 9000, "status": 8095}
+         "spaces": 9000, "status": 8095, "devices": 8093}
 
 
 @pytest.fixture
@@ -215,7 +215,7 @@ async def test_smoke_passes_and_fails(db, env, publish_fakes):
     sleeps: list = []
     with pytest.raises(StepFailed) as e:
         await _run(db, env, "smoke", _publisher(sleeps, smoke_attempts=2))
-    assert e.value.reason == "1 of 7 public URLs didn't answer: portal."
+    assert e.value.reason == "1 of 8 public URLs didn't answer: portal."
     assert sleeps == [10]
 
 
@@ -625,8 +625,9 @@ async def test_an_app_turned_off_loses_its_dns_record_and_proxy_host(db, env, pu
     await db.commit()
     await _run(db, env, "dns")
     await _run(db, env, "proxy")
-    gone = {"wiki.uat2.serversherpa.com", "learn.uat2.serversherpa.com"}
+    gone = {"wiki.uat2.serversherpa.com", "learn.uat2.serversherpa.com",
+            "devices.uat2.serversherpa.com"}
     assert {r["name"] for r in publish_fakes.cf.records.values()} == set(NAMES) - gone
     assert {h["domain_names"][0] for h in publish_fakes.npm.hosts.values()} == set(NAMES) - gone
     rows = await db.scalars(select(ManagedRecord).execution_options(populate_existing=True))
-    assert not {r.service for r in rows} & {"wiki", "learn"}
+    assert not {r.service for r in rows} & {"wiki", "learn", "devices"}

@@ -229,10 +229,10 @@ class Environment(Base):
     active_slot: Mapped[str | None]
     auto_activate: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     retiring: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
-    # The Deploy page flow (migration 0013; learn: 0015): the optional apps it
-    # runs, and its SMTP server (smtp_host NULL: its own Mailpit).
+    # The Deploy page flow (migration 0013; learn: 0015; devices: 0020): the
+    # optional apps it runs, and its SMTP server (smtp_host NULL: its own Mailpit).
     apps: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{wiki,kiosk,learn,status,mailpit}'"))
+        ARRAY(Text), server_default=text("'{wiki,kiosk,learn,status,devices,mailpit}'"))
     smtp_host: Mapped[str | None]
     smtp_port: Mapped[int | None] = mapped_column(Integer)
     smtp_username: Mapped[str | None]
