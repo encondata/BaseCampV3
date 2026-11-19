@@ -1573,7 +1573,8 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
   display: block; width: fit-content; max-width: 100%; box-sizing: border-box;
   padding: 16px; background: #fff;
 }
+/* Default (smooth) rendering on purpose: nearest-neighbor downscaling drops or doubles bar columns, making bars uneven. */
 .wiki-barcode img {
-  display: block; max-width: 100%; height: auto; image-rendering: pixelated;
+  display: block; max-width: 100%; height: auto;
 }
 .wiki-barcode figcaption { margin-top: 6px; font-size: 13px; color: var(--text-mute); }
