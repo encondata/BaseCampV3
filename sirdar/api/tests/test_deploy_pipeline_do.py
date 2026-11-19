@@ -34,6 +34,7 @@ from .deploy_factories import (  # noqa: F401
 )
 from .do_helpers import CA, DEVICES_SPACES_SECRET, DOADMIN, SPACES_SECRET, make_do_environment
 from .do_helpers import built as _built
+from .do_helpers import built_env
 from .do_helpers import fetched as _fetched
 from .do_helpers import ready_snapshot as _ready_snapshot
 from .publish_helpers import publish_fakes  # noqa: F401
@@ -165,6 +166,20 @@ async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publ
         for value in leaks:
             assert value not in log, (key, value[:12])
     assert "postgresql+asyncpg" not in next(s.log for s in steps if s.key == "up")
+
+
+async def test_devices_turned_on_needs_step_0_before_a_render(db, do_env, fake_runner,
+                                                            fake_publisher, fake_provisioner):
+    """Devices on but step 0 hasn't made its bucket key yet (a retry that
+    skips step 0): Sirdar renders nothing and names step 0, rather than a
+    .env whose devices service would fall back to the main key."""
+    await built_env(do_env)
+    await do_envs.set_do(do_env.id, devices_spaces_key_id=None, devices_spaces_secret_enc=None)
+    dep_id = await _start(db, do_env, slot="orange", go_live=True, sha=SHA, start_step=1)
+    dep, steps, _ = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 1)
+    assert "missing: devices Spaces key" in dep.error and "Retry from step 0" in dep.error
+    assert fake_runner.requests == []
 
 
 async def test_a_retry_before_any_droplet_names_step_0(db, do_env, fake_runner,

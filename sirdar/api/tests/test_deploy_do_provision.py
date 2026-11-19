@@ -191,9 +191,17 @@ async def test_turning_devices_on_makes_its_bucket_and_key_on_the_next_update(db
     await _set_apps(db, do_build, WITHOUT_DEVICES)
     await do_build.run()
     fake = do_build.cloud.do
+    before = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    main_key, main_secret = before.spaces_key_id, before.spaces_secret_enc
     await _set_apps(db, do_build, [*WITHOUT_DEVICES[:4], "devices", "mailpit"])
     await do_build.run()
     (devices_key,) = _named(fake, "ss-uat9-devices")
+    # the main key (a live slot may use it) is never replaced or regranted
+    after = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    assert (after.spaces_key_id, after.spaces_secret_enc) == (main_key, main_secret)
+    assert _named(fake, "ss-uat9") == [main_key]
+    assert fake.keys[main_key]["grants"] == [{"bucket": do_build.env.spaces_bucket,
+                                              "permission": "readwrite"}]
     assert fake.keys[devices_key]["grants"] == [{"bucket": _devices_bucket(do_build),
                                                  "permission": "readwrite"}]
     assert _devices_bucket(do_build) in do_build.cloud.spaces.buckets
@@ -1034,7 +1042,8 @@ async def test_an_app_key_with_a_known_secret_is_adopted_by_name(db, do_build, w
     await do_build.run()
     assert _named(fake, name) == [old] and sorted(fake.keys) == before
     assert await _recorded_keys(db) == before
-    assert f"Bucket key {old}: recorded it again (its record was lost)." in do_build.log()
+    assert (f"Bucket key {old} ({_bucket_of(do_build, which)}): recorded it again (its record "
+            "was lost).") in do_build.log()
 
 
 async def test_a_devices_named_key_for_another_bucket_is_left_alone(db, do_build):

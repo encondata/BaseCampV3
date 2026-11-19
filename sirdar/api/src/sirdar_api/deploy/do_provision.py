@@ -629,7 +629,8 @@ class DoProvisioner:
             if (bucket is not None and getattr(row, bucket.key_column) == access
                     and getattr(row, bucket.secret_column) is not None):
                 await do_envs.record(ctx.env_id, "spaces_key", access, name)
-                out(f"Bucket key {access}: recorded it again (its record was lost).\n")
+                out(f"Bucket key {access} ({bucket.name}): recorded it again (its record "
+                    "was lost).\n")
                 continue
             await api.delete_spaces_key(access)
             out(f"Removed the Spaces key {access} ({name}): Sirdar never recorded it or its "

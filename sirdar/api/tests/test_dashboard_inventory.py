@@ -182,3 +182,19 @@ async def test_a_response_it_cannot_read_logs_the_part_never_the_values(caplog):
     text = caplog.text
     assert "load_balancers" in text
     assert "value-123" not in text and TOKEN not in text
+
+
+def test_a_droplet_environment_shows_its_own_bucket_not_the_devices_one():
+    """With devices on, step 0 records a second bucket (<bucket>-devices)
+    after the main one: the tree's Spaces part is still the main bucket."""
+    from types import SimpleNamespace
+
+    def record(kind, do_id, name=None):
+        return SimpleNamespace(kind=kind, do_id=do_id, name=name or do_id, slot=None)
+
+    env = SimpleNamespace(name="uat9", slots=[], active_slot=None)
+    row = SimpleNamespace(region="nyc3", bucket="ss-uat9-0123abcd", lb_ip=None,
+                          db_size="db-s-2vcpu-4gb", droplet_size="s-2vcpu-4gb", db_host=None)
+    records = [record("bucket", "ss-uat9-0123abcd"), record("bucket", "ss-uat9-0123abcd-devices")]
+    parts, _ = service._do_parts(env, {"row": row, "slots": {}, "records": records}, None)
+    assert [(p["kind"], p["name"]) for p in parts] == [("spaces", "ss-uat9-0123abcd")]

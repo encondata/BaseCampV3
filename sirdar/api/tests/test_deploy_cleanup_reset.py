@@ -121,7 +121,8 @@ async def test_cleanup_success_keeps_env_and_resets_do(db, do_env, fake_runner, 
                              slot.host_key_public)
     assert (row.vpc_ip_range, row.lb_ip, row.db_host, row.db_port, row.db_ca_cert,
             row.db_admin_password_enc, row.spaces_key_id, row.spaces_secret_enc,
-            row.cert_not_after) == (None,) * 9
+            row.devices_spaces_key_id, row.devices_spaces_secret_enc,
+            row.cert_not_after) == (None,) * 11
     # the settings frozen at create stay
     assert (row.region, row.account_key) == ("nyc3", "development")
     assert row.droplet_size and row.db_size and row.bucket

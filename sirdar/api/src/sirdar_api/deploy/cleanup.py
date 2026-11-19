@@ -32,7 +32,8 @@ UNSET_HOST = "0.0.0.0"
 # the bucket's own key, certificate expiry). The account, team, sizes, SSH
 # key pair and ACME key are frozen at create and stay.
 _DO_LEARNED = ("vpc_ip_range", "lb_ip", "db_host", "db_port", "db_admin_password_enc",
-               "db_ca_cert", "spaces_key_id", "spaces_secret_enc", "cert_not_after")
+               "db_ca_cert", "spaces_key_id", "spaces_secret_enc", "devices_spaces_key_id",
+               "devices_spaces_secret_enc", "cert_not_after")
 
 
 async def reset(db: AsyncSession, settings: Settings, env: Environment, *,
