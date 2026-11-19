@@ -60,6 +60,37 @@ def test_sirdar_and_the_stack_order_the_apps_the_same():
     assert tuple(found.group(1).split(",")) == apps.OPTIONAL_APPS
 
 
+# ---- SS_ENV, the API's mode ------------------------------------------------------
+
+def _listed(text: str, pattern: str, what: str) -> set[str]:
+    found = re.search(pattern, text, re.MULTILINE)
+    assert found, f"{what} moved"
+    return set(re.findall(r"[a-z]+", found.group(1)))
+
+
+def test_the_stack_and_the_api_take_every_mode_sirdar_writes():
+    """Sirdar writes envfile.API_MODES (from environments.type); ss-stack's
+    up refuses an SS_ENV outside its API_MODES, and the API one outside
+    its Settings.env Literal."""
+    stack = _listed((STACK / "ss-stack").read_text(), r"^API_MODES=\(([a-z ]+)\)$",
+                    "ss-stack's API_MODES list")
+    config = STACK.parents[1] / "api" / "src" / "serversherpa" / "config.py"
+    api = _listed(config.read_text(), r"^    env: Literal\[([^\]]+)\]$", "the API's Settings.env")
+    assert set(envfile.API_MODES) <= stack == api
+
+
+def test_the_api_stack_reads_the_mode_from_the_env_file():
+    """compose.yml takes SS_ENV from the .env (staging when it has none),
+    and env.example's value is the one Sirdar writes for every type but
+    production."""
+    compose = (STACK / "api" / "compose.yml").read_text()
+    assert re.search(r"^  SS_ENV: \$\{SS_ENV:-staging\}$", compose, re.MULTILINE), \
+        "deploy/stack/api/compose.yml no longer reads SS_ENV from the .env"
+    example = envfile.parse_env((STACK / "env.example").read_text())
+    assert example["SS_ENV"] == envfile.api_mode("dev") == "staging"
+    assert envfile.api_mode("production") == "production"
+
+
 # ---- the playbooks' greps of the checkout's ss-stack ----------------------------
 
 # deploy/tests/test_sirdar_greps.py has a twin of this walker and these

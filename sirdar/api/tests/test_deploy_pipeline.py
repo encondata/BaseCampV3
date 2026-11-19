@@ -107,6 +107,7 @@ async def test_requests_carry_the_pinned_target_and_step_vars(db, env, fake_runn
             assert values["STACK_IMAGE_TAG"] == "e73b99ca"
             assert values["POSTGRES_PASSWORD"] == ENV_SECRETS["POSTGRES_PASSWORD"]
             assert values["STACK_PROXY_IP"] == "10.0.0.2"
+            assert values["SS_ENV"] == "staging"         # a dev environment
         else:
             assert request.extravars == common
 

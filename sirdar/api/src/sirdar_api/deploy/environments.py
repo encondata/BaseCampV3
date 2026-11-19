@@ -880,7 +880,11 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
     # apps, mail and devices secrets do (DEVICES_IOS_OWNER_URL isn't
     # Sirdar's yet: reported as ignored)
     adoptable = (set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)) | set(app_rules.ENV_KEYS)
-    ignored = sorted(k for k in values if k not in adoptable)
+    # SS_ENV follows the type (envfile.api_mode); a different hand-set mode
+    # isn't kept (ss-stack reads empty as staging)
+    mode_kept = (values.get("SS_ENV") or "staging") == envfile.api_mode(type_)
+    ignored = sorted(k for k in values
+                     if k not in adoptable or (k == "SS_ENV" and not mode_kept))
     return env, dep, AdoptReport(sha=sha, imported_secrets=sorted(secrets),
                                  ignored_keys=ignored)
 

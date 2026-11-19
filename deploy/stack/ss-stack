@@ -36,6 +36,8 @@
 # wiki (its documents render there). The devices service gets its own
 # database, serversherpa_devices, created on the environment's database
 # server the first time it runs.
+# SS_ENV is the API's mode: staging unless the .env says production (or
+# development); up refuses any other value.
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
@@ -161,6 +163,20 @@ fi
 app_on() {
   [[ -z $APPS ]] && return 0
   [[ ",$APPS," == *",$1,"* ]]
+}
+
+# SS_ENV, the API's mode: the .env's value, staging when it has none.
+# Exported so every compose call takes the .env's value, never one from the
+# caller's shell (Compose prefers the shell's). The API refuses any value
+# but these three; up refuses it first, before anything starts. Sirdar's
+# drift test reads API_MODES: keep it one line in this form.
+API_MODES=(development staging production)
+SS_ENV=$(env_value SS_ENV)
+export SS_ENV="${SS_ENV:-staging}"
+check_api_mode() {
+  local mode
+  for mode in "${API_MODES[@]}"; do if [[ $SS_ENV == "$mode" ]]; then return 0; fi; done
+  die "SS_ENV must be development, staging or production (got '$SS_ENV')"
 }
 HBA_FILE="$env_dir/pg_hba.conf"
 
@@ -438,6 +454,7 @@ case $cmd in
   up)
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
+    check_api_mode
     check_apps
     check_devices
     check_mail

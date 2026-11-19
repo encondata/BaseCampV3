@@ -42,7 +42,11 @@ case "$*" in
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
   *"/api/compose.yml up "*)
     # the apps the API is told run (SS_APPS comes from STACK_APPS; unset: the .env's)
-    printf 'STACK_APPS=%s\n' "${STACK_APPS-unset}" >> "$DOCKER_LOG.apps" ;;
+    printf 'STACK_APPS=%s\n' "${STACK_APPS-unset}" >> "$DOCKER_LOG.apps"
+    # and its mode (unset: compose would read the .env's)
+    printf 'api SS_ENV=%s\n' "${SS_ENV-unset}" >> "$DOCKER_LOG.mode" ;;
+  *"/api/compose.yml run --rm migrate")
+    printf 'migrate SS_ENV=%s\n' "${SS_ENV-unset}" >> "$DOCKER_LOG.mode" ;;
   # SQL on stdin (the devices database): recorded, so a test can read it
   *"psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q"|*" psql -v ON_ERROR_STOP=1 -q")
     cat >> "$DOCKER_LOG.sql"
@@ -1205,3 +1209,83 @@ def test_devices_off_needs_no_devices_secrets(env_dir: Path, fake: dict[str, str
     verb = {"up": "down", "down": "down", "ps": "ps"}[command]
     assert dc(env_dir, "devices", verb) in calls(fake)
     assert dc(env_dir, "devices", WAIT) not in calls(fake)
+
+
+# ---- SS_ENV, the API's mode ------------------------------------------------------
+
+def _mode(env_dir: Path, value: str | None) -> None:
+    """The .env with env.example's SS_ENV line replaced by `value` (None: no line)."""
+    path = env_dir / ".env"
+    lines = [line for line in path.read_text().splitlines() if not line.startswith("SS_ENV=")]
+    if value is not None:
+        lines.append(f"SS_ENV={value}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def modes(env: dict[str, str]) -> list[str]:
+    path = Path(env["DOCKER_LOG"] + ".mode")
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_env_example_runs_staging(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert modes(fake) == ["migrate SS_ENV=staging", "api SS_ENV=staging"]
+
+
+@pytest.mark.parametrize("value, mode", [
+    (None, "staging"), ("", "staging"), ("staging", "staging"), ("production", "production"),
+    ("development", "development"), ('"production"', "production"), ("'staging'", "staging")])
+def test_the_api_runs_in_the_env_files_mode(env_dir: Path, fake: dict[str, str],
+                                            value: str | None, mode: str) -> None:
+    _mode(env_dir, value)
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert modes(fake) == [f"migrate SS_ENV={mode}", f"api SS_ENV={mode}"]
+
+
+@pytest.mark.parametrize("value, mode", [(None, "staging"), ("production", "production")])
+def test_the_callers_ss_env_never_wins(env_dir: Path, fake: dict[str, str],
+                                       value: str | None, mode: str) -> None:
+    """Compose prefers the shell's value to the .env's: ss-stack passes the
+    .env's, so a stray SS_ENV in the caller's shell changes nothing."""
+    _mode(env_dir, value)
+    for callers in ("development", "production", "bogus"):
+        Path(fake["DOCKER_LOG"] + ".mode").unlink(missing_ok=True)
+        out = run({**fake, "SS_ENV": callers}, "up", str(env_dir))
+        assert out.returncode == 0, out.stderr
+        assert modes(fake) == [f"migrate SS_ENV={mode}", f"api SS_ENV={mode}"], callers
+
+
+@pytest.mark.parametrize("bad", ["prod", "Production", "PRODUCTION", "dev", "staging ",
+                                 " staging", "test", "none"])
+def test_an_unknown_mode_is_refused_before_anything_starts(env_dir: Path, fake: dict[str, str],
+                                                           bad: str) -> None:
+    _mode(env_dir, bad)
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 1
+    assert out.stderr == f"ss-stack: SS_ENV must be development, staging or production " \
+        f"(got '{bad}')\n"
+    assert calls(fake) == []
+
+
+@pytest.mark.parametrize("command", ["down", "ps", "dump", "data"])
+def test_only_up_checks_the_mode(env_dir: Path, fake: dict[str, str], command: str) -> None:
+    """The commands that start no API container run whatever SS_ENV says
+    (a dump before a fix must still work)."""
+    _mode(env_dir, "prod")
+    out = run(fake, command, str(env_dir))
+    assert out.returncode == 0, out.stderr
+
+
+def test_ss_stack_takes_exactly_the_apis_modes() -> None:
+    """API_MODES (one line; Sirdar's drift test reads it too) is the API's
+    Settings.env Literal: up refuses what the API would crash-loop on."""
+    import re
+    import typing
+
+    from serversherpa.config import Settings
+
+    found = re.search(r"^API_MODES=\(([a-z ]+)\)$", SS_STACK.read_text(), re.MULTILINE)
+    assert found, "ss-stack's API_MODES list moved"
+    assert tuple(found.group(1).split()) == typing.get_args(Settings.model_fields["env"].annotation)

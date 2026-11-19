@@ -49,6 +49,10 @@ DEVICES_SECRETS = ("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY")
 HEX_SECRETS = tuple(k for k in REQUIRED_SECRETS if k not in FERNET_SECRETS)
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+# SS_ENV, the API's mode (deploy/stack/env.example): production for a
+# production environment (no /docs, CORS only from its own sites), staging
+# for every other type. ss-stack also takes development; Sirdar never writes it.
+API_MODES = ("staging", "production")
 DEFAULT_SPACES_BUCKET = "serversherpa"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_KEEP_DUMPS = 5
@@ -85,7 +89,7 @@ EXTRA_KEYS = (
 KNOWN_KEYS = (
     "STACK_ENV", "STACK_DOMAIN", "STACK_IMAGE_TAG", "STACK_REPO_DIR", "STACK_PROXY_IP",
     "STACK_BIND_IP", *(PORT_KEYS[s] for s in SERVICES), "STACK_KEEP_DUMPS",
-    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", *OPTIONAL_SECRETS,
+    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", "SS_ENV", *OPTIONAL_SECRETS,
     *OPTIONAL_SETTINGS, *EXTRA_KEYS,
 )
 
@@ -102,6 +106,11 @@ def env_dir(name: str) -> str:
 def image_tag(sha: str) -> str:
     """STACK_IMAGE_TAG for a commit: its first 8 hex digits."""
     return sha[:8]
+
+
+def api_mode(env_type: str) -> str:
+    """SS_ENV for an environment of `env_type` (environments.type)."""
+    return "production" if env_type == "production" else "staging"
 
 
 def unsafe_value(value: str) -> bool:
@@ -148,6 +157,7 @@ class EnvConfig:
     keep_dumps: int
     spaces_bucket: str
     log_level: str
+    api_mode: str        # SS_ENV: one of API_MODES (api_mode(env.type))
     secrets: dict[str, str] = field(repr=False)
     # EXTRA_KEYS (written after the optional settings, in this order) and OPTIONAL_SETTINGS
     extra: dict[str, str] = field(default_factory=dict, repr=False)
@@ -157,6 +167,8 @@ def render_env(cfg: EnvConfig) -> str:
     missing = [k for k in REQUIRED_SECRETS if not cfg.secrets.get(k)]
     if missing:
         raise RenderError(f"missing secrets: {', '.join(missing)}")
+    if cfg.api_mode not in API_MODES:
+        raise RenderError("SS_ENV must be staging or production")
     values = {
         "STACK_ENV": cfg.name,
         "STACK_DOMAIN": cfg.domain,
@@ -169,6 +181,7 @@ def render_env(cfg: EnvConfig) -> str:
         **{k: cfg.secrets[k] for k in REQUIRED_SECRETS},
         "SS_SPACES_BUCKET": cfg.spaces_bucket,
         "SS_LOG_LEVEL": cfg.log_level,
+        "SS_ENV": cfg.api_mode,
         **{k: cfg.secrets.get(k, "") for k in OPTIONAL_SECRETS},
         **{k: cfg.extra.get(k, "") for k in OPTIONAL_SETTINGS},
     }

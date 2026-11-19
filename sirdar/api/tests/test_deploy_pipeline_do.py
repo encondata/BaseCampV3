@@ -102,6 +102,7 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
     assert "SS_DATABASE_URL=postgresql+asyncpg://serversherpa:" in text
     # the devices service: its database on the same cluster, its own bucket and key
     env_values = envfile.parse_env(text)
+    assert env_values["SS_ENV"] == "staging"            # a dev environment
     assert env_values["DEVICES_DATABASE_URL"].endswith(
         "@private-ss-uat9-db.db.ondigitalocean.com:25060/serversherpa_devices")
     assert env_values["DEVICES_SPACES_BUCKET"] == f"{env.spaces_bucket}-devices"
@@ -552,6 +553,27 @@ async def _two_slots_deployed(db, env_id, *, active, tags):
         env.active_slot, env.current_sha = active, green
         env.image_tag = envfile.image_tag(green)
         await s.commit()
+
+
+async def test_a_production_environment_s_api_runs_in_production_mode(
+        db, deploy_env, secrets_key, ssh_server, monkeypatch, fake_runner, fake_publisher,
+        fake_provisioner):
+    """SS_ENV follows environments.type: a production environment's
+    droplets run the API in production (no /docs, CORS from its own sites
+    only), on every Update."""
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    env = await make_do_environment(db, name="prod", type_="production", account="production")
+    await trust_fake(db, ssh_server)
+    fake_provisioner.effects["do_prepare"] = _built
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=SHA)
+    dep_id = await _start(db, env, slot="blue")
+    dep, steps, _ = await _load(dep_id)
+    assert dep.status == "succeeded", [(s.key, s.status, s.log) for s in steps]
+    renders = [r for r in fake_runner.requests if r.step == "render"]
+    assert renders
+    for render in renders:
+        values = envfile.parse_env(base64.b64decode(render.extravars["env_file_b64"]).decode())
+        assert values["SS_ENV"] == "production"
 
 
 async def test_a_production_delete_exports_with_the_slot_s_own_image(

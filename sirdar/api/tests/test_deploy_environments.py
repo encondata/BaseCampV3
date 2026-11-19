@@ -139,6 +139,23 @@ async def test_adopt_imports_settings_and_secrets(db, target):
     assert await _secrets(db, env.id) == ENV_SECRETS
 
 
+@pytest.mark.parametrize("type_, mode, ignored", [
+    ("dev", None, False), ("dev", "", False), ("dev", "staging", False),
+    ("dev", "production", True), ("dev", "development", True),
+    ("beta", "staging", False), ("beta", "production", True), ("custom", "production", True)])
+async def test_adopt_reports_a_mode_the_type_doesnt_give_as_ignored(db, target, type_, mode,
+                                                                    ignored):
+    """SS_ENV follows the type: a hand-set mode that differs (empty reads as
+    ss-stack's staging) isn't kept, so it's listed. A file without the key
+    lists nothing for it. (Production is DigitalOcean only, never adopted:
+    every adopted environment runs staging.)"""
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(SS_ENV=mode))
+    _, _, report = await environments.adopt(db, get_settings(), name="uat", type_=type_,
+                                            target_id="ssh")
+    assert report.ignored_keys == ["MINIO_ROOT_PASSWORD", *(["SS_ENV"] if ignored else [])]
+
+
 async def test_adopt_reports_digitalocean_keys_as_ignored(db, target):
     """A hand-built .env never carries a droplet's keys into the record:
     adopting one lists them as ignored."""
@@ -165,15 +182,16 @@ async def test_adopted_record_renders_the_same_env(db, target):
         name=env.name, domain=env.base_domain, image_tag=env.image_tag, proxy_ip=env.proxy_ip,
         bind_ip=env.bind_ip, ports={r.service: r.port for r in rows},
         keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket, log_level=env.log_level,
-        secrets=await _secrets(db, env.id))))
+        api_mode=envfile.api_mode(env.type), secrets=await _secrets(db, env.id))))
     # SS_SMTP_PASSWORD (phase 8c), SS_FCM_SERVICE_ACCOUNT_B64 and SS_KIOSK_SIGNING_DIGESTS postdate this
     # .env: unset, they render empty; so does the devices port (a late
-    # service: its default, free on this host)
+    # service: its default, free on this host); SS_ENV, unset, is staging
+    # (ss-stack's default), and a dev environment's mode is staging
     remote = envfile.parse_env(remote_env_text(SS_ANTHROPIC_API_KEY="sk-ant-api03-x",
                                                STACK_API_PORT="8100", SS_SMTP_PASSWORD="",
                                                SS_FCM_SERVICE_ACCOUNT_B64="",
                                                SS_KIOSK_SIGNING_DIGESTS="",
-                                               STACK_DEVICES_PORT="8093"))
+                                               STACK_DEVICES_PORT="8093", SS_ENV="staging"))
     assert rendered == {k: v for k, v in remote.items() if k in envfile.KNOWN_KEYS}
 
 

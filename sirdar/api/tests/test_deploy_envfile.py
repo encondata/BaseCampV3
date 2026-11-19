@@ -22,7 +22,7 @@ def _cfg(**over) -> EnvConfig:
     kw = {"name": "uat", "domain": "uat.serversherpa.com", "image_tag": "e73b99ca",
               "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "ports": dict(envfile.DEFAULT_PORTS),
               "keep_dumps": 5, "spaces_bucket": "serversherpa", "log_level": "INFO",
-              "secrets": dict(SECRETS)}
+              "api_mode": "staging", "secrets": dict(SECRETS)}
     kw.update(over)
     return EnvConfig(**kw)
 
@@ -110,6 +110,38 @@ def test_helpers():
     assert set(envfile.SERVICES) == set(envfile.DEFAULT_PORTS) == set(envfile.PORT_KEYS)
     assert envfile.PUBLIC_SERVICES == tuple(s for s in envfile.SERVICES if s != "mailpit")
     assert set(envfile.HEX_SECRETS) | set(envfile.FERNET_SECRETS) == set(envfile.REQUIRED_SECRETS)
+
+
+@pytest.mark.parametrize("env_type, mode", [("production", "production"), ("dev", "staging"),
+                                            ("beta", "staging"), ("custom", "staging")])
+def test_the_api_mode_follows_the_environment_type(env_type, mode):
+    assert envfile.api_mode(env_type) == mode
+    values = envfile.parse_env(envfile.render_env(_cfg(api_mode=envfile.api_mode(env_type))))
+    assert values["SS_ENV"] == mode
+
+
+def test_every_environment_type_has_a_mode():
+    from sirdar_api.deploy.environments import ENV_TYPES
+    assert {envfile.api_mode(t) for t in ENV_TYPES} == set(envfile.API_MODES)
+
+
+def test_the_mode_follows_the_log_level():
+    keys = _keys(envfile.render_env(_cfg(api_mode="production")))
+    assert keys[keys.index("SS_LOG_LEVEL") + 1] == "SS_ENV"
+    assert keys[keys.index("SS_ENV") + 1] == envfile.OPTIONAL_SECRETS[0]
+
+
+@pytest.mark.parametrize("bad", ["development", "Production", "prod", "", "staging\nSS_X=1"])
+def test_a_mode_sirdar_doesnt_write_is_refused(bad):
+    with pytest.raises(RenderError) as exc:
+        envfile.render_env(_cfg(api_mode=bad))
+    assert exc.value.reason == "SS_ENV must be staging or production"
+
+
+def test_an_extra_cant_set_the_mode():
+    with pytest.raises(RenderError) as exc:
+        envfile.render_env(_cfg(extra={"SS_ENV": "production"}))
+    assert exc.value.reason == "unknown key SS_ENV"
 
 
 def test_extras_render_after_the_optional_secrets():
