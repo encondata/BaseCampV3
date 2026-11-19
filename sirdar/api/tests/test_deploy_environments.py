@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import func, select
@@ -58,11 +60,13 @@ async def test_create_new_generates_everything(db, target):
         ("learn", "127.0.0.1", 8092, "learn.qa.serversherpa.com", False),
         ("spaces", "127.0.0.1", 9000, "spaces.qa.serversherpa.com", False),
         ("status", "127.0.0.1", 8095, "status.qa.serversherpa.com", False),
-        # deploy/stack's devices app: a port, and no public name while off
-        ("devices", "127.0.0.1", 8093, None, False),
+        # deploy/stack's devices app: on by default, with its two secrets
+        ("devices", "127.0.0.1", 8093, "devices.qa.serversherpa.com", False),
         ("mailpit", "127.0.0.1", 8025, None, False)]
     stored = await _secrets(db, env.id)
-    assert set(stored) == set(envfile.REQUIRED_SECRETS)
+    assert set(stored) == set(envfile.REQUIRED_SECRETS) | set(envfile.DEVICES_SECRETS)
+    assert re.fullmatch(r"[0-9a-f]{64}", stored["SS_DEVICES_SERVICE_TOKEN"])
+    Fernet(stored["DEVICES_SECRET_KEY"].encode())
     raw = {r.key: r.value_enc for r in await db.scalars(select(EnvironmentSecret))}
     for key, value in stored.items():
         assert value.encode() not in raw[key]
@@ -438,3 +442,128 @@ async def test_an_untouched_patch_does_not_trip_over_home_sharing_portal_s_port(
     await db.commit()
     assert await environments.update(db, get_settings(), env, {"keep_dumps": 4}) == [
         "keep_dumps"]
+
+
+# ---- devices: its two secrets, made once and never replaced ----
+
+async def test_create_without_devices_makes_no_devices_secrets(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(apps=["wiki", "mailpit"]))
+    await db.commit()
+    assert set(await _secrets(db, env.id)) == set(envfile.REQUIRED_SECRETS)
+
+
+async def test_create_on_digitalocean_makes_the_devices_secrets(db, secrets_key):
+    from .do_helpers import make_do_environment
+    env = await make_do_environment(db)
+    assert "devices" in env.apps
+    assert set(envfile.DEVICES_SECRETS) <= set(await _secrets(db, env.id))
+
+
+async def test_ensure_devices_secrets_adds_only_what_is_missing(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(apps=["mailpit"]))
+    db.add(EnvironmentSecret(environment_id=env.id, key="DEVICES_SECRET_KEY",
+                             value_enc=vault.encrypt(get_settings(), "z" * 43 + "=")))
+    await db.flush()
+    await environments.ensure_devices_secrets(db, get_settings(), env)
+    first = await _secrets(db, env.id)
+    assert first["DEVICES_SECRET_KEY"] == "z" * 43 + "="          # never replaced
+    assert re.fullmatch(r"[0-9a-f]{64}", first["SS_DEVICES_SERVICE_TOKEN"])
+    await environments.ensure_devices_secrets(db, get_settings(), env)
+    assert await _secrets(db, env.id) == first
+    await db.rollback()
+
+
+async def test_ensure_devices_secrets_needs_the_vault(db, target, monkeypatch):
+    env = await environments.create_new(db, get_settings(), **_new(apps=["mailpit"]))
+    await db.flush()
+    monkeypatch.setattr(vault, "is_configured", lambda settings: False)
+    with pytest.raises(EnvError) as exc:
+        await environments.ensure_devices_secrets(db, get_settings(), env)
+    assert exc.value.code == "secrets_key_missing"
+    await db.rollback()
+
+
+async def test_turning_devices_on_makes_its_secrets_once(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(apps=["wiki", "mailpit"]))
+    await db.commit()
+    changed = await environments.update(db, get_settings(), env,
+                                        {"apps": ["wiki", "devices", "mailpit"]})
+    assert changed == ["apps"]
+    await db.commit()
+    first = await _secrets(db, env.id)
+    assert set(envfile.DEVICES_SECRETS) <= set(first)
+    # off and on again: the same secrets (a new DEVICES_SECRET_KEY would make
+    # the saved Apple settings unreadable)
+    await environments.update(db, get_settings(), env, {"apps": ["wiki", "mailpit"]})
+    await environments.update(db, get_settings(), env, {"apps": ["wiki", "devices", "mailpit"]})
+    await db.commit()
+    assert await _secrets(db, env.id) == first
+
+
+async def test_other_edits_make_no_devices_secrets(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(apps=["wiki", "mailpit"]))
+    await db.commit()
+    await environments.update(db, get_settings(), env, {"keep_dumps": 3})
+    await environments.update(db, get_settings(), env, {"apps": ["wiki", "kiosk", "mailpit"]})
+    await db.commit()
+    assert set(await _secrets(db, env.id)) == set(envfile.REQUIRED_SECRETS)
+
+
+DEVICE_TOKEN = "fe" * 32
+DEVICE_KEY = Fernet.generate_key().decode()
+
+
+async def test_adopt_imports_the_devices_secrets(db, target):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(SS_DEVICES_SERVICE_TOKEN=DEVICE_TOKEN,
+                                             DEVICES_SECRET_KEY=DEVICE_KEY,
+                                             DEVICES_IOS_OWNER_URL="https://devices.x.com"))
+    env, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                              target_id="ssh")
+    await db.commit()
+    assert "devices" in env.apps            # no STACK_APPS and both set: ss-stack runs it
+    stored = await _secrets(db, env.id)
+    assert (stored["SS_DEVICES_SERVICE_TOKEN"], stored["DEVICES_SECRET_KEY"]) == (
+        DEVICE_TOKEN, DEVICE_KEY)
+    assert set(envfile.DEVICES_SECRETS) <= set(report.imported_secrets)
+    # Sirdar doesn't manage the iPhone owner's address yet
+    assert "DEVICES_IOS_OWNER_URL" in report.ignored_keys
+    assert not set(envfile.DEVICES_SECRETS) & set(report.ignored_keys)
+
+
+@pytest.mark.parametrize("over", [
+    {"SS_DEVICES_SERVICE_TOKEN": "", "DEVICES_SECRET_KEY": ""},
+    {"SS_DEVICES_SERVICE_TOKEN": "CHANGEME", "DEVICES_SECRET_KEY": "CHANGEME"},
+])
+async def test_adopt_reads_empty_or_changeme_devices_secrets_as_unset(db, target, over):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**over))
+    env, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                              target_id="ssh")
+    await db.commit()
+    assert "devices" not in env.apps
+    assert not set(envfile.DEVICES_SECRETS) & set(await _secrets(db, env.id))
+    assert not set(envfile.DEVICES_SECRETS) & set(report.imported_secrets)
+
+
+@pytest.mark.parametrize("over, key", [
+    ({"SS_DEVICES_SERVICE_TOKEN": "has$dollar"}, "SS_DEVICES_SERVICE_TOKEN"),
+    ({"DEVICES_SECRET_KEY": "not-a-fernet-key"}, "DEVICES_SECRET_KEY"),
+    ({"DEVICES_SECRET_KEY": "!" * 43 + "="}, "DEVICES_SECRET_KEY"),
+])
+async def test_adopt_refuses_a_bad_devices_secret(db, target, over, key):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**{"SS_DEVICES_SERVICE_TOKEN": DEVICE_TOKEN,
+                                                 "DEVICES_SECRET_KEY": DEVICE_KEY, **over}))
+    with pytest.raises(EnvError) as exc:
+        await environments.adopt(db, get_settings(), name="uat", type_="dev", target_id="ssh")
+    assert (exc.value.code, exc.value.extra) == ("adopt_value_invalid", {"key": key})
+    assert DEVICE_TOKEN not in repr(exc.value) and DEVICE_KEY not in repr(exc.value)
+
+
+def test_devices_secrets_are_generated_in_their_shapes():
+    made = vault.generate_devices_secrets()
+    assert set(made) == set(envfile.DEVICES_SECRETS)
+    assert re.fullmatch(r"[0-9a-f]{64}", made["SS_DEVICES_SERVICE_TOKEN"])
+    Fernet(made["DEVICES_SECRET_KEY"].encode())
+    assert set(vault.generate_devices_secrets(["DEVICES_SECRET_KEY"])) == {"DEVICES_SECRET_KEY"}

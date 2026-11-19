@@ -65,6 +65,32 @@ async def test_apps_turned_off_lose_their_names_and_turned_on_get_them(client, d
     assert await _changes(db) == [{"changed": ["apps"]}, {"changed": ["apps"]}]
 
 
+async def _devices_secrets(db) -> dict[str, str]:
+    env = await db.scalar(select(Environment).where(Environment.name == "qa1"))
+    rows = await db.scalars(select(EnvironmentSecret).where(
+        EnvironmentSecret.environment_id == env.id,
+        EnvironmentSecret.key.in_(("SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY"))))
+    return {r.key: vault.decrypt(get_settings(), r.value_enc) for r in rows}
+
+
+async def test_turning_devices_on_makes_its_secrets_once(client, db, target, leak_guard):
+    h = await auth_headers(client, db)
+    await client.post(URL, headers=h, json={**NEW, "apps": ["wiki", "mailpit"]})
+    assert await _devices_secrets(db) == {}
+    resp = await client.patch(f"{URL}/qa1", headers=h,
+                              json={"apps": ["wiki", "devices", "mailpit"]})
+    assert resp.status_code == 200, resp.text
+    assert _names(resp.json())["devices"] == "devices.qa1.serversherpa.com"
+    first = await _devices_secrets(db)
+    assert set(first) == {"SS_DEVICES_SERVICE_TOKEN", "DEVICES_SECRET_KEY"}
+    for apps in (["wiki", "mailpit"], ["wiki", "devices", "mailpit"]):
+        resp = await client.patch(f"{URL}/qa1", headers=h, json={"apps": apps})
+        assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert await _devices_secrets(db) == first          # never made again
+    assert await _changes(db) == [{"changed": ["apps"]}] * 3
+
+
 @pytest.mark.parametrize("patch, code", [
     ({"apps": ["learn", "mailpit"]}, "learn_needs_wiki"),
     ({"apps": ["blog"]}, "apps_invalid"),
@@ -79,7 +105,8 @@ async def test_create_rules_apply(client, db, target, patch, code):
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, code)
     env = await db.scalar(select(Environment).where(Environment.name == "qa1")
                           .execution_options(populate_existing=True))
-    assert env.apps == ["wiki", "kiosk", "learn", "status", "mailpit"] and env.smtp_host is None
+    assert env.apps == ["wiki", "kiosk", "learn", "status", "devices", "mailpit"]
+    assert env.smtp_host is None
 
 
 async def test_mailpit_off_with_smtp_in_the_same_patch(client, db, target):

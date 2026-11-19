@@ -73,6 +73,7 @@ from sirdar_api.deploy import (
     do_envs,
     do_provision,
     envfile,
+    environments,
     esxi_provision,
     first_admins,
     home,
@@ -823,13 +824,26 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     service_rows = list(await db.scalars(select(EnvironmentService)
                                          .where(EnvironmentService.environment_id == env.id)))
     ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in service_rows}}
+    if "devices" in env.apps:
+        # Devices turned on before Sirdar made its secrets: make the missing
+        # ones now (a stored one is never replaced). The caller commits them
+        # with this context, before any step writes the .env.
+        try:
+            await environments.ensure_devices_secrets(db, settings, env)
+        except environments.EnvError:                # secrets_key_missing
+            raise PrepareError("SIRDAR_SECRETS_KEY isn't set, so Sirdar can't make this "
+                               "environment's devices secrets.") from None
     secrets = await _load_secrets(db, env.id, settings)
     step_vars, snapshot_keys, extra_secrets = await _snapshot_vars(db, env, dep, settings,
                                                                    secrets, ports=ports)
     secrets = {**secrets, **snapshot_keys}
     # every render (Update, Reset, Restore backup, Roll back; any target)
-    # carries the apps and mail
-    extra: dict[str, str] = app_rules.env_extra(env)
+    # carries the apps and mail, and the devices secrets while it runs
+    try:
+        extra: dict[str, str] = app_rules.env_extra(env, secrets)
+    except app_rules.AppsError as e:
+        raise PrepareError("Sirdar couldn't write this environment's .env: missing secrets: "
+                           f"{', '.join(e.extra['missing'])}.") from None
     if dep.cloud:
         # Read again here, not only at the start: step 0 may have just made
         # the Spaces secret and the doadmin password.

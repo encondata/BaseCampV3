@@ -57,7 +57,8 @@ def _env_dir(tmp_path: Path, external: bool) -> Path:
         "SS_TOTP_ENCRYPTION_KEY=x",
         "SS_PASSWORD_PEPPER=x",
         "SS_WIKI_SERVICE_TOKEN=x",
-        # Sirdar always writes STACK_APPS (apps.env_extra); devices stays off
+        # Sirdar always writes STACK_APPS (apps.env_extra); devices is off here
+        # (it would need its two secrets)
         "STACK_APPS=wiki,kiosk,learn,status,mailpit",
     ]
     if external:

@@ -312,7 +312,7 @@ async def test_a_database_failure_after_the_smoke_test_puts_npm_back(
 
 async def test_a_database_failure_while_putting_back_says_both(
         db, lan_home, publish_fakes, monkeypatch):  # noqa: F811
-    lan = lan_home                                 # seven names, the bare one too
+    lan = lan_home                                 # eight names, the bare one too
     await _switched(db, lan, "orange")
     publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
     real = publish._managed_hosts
@@ -326,7 +326,7 @@ async def test_a_database_failure_while_putting_back_says_both(
 
     monkeypatch.setattr(publish, "_managed_hosts", second_call_fails)
     reason = await _fails(db, lan, "purple")
-    assert reason.startswith("1 of 8 public URLs didn't answer: portal.")
+    assert reason.startswith("1 of 9 public URLs didn't answer: portal.")
     assert reason.endswith("Sirdar couldn't put the proxy hosts back: check them in Nginx "
                            "Proxy Manager.")
     assert "hunter2" not in reason
@@ -334,7 +334,7 @@ async def test_a_database_failure_while_putting_back_says_both(
 
 async def test_one_host_that_cant_be_put_back_is_named(db, lan_home,
                                                        publish_fakes):  # noqa: F811
-    lan = lan_home                                 # seven hosts, the bare name's too
+    lan = lan_home                                 # eight hosts, the bare name's too
     await _switched(db, lan, "orange")
     wiki = _host(publish_fakes, "wiki.lan9.serversherpa.com")["id"]
     publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
@@ -349,7 +349,7 @@ async def test_one_host_that_cant_be_put_back_is_named(db, lan_home,
 
     publish_fakes.npm.handler = fail_wiki_on_put_back
     reason = await _fails(db, lan, "purple")
-    assert "Sirdar couldn't put 1 of 8 proxy hosts back: check them in Nginx Proxy Manager." \
+    assert "Sirdar couldn't put 1 of 9 proxy hosts back: check them in Nginx Proxy Manager." \
         in reason
     assert "wiki.lan9.serversherpa.com: " in reason
     forwards = _forwards(publish_fakes)

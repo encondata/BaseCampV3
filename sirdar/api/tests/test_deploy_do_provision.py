@@ -83,7 +83,8 @@ async def test_the_first_run_builds_everything(db, do_build):
     assert b.env.spaces_bucket in b.cloud.spaces.buckets
     (cert,) = fake.certificates.values()
     assert sorted(cert["dns_names"]) == sorted(
-        [*(f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "learn", "status")),
+        [*(f"{s}.uat9.serversherpa.com"
+           for s in ("api", "portal", "kiosk", "wiki", "learn", "status", "devices")),
          "uat9.serversherpa.com"])
     (lb,) = fake.load_balancers.values()
     assert lb["droplet_ids"] == [] and lb["vpc_uuid"] == database["private_network_uuid"]
