@@ -33,16 +33,22 @@ Raise the build number first (no argument adds 1; `bump_build.sh 7` sets 7):
 IOS_Kiosk_App/tools/bump_build.sh
 ```
 
+Commit the bump, so the commit the script prints holds this build:
+
+```bash
+git commit -m "chore(ios): raise the kiosk build number" -- "IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk.xcodeproj/project.pbxproj"
+```
+
 Then build:
 
 ```bash
 IOS_Kiosk_App/tools/build_ipa.sh
 ```
 
-- The IPA lands in `IOS_Kiosk_App/.derived/ipa/ServerSherpa-Kiosk-<version>-<build>.ipa` (git-ignored). The script checks it (one app, bundle ID, build, device build, the dev API URL, basic entitlements only, under the 500 MB upload limit) and prints its path, version, build, size and commit. It never uploads: upload it on the Devices site.
+- The IPA lands in `IOS_Kiosk_App/.derived/ipa/ServerSherpa-Kiosk-<version>-<build>.ipa` (git-ignored). The script checks it (one app, bundle ID, build, device build, DEV_API in the compile log and the dev API URL in the binary, basic entitlements only, under the 500 MB upload limit) and prints its path, version, build, size and commit. It never uploads: upload it on the Devices site.
 - The Devices site re-signs the app with its own Ad Hoc profile and the team's distribution certificate, so the development signature Xcode puts on it is fine.
 - Every upload needs a higher build number than any build ever uploaded, deleted versions included. The update check compares the build only.
-- A capability added to the app (an entitlement beyond the basic ones) must be turned on for the App ID `Server-Sherpas.ServerSherpa-Kiosk` in Apple's developer site first, or the re-sign fails. The script refuses an IPA with one until it is added to its list.
+- A capability added to the app (an entitlement beyond the basic ones) must be turned on for the App ID `Server-Sherpas.ServerSherpa-Kiosk` in Apple's developer site first, or the re-sign fails. Even then, the first upload with it is normally refused once: the Devices site signs it with the profile it already holds, made before the change. That refusal makes the site build a new profile for the next upload, so bump the build and upload again. The script refuses an IPA with a new capability until the entitlement is added to its list.
 
 ## Scanning inputs
 
