@@ -1107,17 +1107,33 @@ check_apps() {
   done
 }
 """
+# ss-stack's DEVICES_DB line as efefc975a wrote it, beside its OPTIONAL_APPS
+# list (both verbatim; the only lines the greps read). efefc975a is where
+# ss-stack dumps and restores the devices database and allows it in a data
+# VM's pg_hba.conf, and the devices compose file takes its own Spaces key.
+DEVICES_DB_SS_STACK = """#!/usr/bin/env bash
+OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)
+
+# its own database, on the environment's database server
+DEVICES_DB=serversherpa_devices
+"""
 # Every form a checkout that knows learn has had: this checkout's real
-# ss-stack, the OPTIONAL_APPS list (4e8ceb1d4 on), the case line with devices
-# (79674823f, 253c882bb) and the five-name case line (6cc4c8b7 through
-# 5bf75552b).
-KNOWS_LEARN = {"this-checkout": None, "optional-apps": OPTIONAL_APPS_SS_STACK,
-               "case-line": CASE_SS_STACK, "early-case-line": EARLY_CASE_SS_STACK}
-# Every form a checkout that knows devices has had: the real ss-stack, the
-# OPTIONAL_APPS list and the case line with devices (79674823f, 253c882bb).
-# EARLY_CASE_SS_STACK (6cc4c8b7 until 79674823f) knows learn but refuses devices.
-KNOWS_DEVICES = {"this-checkout": None, "optional-apps": OPTIONAL_APPS_SS_STACK,
-                 "case-line": CASE_SS_STACK}
+# ss-stack, the DEVICES_DB line's (efefc975a on), the OPTIONAL_APPS list
+# (4e8ceb1d4 on), the case line with devices (79674823f, 253c882bb) and the
+# five-name case line (6cc4c8b7 through 5bf75552b).
+KNOWS_LEARN = {"this-checkout": None, "devices-db-line": DEVICES_DB_SS_STACK,
+               "optional-apps": OPTIONAL_APPS_SS_STACK, "case-line": CASE_SS_STACK,
+               "early-case-line": EARLY_CASE_SS_STACK}
+# A checkout knows devices, as Sirdar deploys it, from efefc975a on: the real
+# ss-stack and the DEVICES_DB line.
+KNOWS_DEVICES = {"this-checkout": None, "devices-db-line": DEVICES_DB_SS_STACK}
+# Before it, Sirdar runs devices off: the five-name case line (6cc4c8b7 until
+# 79674823f) refuses it, and the case line with devices (79674823f,
+# 253c882bb) and the OPTIONAL_APPS list (4e8ceb1d4 until efefc975a's merge)
+# run it with the main Spaces key and no data VM pg_hba.conf lines.
+PREDATES_DEVICES_SS_STACK = {"early-case-line": EARLY_CASE_SS_STACK,
+                             "case-line": CASE_SS_STACK,
+                             "optional-apps": OPTIONAL_APPS_SS_STACK}
 EVERY_APP = "wiki,kiosk,learn,status,devices,mailpit"
 
 
@@ -1181,13 +1197,16 @@ def test_render_keeps_devices_for_a_checkout_that_knows_it(tmp_path, apps, stack
     assert PREDATES_LEARN not in result.stdout
 
 
+@pytest.mark.parametrize("stack", list(PREDATES_DEVICES_SS_STACK.values()),
+                         ids=list(PREDATES_DEVICES_SS_STACK))
 @pytest.mark.parametrize("apps, kept", [(EVERY_APP, "wiki,kiosk,learn,status,mailpit"),
                                         ("wiki,devices", "wiki"),
                                         ("devices", "none")])
-def test_render_drops_devices_for_a_checkout_that_predates_it(tmp_path, apps, kept):
+def test_render_drops_devices_for_a_checkout_that_predates_it(tmp_path, apps, kept, stack):
     """Roll back, Update or Restore backup to a commit whose ss-stack
-    refuses devices: the .env runs without it, and the step says so."""
-    result, written = _render(tmp_path, apps, stack=EARLY_CASE_SS_STACK)
+    refuses devices, or runs it but not as Sirdar deploys it: the .env runs
+    without it, and the step says so."""
+    result, written = _render(tmp_path, apps, stack=stack)
     assert f"STACK_APPS={kept}\n" in written
     assert "devices" not in written
     assert "POSTGRES_PASSWORD=render-SECRET-0123abcd\n" in written
@@ -1233,8 +1252,10 @@ def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, stack, o
     assert ("learn.e2e.serversherpa.com" in asked) is not old
 
 
-def test_slot_smoke_skips_devices_for_a_checkout_that_predates_it(tmp_path):
-    asked = _slot_smoke_asked(tmp_path, EARLY_CASE_SS_STACK)
+@pytest.mark.parametrize("stack", list(PREDATES_DEVICES_SS_STACK.values()),
+                         ids=list(PREDATES_DEVICES_SS_STACK))
+def test_slot_smoke_skips_devices_for_a_checkout_that_predates_it(tmp_path, stack):
+    asked = _slot_smoke_asked(tmp_path, stack)
     assert "learn.e2e.serversherpa.com" in asked
     assert "devices.e2e.serversherpa.com" not in asked
 
@@ -1275,6 +1296,93 @@ def test_dump_skips_a_brand_new_data_vm(tmp_path):
                                                 "data_new": True, "dump_required": False}, env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not any("pg_dump" in c for c in calls)
+
+
+# pg_hba.conf as an ss-stack from before the devices database wrote it
+OLD_HBA = ("# Written by ss-stack from STACK_DB_ALLOW: edits are replaced.\n"
+           "local all all trust\n"
+           "host all all 127.0.0.1/32 scram-sha-256\n"
+           "host serversherpa serversherpa 10.10.48.48/32 scram-sha-256\n"
+           "host serversherpa serversherpa 10.10.48.49/32 scram-sha-256\n")
+DEVICES_HBA = "host serversherpa_devices serversherpa 10.10.48.49/32 scram-sha-256"
+# a checkout whose ss-stack has no hba command (it records what it was asked)
+NO_HBA_SS_STACK = """#!/usr/bin/env bash
+case "$1" in
+  data) ;;
+esac
+printf '%s\\n' "$*" >> "$(dirname "$0")/../../../asked"
+"""
+
+
+def _data_vm_repo(tmp_path: Path, ss_stack: str | None = None) -> tuple[Path, str]:
+    """A git repo holding deploy/stack (the real one, or one whose ss-stack is
+    `ss_stack`), as the data VM fetches it; (repo, its commit)."""
+    src = tmp_path / "src"
+    shutil.copytree(REPO / "deploy" / "stack", src / "deploy" / "stack",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    if ss_stack is not None:
+        (src / "deploy" / "stack" / "ss-stack").write_text(ss_stack)
+    git = ["git", "-C", str(src), "-c", "user.email=t@example.com", "-c", "user.name=t",
+           "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(src)], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "stack"], check=True)
+    sha = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                         text=True).stdout.strip()
+    return src, sha
+
+
+def _dump_on_the_data_vm(tmp_path: Path, src: Path, sha: str, run: str = "t"):
+    """dump.yml as Sirdar runs it on the data VM first (data_hba): an
+    environment folder with the data VM's .env and an older pg_hba.conf.
+    `run` names this run's own folder (its stand-in docker and log)."""
+    env_dir = tmp_path / "env"
+    env_dir.mkdir(exist_ok=True)
+    (env_dir / ".env").write_text(DATA_ENV)
+    hba = env_dir / "pg_hba.conf"
+    if not hba.exists():
+        hba.write_text(OLD_HBA)
+    (tmp_path / run).mkdir()
+    _, env = _target(tmp_path / run)
+    extra = {**_common(env_dir), "repo_url": str(src), "sha": sha, "data_hba": True,
+             "external_data": True, "data_new": False, "dump_required": True}
+    return env_dir, _play(tmp_path / run, "dump.yml", extra, env)
+
+
+def test_dump_writes_the_data_vm_s_hba_from_this_commit_first(tmp_path):
+    """LAN Blue/Green: an Update to an older commit ran its ss-stack data,
+    which wrote pg_hba.conf without the devices database. Step 6 runs on the
+    data VM first: this commit's ss-stack puts the lines back before the app
+    VM dumps the devices database. Nothing is dumped there."""
+    src, sha = _data_vm_repo(tmp_path)
+    env_dir, (result, calls) = _dump_on_the_data_vm(tmp_path, src, sha)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    repo_sha = subprocess.run(["git", "-C", str(env_dir / "repo"), "rev-parse", "HEAD"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+    assert repo_sha == sha
+    assert DEVICES_HBA in (env_dir / "pg_hba.conf").read_text()
+    assert "pg_hba.conf updated" in out
+    assert not any("pg_dump" in c for c in calls)
+    assert not any(" up " in c for c in calls)
+    assert "Report the dump path" not in out
+    # again: nothing to change
+    _, (result, _) = _dump_on_the_data_vm(tmp_path, src, sha, run="again")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pg_hba.conf already up to date" in result.stdout
+    assert "changed=0" in result.stdout
+
+
+def test_dump_leaves_the_data_vm_s_hba_to_an_older_commit(tmp_path):
+    """An Update to a commit whose ss-stack has no hba command: its dump
+    doesn't reach the devices database either, so nothing changes here."""
+    src, sha = _data_vm_repo(tmp_path, NO_HBA_SS_STACK)
+    env_dir, (result, _) = _dump_on_the_data_vm(tmp_path, src, sha)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "This commit's ss-stack has no hba command" in out
+    assert (env_dir / "pg_hba.conf").read_text() == OLD_HBA
+    assert not (env_dir / "asked").exists()
 
 
 def test_bootstrap_and_the_data_vm_share_the_docker_tasks():

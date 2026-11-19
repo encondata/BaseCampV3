@@ -2,13 +2,17 @@
 # record. It arrives base64-encoded so no value is ever read as a template,
 # and it carries every secret, so the tasks that read it are no_log.
 # A checkout from before the learning site (ss-stack learned learn in
-# 6cc4c8b7) or the Devices app (79674823f) runs without them: its ss-stack's
-# STACK_APPS check refuses any app it doesn't know. So Roll back, Update,
-# Restore backup and adopt to an older commit still start.
-# Each check recognizes the app in ss-stack's check_apps case line (6cc4c8b7
-# through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on); the same
-# patterns are in slot_smoke.yml, and tests/test_deploy_stack_drift.py runs
-# these greps against the real ss-stack.
+# 6cc4c8b7) or the Devices app runs without them: its ss-stack's STACK_APPS
+# check refuses any app it doesn't know. So Roll back, Update, Restore backup
+# and adopt to an older commit still start.
+# The learn check recognizes the app in ss-stack's check_apps case line
+# (6cc4c8b7 through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on).
+# The devices check looks for ss-stack's DEVICES_DB line (efefc975a on, the
+# commit that dumps and restores the devices database, writes its Blue/Green
+# pg_hba.conf lines and gives it its own Spaces key): commits from 79674823f
+# until then run devices, but not the way Sirdar deploys it, so Sirdar runs
+# them without it. The same patterns are in slot_smoke.yml, and
+# tests/test_deploy_stack_drift.py runs these greps against the real ss-stack.
 - name: Render config
   hosts: target
   gather_facts: false
@@ -44,7 +48,7 @@
         argv:
           - grep
           - -qE
-          - "^ +([a-z]+[|])*devices([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*devices( [a-z]+)*[)]"
+          - "^DEVICES_DB=serversherpa_devices$"
           - "{{ ss_stack }}"
       register: knows_devices
       changed_when: false

@@ -1,5 +1,5 @@
 """Sirdar's playbooks grep a checkout's ss-stack to tell what it can do (the
-learning site and the Devices app; the data, admin and seed commands). Each
+learning site and the Devices app; the data, hba, admin and seed commands). Each
 grep must still find its line in this ss-stack, or Sirdar treats this
 checkout as an older one and quietly drops the feature.
 
@@ -62,8 +62,8 @@ GREPS, ODD = _scan_stack_greps()
 def test_the_learn_devices_and_command_greps_are_all_found():
     for app in ("learn", "devices"):
         assert {p for p, _, argv in GREPS if app in argv[-2]} == {"render.yml", "slot_smoke.yml"}
-    for playbook, command in (("data.yml", "data"), ("first_admin.yml", "admin"),
-                              ("seed.yml", "seed")):
+    for playbook, command in (("data.yml", "data"), ("dump.yml", "hba"),
+                              ("first_admin.yml", "admin"), ("seed.yml", "seed")):
         assert any(p == playbook and f"{command})" in argv[-2] for p, _, argv in GREPS), playbook
 
 
@@ -86,3 +86,22 @@ def test_render_and_slot_smoke_ask_the_same_question(app):
 def test_each_sirdar_grep_finds_its_line(playbook, name, argv):
     rc = subprocess.run([*argv[:-1], str(SS_STACK)], check=False).returncode
     assert rc == 0, f"{playbook}: {name!r} greps ss-stack for {argv[-2]!r} and finds nothing"
+
+
+# The lines 79674823f through efefc975a's merge know devices by (its case
+# line, then OPTIONAL_APPS), verbatim. Those commits run devices with the
+# main Spaces key and no data VM pg_hba.conf lines, so Sirdar treats them as
+# predating it: the devices grep must not find them.
+OLDER_DEVICES_LINES = ("      wiki|kiosk|learn|status|devices|mailpit) ;;\n",
+                       "OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)\n")
+
+
+def test_the_devices_grep_finds_only_the_devices_db_line():
+    (argv,) = {tuple(argv) for _, _, argv in GREPS if "devices" in argv[-2]}
+    found = subprocess.run(["grep", "-E", argv[-2], str(SS_STACK)], check=False,
+                           capture_output=True, text=True).stdout.splitlines()
+    assert found == ["DEVICES_DB=serversherpa_devices"]
+    for line in OLDER_DEVICES_LINES:
+        rc = subprocess.run(["grep", "-qE", argv[-2]], input=line, text=True,
+                            check=False).returncode
+        assert rc == 1, line

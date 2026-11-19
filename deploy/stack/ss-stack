@@ -10,6 +10,7 @@
 #   ss-stack dump    <env-dir>              pg_dump into <env-dir>/backups (keeps STACK_KEEP_DUMPS);
 #                                           the devices database, when it exists, into backups/devices
 #   ss-stack data    <env-dir>              start only the database and storage, waiting on health
+#   ss-stack hba     <env-dir>              a LAN data VM's pg_hba.conf only, as data writes it
 #   ss-stack restore <env-dir> <file.dump> [--clear-sessions]
 #                                           stop the app stacks, empty the database, pg_restore the
 #                                           dump (and devices/<file.dump> into the devices database,
@@ -52,7 +53,7 @@ cleanup() { if (( ${#CLEANUP[@]} )); then rm -f -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '6,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '6,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -80,9 +81,9 @@ lan_db() { [[ $(env_value STACK_DB_PUBLISH) == 1 ]]; }
 
 # The optional apps, in STACK_APPS order: the one list (Sirdar's drift test
 # reads it too). Sirdar's render.yml and slot_smoke.yml grep this line to
-# tell whether a checkout knows the learning site and the Devices app, so
-# keep it one line in this form or change those greps too:
-# sirdar/api/tests/test_deploy_stack_drift.py and
+# tell whether a checkout knows the learning site (and DEVICES_DB's below
+# for the Devices app), so keep it one line in this form or change those
+# greps too: sirdar/api/tests/test_deploy_stack_drift.py and
 # deploy/tests/test_sirdar_greps.py run them against this file.
 OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)
 
@@ -111,7 +112,10 @@ check_apps() {
 
 # The devices app's two secrets: set means non-empty and not CHANGEME.
 DEVICES_SECRETS=(SS_DEVICES_SERVICE_TOKEN DEVICES_SECRET_KEY)
-# its own database, on the environment's database server
+# its own database, on the environment's database server. Sirdar's
+# render.yml and slot_smoke.yml grep this exact line to tell a checkout that
+# dumps, restores and (on a data VM) allows this database from one that
+# predates it: keep it as it is, or change those greps too.
 DEVICES_DB=serversherpa_devices
 devices_secrets_missing() {
   local key value
@@ -166,7 +170,10 @@ HBA_FILE="$env_dir/pg_hba.conf"
 # Every address (and STACK_DB_PORT) is checked before the file changes. The
 # container bind-mounts the file itself, which pins its inode: a changed
 # list is written into the same file (never mv'd over it), then a running
-# Postgres rereads it.
+# Postgres rereads it. HBA_CHANGED and HBA_RELOADED say what happened (hba
+# prints it).
+HBA_CHANGED=0
+HBA_RELOADED=0
 write_hba() {
   local allow ip ips octet octets port
   port=$(env_value STACK_DB_PORT)
@@ -204,15 +211,18 @@ write_hba() {
   if [[ ! -f $HBA_FILE ]]; then
     chmod 644 "$HBA_FILE.tmp"        # the container's postgres user reads it
     mv "$HBA_FILE.tmp" "$HBA_FILE"
+    HBA_CHANGED=1
     return 0
   fi
   if cmp -s "$HBA_FILE.tmp" "$HBA_FILE"; then return 0; fi
   cat "$HBA_FILE.tmp" > "$HBA_FILE"   # the same inode the container sees
   chmod 644 "$HBA_FILE"
+  HBA_CHANGED=1
   if [[ -n $(dc db ps --status running -q postgres </dev/null) ]]; then
     dc db exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 \
       -tAc 'SELECT pg_reload_conf()' </dev/null >/dev/null \
       || die "couldn't make Postgres reread pg_hba.conf"
+    HBA_RELOADED=1
   fi
 }
 
@@ -485,6 +495,22 @@ case $cmd in
     ensure_network
     data_up
     ;;
+  hba)
+    # Only what data does to pg_hba.conf, on a LAN Blue/Green data VM: Sirdar
+    # runs it there before the pre-deploy dump, because an older commit's
+    # data may have left out the devices database's lines and the step that
+    # runs data again comes after the dump. Nothing starts or restarts.
+    [[ $# -eq 0 ]] || usage
+    lan_db || die "hba is for a LAN data VM (STACK_DB_PUBLISH=1 in $env_file)"
+    write_hba
+    if (( HBA_RELOADED )); then
+      echo "pg_hba.conf updated; Postgres reread it"
+    elif (( HBA_CHANGED )); then
+      echo "pg_hba.conf updated"
+    else
+      echo "pg_hba.conf already up to date"
+    fi
+    ;;
   restore)
     [[ $# -eq 1 || $# -eq 2 ]] || usage
     dump=$1
@@ -526,12 +552,18 @@ case $cmd in
     # stays as it is
     devices_dump="$(dirname "$dump")/devices/$(basename "$dump")"
     if [[ -f $devices_dump ]]; then
-      [[ -r $devices_dump ]] || die "can't read the devices database's dump: $devices_dump"
-      ensure_devices_db || die "couldn't create the devices database ($DEVICES_DB)"
+      # By now the main database is restored (and signed out, with
+      # --clear-sessions): every failure below says so, and what it left of
+      # the devices database. Running the restore again redoes both.
+      untouched="the main database is already restored, and $DEVICES_DB is as it was: fix that and run the restore again"
+      [[ -r $devices_dump ]] || die "can't read the devices database's dump ($devices_dump): $untouched"
+      ensure_devices_db || die "couldn't create the devices database: $untouched"
+      # one psql -c is one transaction: a failure leaves the schema as it was
       pg_devices psql -v ON_ERROR_STOP=1 -q -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' \
-        </dev/null || die "couldn't empty the devices database"
+        </dev/null || die "couldn't empty the devices database: $untouched"
+      # --exit-on-error stops at the first error, keeping what came before it
       pg_devices pg_restore --exit-on-error --no-owner --no-acl < "$devices_dump" \
-        || die "pg_restore of the devices database failed"
+        || die "pg_restore of the devices database failed: the main database is already restored, but $DEVICES_DB is now empty or only partly restored. Fix the error above and run the restore again (it restores both)."
     fi
     echo "restored $dump"
     ;;

@@ -439,9 +439,38 @@ def test_restore_reports_a_failed_devices_restore(env_dir: Path, fake: dict[str,
                                                   tmp_path: Path) -> None:
     dump = _dump(tmp_path)
     _devices_dump(dump)
-    out = run({**fake, "FAKE_FAIL_DEVICES_RESTORE": "1"}, "restore", str(env_dir), str(dump))
+    out = run({**fake, "FAKE_FAIL_DEVICES_RESTORE": "1"}, "restore", str(env_dir), str(dump),
+              "--clear-sessions")
     assert out.returncode != 0
     assert "pg_restore of the devices database failed" in out.stderr
+    # the message says what state it left: the main database is restored
+    # (and signed out) already, the devices one emptied and maybe partly restored
+    assert "the main database is already restored" in out.stderr
+    assert "serversherpa_devices is now empty or only partly restored" in out.stderr
+    assert "run the restore again" in out.stderr
+    assert "restored " not in out.stdout
+    c = calls(fake)
+    main_restore = c.index(dc(env_dir, "db", "exec -T postgres pg_restore --exit-on-error "
+                                             "--no-owner --no-acl -U serversherpa -d serversherpa"))
+    devices_restore = c.index(dc(env_dir, "db", "exec -T postgres pg_restore -U serversherpa "
+                                                "-d serversherpa_devices --exit-on-error "
+                                                "--no-owner --no-acl"))
+    assert main_restore < c.index(dc(env_dir, "db", f"{PSQL} -c {CLEAR}")) < devices_restore
+    assert c[devices_restore - 1] == dc(
+        env_dir, "db", f"{DEVICES_PSQL} -c DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"PGDMP-restore-me"
+
+
+def test_restore_says_the_devices_database_is_untouched_when_it_stops_before_it(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    _devices_dump(dump)
+    out = run({**fake, "FAKE_FAIL_PSQL_STDIN": "1"}, "restore", str(env_dir), str(dump))
+    assert out.returncode != 0
+    assert "couldn't create the devices database" in out.stderr
+    assert "the main database is already restored" in out.stderr
+    assert "serversherpa_devices is as it was" in out.stderr
+    assert not Path(fake["DOCKER_LOG"] + ".devices-stdin").exists()
 
 
 def test_external_restore_restores_the_devices_database(env_dir: Path, fake: dict[str, str],
@@ -668,6 +697,70 @@ def test_an_unchanged_allow_list_doesnt_reload(env_dir: Path, fake: dict[str, st
     out = run({**fake, "FAKE_DB_RUNNING": "1"}, "data", str(env_dir))
     assert out.returncode == 0, out.stderr
     assert not any(RELOAD in c for c in calls(fake))
+
+
+# pg_hba.conf as an ss-stack from before the devices database wrote it
+OLD_HBA = ("# Written by ss-stack from STACK_DB_ALLOW: edits are replaced.\n"
+           "local all all trust\n"
+           "host all all 127.0.0.1/32 scram-sha-256\n"
+           "host serversherpa serversherpa 10.10.48.48/32 scram-sha-256\n"
+           "host serversherpa serversherpa 10.10.48.49/32 scram-sha-256\n")
+
+
+def test_hba_puts_back_the_lines_an_older_data_left_out(env_dir: Path,
+                                                        fake: dict[str, str]) -> None:
+    """Sirdar runs hba on the data VM before the pre-deploy dump: an older
+    commit's `ss-stack data` wrote the file without the devices database."""
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    hba = env_dir / "pg_hba.conf"
+    hba.write_text(OLD_HBA)
+    hba.chmod(0o644)
+    inode = hba.stat().st_ino
+    out = run({**fake, "FAKE_DB_RUNNING": "1"}, "hba", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "pg_hba.conf updated; Postgres reread it"
+    assert hba.stat().st_ino == inode
+    assert "host serversherpa_devices serversherpa 10.10.48.49/32 scram-sha-256" in hba.read_text()
+    # the same file `data` writes, and nothing else runs: no compose up
+    log = calls(fake)
+    assert [c for c in log if RELOAD in c] and not any(" up " in c for c in log)
+    assert all(f"-f {STACK_DIR}/db/lan.yml" in c for c in log if "/db/compose.yml" in c)
+    written = hba.read_text()
+    hba.unlink()
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    assert hba.read_text() == written
+
+
+def test_hba_writes_a_stopped_database_s_file_without_a_reload(env_dir: Path,
+                                                               fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    (env_dir / "pg_hba.conf").write_text(OLD_HBA)
+    out = run(fake, "hba", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "pg_hba.conf updated"
+    assert not any(RELOAD in c for c in calls(fake))
+    assert "serversherpa_devices" in (env_dir / "pg_hba.conf").read_text()
+
+
+def test_hba_leaves_a_current_file_alone(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    Path(fake["DOCKER_LOG"]).write_text("")
+    out = run({**fake, "FAKE_DB_RUNNING": "1"}, "hba", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "pg_hba.conf already up to date"
+    assert not any(RELOAD in c for c in calls(fake))
+
+
+def test_hba_is_for_a_data_vm_only(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "hba", str(env_dir))
+    assert out.returncode != 0 and "STACK_DB_PUBLISH" in out.stderr
+    assert calls(fake) == [] and not (env_dir / "pg_hba.conf").exists()
+    out = run(fake, "hba", str(env_dir), "extra")
+    assert out.returncode == 2 and "ss-stack hba" in out.stdout + out.stderr
 
 
 def test_a_data_vm_starts_no_mail_catcher(env_dir: Path, fake: dict[str, str]) -> None:

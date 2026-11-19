@@ -123,8 +123,8 @@ def test_the_playbook_greps_cover_learn_devices_and_the_commands():
     greps = _stack_greps()
     for app in ("learn", "devices"):
         assert {p for p, _, argv in greps if app in argv[-2]} == {"render.yml", "slot_smoke.yml"}
-    for playbook, command in (("data.yml", "data"), ("first_admin.yml", "admin"),
-                              ("seed.yml", "seed")):
+    for playbook, command in (("data.yml", "data"), ("dump.yml", "hba"),
+                              ("first_admin.yml", "admin"), ("seed.yml", "seed")):
         assert any(p == playbook and f"{command})" in argv[-2] for p, _, argv in greps), playbook
 
 
@@ -139,6 +139,25 @@ def test_every_playbook_grep_finds_its_line_in_ss_stack():
     failed = _failed_greps(STACK / "ss-stack")
     assert not failed, "deploy/stack/ss-stack no longer has what these checks grep for:\n" \
         + "\n".join(failed)
+
+
+# The lines 79674823f through efefc975a's merge know devices by (its case
+# line, then OPTIONAL_APPS), verbatim. Those commits run devices with the
+# main Spaces key and no data VM pg_hba.conf lines, so Sirdar treats them as
+# predating it: the devices grep must not find them.
+OLDER_DEVICES_LINES = ("      wiki|kiosk|learn|status|devices|mailpit) ;;\n",
+                       "OPTIONAL_APPS=(wiki kiosk learn status devices mailpit)\n")
+
+
+def test_the_devices_grep_finds_only_the_devices_db_line():
+    (argv,) = {tuple(argv) for _, _, argv in _stack_greps() if "devices" in argv[-2]}
+    found = subprocess.run(["grep", "-E", argv[-2], str(STACK / "ss-stack")], check=False,
+                           capture_output=True, text=True).stdout.splitlines()
+    assert found == ["DEVICES_DB=serversherpa_devices"]
+    for line in OLDER_DEVICES_LINES:
+        rc = subprocess.run(["grep", "-qE", argv[-2]], input=line, text=True,
+                            check=False).returncode
+        assert rc == 1, line
 
 
 @pytest.mark.parametrize("app", ["learn", "devices"])

@@ -8,10 +8,9 @@
 # On a LAN Blue/Green app VM each name carries its own port (no Caddy).
 # A checkout from before the learning site or the Devices app runs without
 # them (render.yml), so their names aren't tried. The checks are the same as
-# render.yml's: each recognizes the app in ss-stack's check_apps case line
-# (6cc4c8b7 through 253c882bb) or in its OPTIONAL_APPS list (4e8ceb1d4 on),
-# and tests/test_deploy_stack_drift.py runs these greps against the real
-# ss-stack.
+# render.yml's (learn: ss-stack's check_apps case line or OPTIONAL_APPS list;
+# devices: its DEVICES_DB line, efefc975a on), and
+# tests/test_deploy_stack_drift.py runs these greps against the real ss-stack.
 - name: Smoke test (slot)
   hosts: target
   gather_facts: false
@@ -33,7 +32,7 @@
         argv:
           - grep
           - -qE
-          - "^ +([a-z]+[|])*devices([|][a-z]+)*[)]|^OPTIONAL_APPS=[(]([a-z]+ )*devices( [a-z]+)*[)]"
+          - "^DEVICES_DB=serversherpa_devices$"
           - "{{ ss_stack }}"
       register: knows_devices
       changed_when: false

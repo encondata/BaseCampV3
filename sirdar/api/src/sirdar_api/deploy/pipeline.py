@@ -16,6 +16,8 @@ both slots). A LAN Blue/Green environment's deployment (vm and bluegreen)
 runs steps.plan_for(bluegreen=True): the host steps on the slot's app VM,
 7 Prepare data VM on the data VM (data_target), 14 lan_switch through the
 Publisher; the same modes are refused there (both app VMs share the data VM).
+Its step 6 starts on the data VM too (that VM's pg_hba.conf, _data_hba_request)
+before the app VM dumps.
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -717,7 +719,8 @@ class _Context:
     vm: vmsteps.VmContext | None = field(default=None, repr=False)
     # The values `redactor` hides: step 11 adds the first admin's password.
     redact_values: tuple[str, ...] = field(default=(), repr=False)
-    # LAN Blue/Green Update: step 7 runs on the data VM with its own .env.
+    # LAN Blue/Green Update: step 7 runs on the data VM with its own .env
+    # (and step 6 starts there: _data_hba_request).
     data_target: RunTarget | None = field(default=None, repr=False)
     data_env_b64: str = field(default="", repr=False)
 
@@ -1216,12 +1219,44 @@ async def _mark_running(db: AsyncSession, step: DeploymentStep) -> None:
     await db.commit()
 
 
+# LAN Blue/Green step 6, first on the data VM: dump.yml with data_hba (this
+# commit's ss-stack hba). An Update to an older commit ran that commit's
+# ss-stack data (step 7), which may have written pg_hba.conf without the
+# devices database's lines; this run puts them back before the slot's app VM
+# dumps that database, while step 7 still comes after the dump. The step
+# numbers stay as they are, so "Retry from step N" means what it did.
+DATA_HBA_STEP = "dump_hba"
+DATA_HBA_TIMEOUT = 10 * 60
+DATA_HBA_FIRST = "On the data VM first: its pg_hba.conf, as this commit's ss-stack writes it.\n"
+DATA_HBA_THEN = "Then the dump, on the app VM.\n"
+
+
+def _data_hba_request(ctx: _Context, step: DeploymentStep,
+                      control_dir: ControlDir | None) -> RunRequest | None:
+    """The data VM's part of a Blue/Green Update's step 6, or None: not
+    Blue/Green, or a data VM this deploy builds (no dump, no checkout yet)."""
+    if step.key != "dump" or ctx.data_target is None:
+        return None
+    if ctx.step_vars.get("dump", {}).get("data_new", True):
+        return None
+    return RunRequest(step=DATA_HBA_STEP, playbook=STEPS_BY_KEY["dump"].playbook,
+                      target=ctx.data_target, timeout=DATA_HBA_TIMEOUT,
+                      extravars={**ctx.common, "data_hba": True}, control_dir=control_dir)
+
+
 async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep, *,
                     control_dir: ControlDir | None = None) -> RunResult:
     definition = STEPS_BY_KEY[step.key]
     buffer = _step_buffer(ctx, step)
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
     try:
+        first = _data_hba_request(ctx, step, control_dir)
+        if first is not None:
+            buffer.append(DATA_HBA_FIRST)
+            result = await runner.run(first, buffer.append)
+            if result.status != "successful":
+                return result
+            buffer.append(DATA_HBA_THEN)
         return await runner.run(
             RunRequest(step=step.key, playbook=definition.playbook,
                        target=ctx.target_for(step.key),

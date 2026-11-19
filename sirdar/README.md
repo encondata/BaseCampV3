@@ -975,7 +975,9 @@ traffic graph) and whose Snapshots tab lists the snapshots.
   hostname, DNS record, proxy host, certificate name, smoke test, status-page
   card or portal link (`SS_APPS`). Turning an app off needs a commit from this
   release or later: an older git ref runs every app and uses Mailpit, and a
-  commit from before the Devices app runs without it (the render step says so).
+  commit from before Sirdar's Devices support (ss-stack's
+  `DEVICES_DB=serversherpa_devices` line) runs without it (the render step says
+  so).
 - **Devices:** on by default for a new environment. Sirdar makes its two
   secrets (`SS_DEVICES_SERVICE_TOKEN` and `DEVICES_SECRET_KEY`) when it creates
   the environment, stores them with the other secrets and writes them into the
@@ -987,7 +989,9 @@ traffic graph) and whose Snapshots tab lists the snapshots.
   without Apple settings shows "Apple settings aren't set up yet." Adopt
   reports that key as ignored. The devices database, `serversherpa_devices`,
   is in every pre-deploy dump and comes back with Roll back and Restore
-  backup; snapshots leave it out (its Apple secrets belong to one stack).
+  backup when the target commit's `ss-stack` is this release's or later (an
+  older one restores only the main database); snapshots leave it out (its
+  Apple secrets belong to one stack).
 - **Extras › Kiosk signing digests:** the SHA-256 digests of the kiosk app's
   signing certificates (release and Play), one per line; written as
   `SS_KIOSK_SIGNING_DIGESTS`. Kiosk biometric sign-in refuses every enroll
@@ -1056,7 +1060,11 @@ still needs certificates through NPM, which the create response flags as
   firewall in `DOCKER-USER`); storage accepts the app VMs and NPM. The
   devices database, `serversherpa_devices`, lives there beside the main one,
   and each app VM's `.env` gets `DEVICES_DATABASE_URL` pointing at it. Step 7
-  (Prepare data VM) re-applies its stack and firewall on every Update. A commit
+  (Prepare data VM) re-applies its stack and firewall on every Update. Step 6
+  (Pre-deploy dump) starts on the data VM: it checks out the commit there and
+  has its `ss-stack hba` rewrite `pg_hba.conf`, so an Update after one to an
+  older commit (whose step 7 left the devices database's lines out) can still
+  dump the devices database. A commit
   that changes the Postgres or SeaweedFS image, or the data stacks' compose
   files, recreates those containers, so the live server's database restarts
   before the idle server is smoke-tested; step 7's log says when this happened.
