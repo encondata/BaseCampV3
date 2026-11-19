@@ -32,7 +32,7 @@ class HomeScreenTest {
         val c = testContainer()
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { HomeScreen(rememberNavController()) } } }
         compose.onNodeWithText("What would you like to do?").assertIsDisplayed()
-        compose.onNodeWithText("Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.").assertIsDisplayed()
+        compose.onNodeWithText("Kiosk setup is incomplete. Only Kiosk Setup, Troubleshooting and Settings are available.").assertIsDisplayed()
         assertEquals(7, compose.onAllNodesWithText("Finish Kiosk Setup first.").fetchSemanticsNodes().size)
     }
 
@@ -44,7 +44,8 @@ class HomeScreenTest {
         fun height(tag: String) = compose.onNodeWithTag(tag).fetchSemanticsNode().size.height
         assertEquals(height("tile-SCAN"), height("tile-SETUP"))          // row 1
         assertEquals(height("tile-TRUCKS"), height("tile-LOOKUP"))       // row 3
-        assertEquals(height("tile-LABELS"), height("tile-TIMECLOCK"))    // row 4 (Settings is alone on row 5)
+        assertEquals(height("tile-LABELS"), height("tile-TIMECLOCK"))    // row 4
+        assertEquals(height("tile-TROUBLESHOOTING"), height("tile-SETTINGS"))   // row 5
     }
 
     /** An admin's Home has the Rolodex tile, usable before Kiosk Setup (it needs no move). */

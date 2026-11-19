@@ -2,7 +2,7 @@ package com.serversherpa.kiosk.core.features
 
 import com.serversherpa.kiosk.core.setup.SetupState
 
-enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LOOKUP, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX, NOTIFICATIONS }
+enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LOOKUP, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX, NOTIFICATIONS, TROUBLESHOOTING }
 
 /** One launcher tile / route. `placeholder` features open the generic
  *  "not available yet" page; `alwaysAvailable` ones ignore setup state. */
@@ -25,6 +25,8 @@ val FEATURES: List<KioskFeature> = listOf(
     KioskFeature(FeatureId.LOOKUP, "lookup", "Asset Lookup", "Scan an asset to see what it is and where it goes."),
     KioskFeature(FeatureId.LABELS, "labels", "Label Printing", "Print asset labels."),
     KioskFeature(FeatureId.TIMECLOCK, "timeclock", "Timeclock", "Clock in and out of a move."),
+    // The bundled hardware guides (assets/troubleshooting): open before setup and signed out.
+    KioskFeature(FeatureId.TROUBLESHOOTING, "troubleshooting", "Troubleshooting", "Fix common problems with kiosk hardware.", alwaysAvailable = true),
     KioskFeature(FeatureId.SETTINGS, "settings", "Settings", "Appearance, sound, devices, and more.", alwaysAvailable = true),
 )
 
@@ -44,12 +46,12 @@ val ROLODEX_FEATURE = KioskFeature(FeatureId.ROLODEX, "rolodex", "Rolodex", "Loo
 val NOTIFICATIONS_FEATURE = KioskFeature(FeatureId.NOTIFICATIONS, "notifications", "Notifications", "Read, snooze, and hide your notifications.", alwaysAvailable = true)
 
 /** What Home shows (kiosk/src/lib/features.ts STATION_TILES; Jimmy owns these lists): a Time
- *  Clock station only Time Clock, Kiosk Setup and Settings; any other kiosk every feature, plus
- *  the Rolodex and Notifications before Settings when [isAdmin] (rank 60+). Station Homes never
- *  get either. */
+ *  Clock station only Time Clock, Kiosk Setup, Troubleshooting and Settings; any other kiosk
+ *  every feature, plus the Rolodex and Notifications before Troubleshooting when [isAdmin]
+ *  (rank 60+). Station Homes never get either. Troubleshooting always sits right before Settings. */
 fun homeFeatures(stationType: String?, isAdmin: Boolean = false): List<KioskFeature> = when {
-    stationType == "timeclock" -> listOf(TIMECLOCK_STATION_FEATURE, feature(FeatureId.SETUP), feature(FeatureId.SETTINGS))
-    isAdmin -> FEATURES.flatMap { if (it.id == FeatureId.SETTINGS) listOf(ROLODEX_FEATURE, NOTIFICATIONS_FEATURE, it) else listOf(it) }
+    stationType == "timeclock" -> listOf(TIMECLOCK_STATION_FEATURE, feature(FeatureId.SETUP), feature(FeatureId.TROUBLESHOOTING), feature(FeatureId.SETTINGS))
+    isAdmin -> FEATURES.flatMap { if (it.id == FeatureId.TROUBLESHOOTING) listOf(ROLODEX_FEATURE, NOTIFICATIONS_FEATURE, it) else listOf(it) }
     else -> FEATURES
 }
 

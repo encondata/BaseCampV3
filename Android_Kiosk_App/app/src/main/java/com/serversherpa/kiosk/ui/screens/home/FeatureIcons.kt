@@ -36,6 +36,8 @@ val FEATURE_ICONS: Map<FeatureId, ImageVector> = mapOf(
     FeatureId.TIMECLOCK to icon("timeclock", strokes = listOf(circle(20f, 20f, 15f), "M20 11v9l7 4")),
     // The Time Clock station's tile shows the same clock face (as on the web).
     FeatureId.TIMECLOCK_STATION to icon("timeclock-station", strokes = listOf(circle(20f, 20f, 15f), "M20 11v9l7 4")),
+    // A wrench (every platform draws the same path).
+    FeatureId.TROUBLESHOOTING to icon("troubleshooting", strokes = listOf("M25.5 6.5a8 8 0 0 0-8.9 10.6L6.5 27.2a3.3 3.3 0 0 0 4.7 4.7l10.1-10.1a8 8 0 0 0 10.6-8.9l-4.6 4.6-4.4-1.2-1.2-4.4z")),
     FeatureId.SETTINGS to icon("settings", strokes = listOf("M6 12h20M31 12h3", circle(26f, 12f, 3.5f), "M6 28h9M20 28h14", circle(15f, 28f, 3.5f))),
     // A contact card on its rings: a person on the left, two lines of details on the right.
     FeatureId.ROLODEX to icon("rolodex", strokes = listOf(

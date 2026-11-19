@@ -9,7 +9,7 @@ import org.junit.Test
 
 class FeaturesTest {
     @Test fun orderMatchesTheWebKiosk() {
-        assertEquals(listOf("setup", "scan", "enroll", "containers", "trucks", "lookup", "labels", "timeclock", "settings"), FEATURES.map { it.route })
+        assertEquals(listOf("setup", "scan", "enroll", "containers", "trucks", "lookup", "labels", "timeclock", "troubleshooting", "settings"), FEATURES.map { it.route })
     }
 
     @Test fun lookupIsATileAfterTrucks() {
@@ -31,8 +31,8 @@ class FeaturesTest {
         assertTrue(FeatureId.LOOKUP in homeFeatures(null, isAdmin = true).map { it.id })
     }
 
-    @Test fun onlySetupAndSettingsAreAlwaysAvailable() {
-        assertEquals(setOf(FeatureId.SETUP, FeatureId.SETTINGS), FEATURES.filter { it.alwaysAvailable }.map { it.id }.toSet())
+    @Test fun onlySetupTroubleshootingAndSettingsAreAlwaysAvailable() {
+        assertEquals(setOf(FeatureId.SETUP, FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS), FEATURES.filter { it.alwaysAvailable }.map { it.id }.toSet())
     }
 
     @Test fun placeholdersAreContainersAndTrucks() {
@@ -61,8 +61,8 @@ class FeaturesTest {
         assertNull(featureForRoute(null))
     }
 
-    @Test fun aTimeClockStationHomeHasThreeTiles() {
-        assertEquals(listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.SETTINGS), homeFeatures("timeclock").map { it.id })
+    @Test fun aTimeClockStationHomeHasFourTiles() {
+        assertEquals(listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS), homeFeatures("timeclock").map { it.id })
         assertEquals("Time Clock", homeFeatures("timeclock").first().title)
         assertEquals("Start the time clock for workers.", homeFeatures("timeclock").first().blurb)
         assertEquals(FEATURES, homeFeatures(null))
@@ -74,8 +74,8 @@ class FeaturesTest {
     @Test fun anAdminsFullHomeHasTheRolodexBeforeSettings() {
         val ids = homeFeatures(null, isAdmin = true).map { it.id }
         assertTrue(FeatureId.ROLODEX in ids)
-        // Rolodex, then Notifications, then Settings.
-        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 2, ids.indexOf(FeatureId.ROLODEX))
+        // Rolodex, then Notifications, then Troubleshooting, then Settings.
+        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 3, ids.indexOf(FeatureId.ROLODEX))
         assertEquals(FEATURES.size + 2, ids.size)
         assertEquals("rolodex", ROLODEX_FEATURE.route)
         assertEquals("Rolodex", ROLODEX_FEATURE.title)
@@ -91,7 +91,7 @@ class FeaturesTest {
     }
 
     @Test fun aTimeClockStationHomeNeverHasTheRolodex() {
-        assertEquals(listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.SETTINGS), homeFeatures("timeclock", isAdmin = true).map { it.id })
+        assertEquals(listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS), homeFeatures("timeclock", isAdmin = true).map { it.id })
     }
 
     /** The parity lists stay as they were: the Rolodex is a tile outside FEATURES. */
@@ -105,7 +105,7 @@ class FeaturesTest {
         val ids = homeFeatures(null, isAdmin = true).map { it.id }
         assertTrue(FeatureId.NOTIFICATIONS in ids)
         assertEquals(ids.indexOf(FeatureId.ROLODEX) + 1, ids.indexOf(FeatureId.NOTIFICATIONS))
-        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 1, ids.indexOf(FeatureId.NOTIFICATIONS))
+        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 2, ids.indexOf(FeatureId.NOTIFICATIONS))
         assertEquals("notifications", NOTIFICATIONS_FEATURE.route)
         assertEquals("Notifications", NOTIFICATIONS_FEATURE.title)
         // It is just the inbox: no move or setup step.
@@ -120,8 +120,40 @@ class FeaturesTest {
     }
 
     @Test fun timeclock_station_home_unchanged() {
-        val station = listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.SETTINGS)
+        val station = listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS)
         assertEquals(station, homeFeatures("timeclock", isAdmin = true).map { it.id })
         assertEquals(station, homeFeatures("timeclock", isAdmin = false).map { it.id })
+    }
+
+    // ── Troubleshooting: every Home, right before Settings, open before setup ──
+
+    @Test fun troubleshootingSitsRightBeforeSettingsOnEveryHome() {
+        val tail = listOf(FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS)
+        assertEquals(tail, homeFeatures(null).map { it.id }.takeLast(2))
+        assertEquals(
+            listOf(FeatureId.ROLODEX, FeatureId.NOTIFICATIONS, FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS),
+            homeFeatures(null, isAdmin = true).map { it.id }.takeLast(4),
+        )
+        assertEquals(
+            listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.TROUBLESHOOTING, FeatureId.SETTINGS),
+            homeFeatures("timeclock").map { it.id },
+        )
+    }
+
+    @Test fun troubleshootingIsAlwaysAvailableWithTheWebCopy() {
+        val f = feature(FeatureId.TROUBLESHOOTING)
+        assertEquals("troubleshooting", f.route)
+        assertEquals("Troubleshooting", f.title)
+        assertEquals("Fix common problems with kiosk hardware.", f.blurb)
+        assertFalse(f.placeholder)
+        assertTrue(featureAvailable(f, SetupState.INCOMPLETE))
+        assertTrue(featureAvailable(f, SetupState.FAILED))
+    }
+
+    /** The shell's section comes from the route: a topic page belongs to Troubleshooting. */
+    @Test fun aTopicRouteIsTroubleshooting() {
+        assertEquals(FeatureId.TROUBLESHOOTING, featureForRoute("troubleshooting")?.id)
+        assertEquals(FeatureId.TROUBLESHOOTING, featureForRoute("troubleshooting/{topicId}")?.id)
+        assertEquals(FeatureId.TROUBLESHOOTING, featureForRoute("troubleshooting/zebra-ds22")?.id)
     }
 }

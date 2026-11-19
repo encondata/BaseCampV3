@@ -45,6 +45,8 @@ import com.serversherpa.kiosk.ui.screens.scan.ScanScreen
 import com.serversherpa.kiosk.ui.screens.settings.SettingsScreen
 import com.serversherpa.kiosk.ui.screens.setup.KioskSetupScreen
 import com.serversherpa.kiosk.ui.screens.timeclock.TimeclockScreen
+import com.serversherpa.kiosk.ui.screens.troubleshooting.TroubleshootingScreen
+import com.serversherpa.kiosk.ui.screens.troubleshooting.TroubleshootingTopicScreen
 import com.serversherpa.kiosk.ui.screens.notifications.NotificationsRoute
 import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.shell.PendingNotificationRedirect
@@ -71,6 +73,12 @@ fun KioskApp() {
                 // Reachable signed out (sign-in's gear): a Time Clock station returns to Welcome when idle.
                 composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
                     StationIdleReturn(nav) { KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) } }
+                }
+                // Routed like Settings: no setup step, and a station returns to Welcome when idle.
+                composable(Routes.TROUBLESHOOTING) { StationIdleReturn(nav) { KioskShell(nav) { TroubleshootingScreen(nav) } } }
+                // The topic page scrolls itself (so a barcode can be scrolled to), not the shell.
+                composable(Routes.TROUBLESHOOTING_TOPIC, arguments = listOf(navArgument("topicId") { type = NavType.StringType })) { entry ->
+                    StationIdleReturn(nav) { KioskShell(nav, scroll = false) { TroubleshootingTopicScreen(nav, entry.arguments?.getString("topicId")) } }
                 }
                 gated(nav, Routes.SCAN, FeatureId.SCAN) { ScanScreen(nav) }
                 gated(nav, Routes.ENROLL, FeatureId.ENROLL) { EnrollScreen(nav) }
