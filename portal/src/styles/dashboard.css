@@ -618,13 +618,19 @@ a.dash-kpi:hover {
   scroll-snap-type: x proximity; scrollbar-width: thin;
 }
 .pdash-flow-card {
-  flex: 0 0 150px; scroll-snap-align: start;
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 12px 8px; border: 1px solid var(--paper-line, #e5e1d8);
+  flex: 0 0 150px; min-width: 0; scroll-snap-align: start;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 8px; border: 1px solid var(--paper-line, #e5e1d8);
   border-radius: 12px; text-decoration: none; color: inherit;
 }
 .pdash-flow-card:hover { border-color: rgba(var(--accent-rgb), 0.55); }
-.pdash-flow-avatar { width: 56px; height: 56px; border-radius: 16px; font-size: 18px; }
+/* Big circular photo; the card's 150x155 footprint is unchanged because
+   the padding and gaps above gave up the extra height. */
+.pdash-flow-avatar { width: 76px; height: 76px; border-radius: 50%; font-size: 24px; margin-bottom: 1px; }
+/* A long reader name truncates instead of widening its card. */
+.pdash-flow-card .chip {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pdash-flow-name {
   font-size: 13px; font-weight: 600; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
