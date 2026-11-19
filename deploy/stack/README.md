@@ -293,6 +293,49 @@ command (it also starts the database if it is down):
 `./ss-stack restore /opt/serversherpa/uat /opt/serversherpa/uat/backups/<file>.dump`.
 `./ss-stack data /opt/serversherpa/uat` starts only the database and storage.
 
+## API dependency lock
+
+`api/Dockerfile` installs the API with `pip install -c api/constraints.txt`.
+That lock pins serversherpa-api's whole runtime dependency tree to the
+versions in `api/.venv`, the venv the API test suite runs in. Without it,
+each `ss-stack build` installed the newest PyPI releases of that day, so two
+environments deployed at the same commit could run different libraries,
+neither of them the ones the tests ran on. The build fails if pip installs
+anything the lock doesn't pin at that version (`lock_deps.py verify`, the
+step after `pip install`).
+
+`api/pyproject.toml` keeps its `>=` ranges: they say what the code supports,
+and the lock says what was tested. `deploy/tests/test_api_lock.py` (in the
+fast run) fails when the two disagree: a dependency added or dropped, an
+extra or marker changed, or a pin outside its range.
+
+Refresh the lock whenever the venv's packages change (a dependency added or
+upgraded), once the API suite passes on them, and commit it with the change.
+From the repo root:
+
+```bash
+api/.venv/bin/pip install -U pillow                # or: pip install -e './api[dev]' after adding a dependency
+(cd api && .venv/bin/python -m pytest -q)          # the API suite, on the new versions
+api/.venv/bin/python api/scripts/lock_deps.py      # rewrite api/constraints.txt
+git add api/pyproject.toml api/constraints.txt
+```
+
+From a worktree, which has no venv, run the main checkout's
+`api/.venv/bin/python` on the worktree's `api/scripts/lock_deps.py`. The
+script reads the `pyproject.toml` next to it and the packages installed in
+the Python that runs it. It follows the dependencies with markers evaluated
+for Linux x86_64 and aarch64 (the image's platforms, not the Mac's), and it
+stops with an error if the tree needs a package the venv doesn't have. Don't
+edit the lock by hand.
+
+- `api/.venv/bin/python api/scripts/lock_deps.py check` exits 1, with a
+  diff, when the venv no longer matches the committed lock.
+- A new venv on the locked versions (the dev tools aren't locked):
+  `api/.venv/bin/pip install -c api/constraints.txt -e './api[dev]'`.
+
+The lock covers Python packages only. The base image (`python:3.13-slim-trixie`),
+its pip, and the Debian packages still come from the build day.
+
 ## Tests
 
 From the repo root, with any Python that has pytest:

@@ -44,7 +44,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY api ./api-src
-RUN pip install --no-cache-dir ./api-src \
+# api/constraints.txt pins every dependency to the version in api/.venv,
+# where the API test suite runs, so two builds of one commit install the
+# same libraries. `verify` fails the build if pip installed anything the
+# lock doesn't pin at that version (deploy/stack/README.md, "API
+# dependency lock", says how to refresh it).
+RUN pip install --no-cache-dir -c api-src/constraints.txt ./api-src \
+ && python api-src/scripts/lock_deps.py verify \
  && mkdir -p /app/api \
  && cp -r api-src/alembic.ini api-src/migrations /app/api/ \
  && rm -rf api-src
