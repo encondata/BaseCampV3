@@ -21,7 +21,28 @@ Or open `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk.xcodeproj` in Xcode
 
 Signing team `Y2QYBG96U4`. Select the iPad (or iPhone) in Xcode and press Run.
 
-Debug builds default to `https://api.dev.serversherpa.com`; Release builds default to `https://api.serversherpa.com`; the portal URL is `https://portal.dev.serversherpa.com`. Change them under Settings › This Kiosk (reachable signed out via the gear on the login screen). For a local API the simulator can use `http://localhost:8000`.
+Debug builds and the IPA builds for the Devices site (below) default to `https://api.dev.serversherpa.com`; other Release builds default to `https://api.serversherpa.com`; the portal URL is `https://portal.dev.serversherpa.com`. Change them under Settings › This Kiosk (reachable signed out via the gear on the login screen). For a local API the simulator can use `http://localhost:8000`.
+
+## Building an IPA for the Devices site
+
+Crews install the app from `devices.dev.serversherpa.com`. `tools/build_ipa.sh` archives an optimized Release build with the `DEV_API` Swift condition, which makes the app default to `https://api.dev.serversherpa.com` (`App/KioskBuildConfig.swift`), so its update check asks `devices.dev.serversherpa.com`. Nothing else in the app changes.
+
+Raise the build number first (no argument adds 1; `bump_build.sh 7` sets 7):
+
+```bash
+IOS_Kiosk_App/tools/bump_build.sh
+```
+
+Then build:
+
+```bash
+IOS_Kiosk_App/tools/build_ipa.sh
+```
+
+- The IPA lands in `IOS_Kiosk_App/.derived/ipa/ServerSherpa-Kiosk-<version>-<build>.ipa` (git-ignored). The script checks it (one app, bundle ID, build, device build, the dev API URL, basic entitlements only, under the 500 MB upload limit) and prints its path, version, build, size and commit. It never uploads: upload it on the Devices site.
+- The Devices site re-signs the app with its own Ad Hoc profile and the team's distribution certificate, so the development signature Xcode puts on it is fine.
+- Every upload needs a higher build number than any build ever uploaded, deleted versions included. The update check compares the build only.
+- A capability added to the app (an entitlement beyond the basic ones) must be turned on for the App ID `Server-Sherpas.ServerSherpa-Kiosk` in Apple's developer site first, or the re-sign fails. The script refuses an IPA with one until it is added to its list.
 
 ## Scanning inputs
 
