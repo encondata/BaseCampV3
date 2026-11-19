@@ -28,7 +28,7 @@ barcode scanners: basic operation" (page 0b7bdf6d-00af-4262-acb8-425d0b0abbd6), 
 ## Anti-goals
 
 - Three hand-maintained copies of the text that drift apart.
-- Barcodes that look fine but won't scan (scaled, smoothed, dark-mode inverted, or cropped quiet zone).
+- Barcodes that look fine but won't scan (enlarged, shrunk with nearest-neighbor so bars come out uneven, dark-mode inverted, or cropped quiet zone).
 - Troubleshooting locked behind Kiosk Setup: a broken scanner is often why setup can't be finished.
 
 ## Approaches
@@ -82,7 +82,7 @@ width in px), `text` with the `bold` mark. Unknown nodes are skipped (the test k
 - **Topic** (guide): page header with the topic title, the rendered document in the kiosk's normal text styles,
   scrollable, following light/dark theme. Tables use the existing kiosk table look. Barcode images sit on a white
   panel with padding in both themes, shown at the doc's `width` (CSS px / dp / pt), shrunk only to fit the screen,
-  with nearest-neighbor (no smoothing) where the platform allows. Caption under each image.
+  with smooth downscaling (web default rendering, Android `FilterQuality.High`, iOS `.interpolation(.high)`), because nearest-neighbor downscaling drops or doubles pixel columns and makes bars uneven (ruling 2026-11-19). Caption under each image.
 - Back returns to the list, then Home, using each platform's existing shell/back control.
 
 ## Left to the builder
