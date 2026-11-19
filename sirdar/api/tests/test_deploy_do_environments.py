@@ -273,8 +273,8 @@ async def test_env_extra(db):
     assert envfile.parse_env(envfile.render_env(envfile.EnvConfig(
         name=env.name, domain=env.base_domain, image_tag="0123abcd", proxy_ip=env.proxy_ip,
         bind_ip=env.bind_ip, ports=dict(envfile.DEFAULT_PORTS), keep_dumps=5,
-        spaces_bucket=env.spaces_bucket, log_level="INFO", secrets=ENV_SECRETS,
-        extra=extra)))["SS_DATABASE_CA_B64"] == ca_b64
+        spaces_bucket=env.spaces_bucket, log_level="INFO", api_mode="staging",
+        secrets=ENV_SECRETS, extra=extra)))["SS_DATABASE_CA_B64"] == ca_b64
 
 
 async def test_env_extra_without_devices_has_no_devices_bucket(db):

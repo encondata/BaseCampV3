@@ -60,8 +60,22 @@ it('adopts an existing environment and lists what it imported and ignored', asyn
   expect(screen.getByText('/opt/serversherpa/uat')).toBeTruthy();
   expect(screen.getByText('e73b99ca')).toBeTruthy();
   expect(api.adoptEnvironment).toHaveBeenCalledWith({ name: 'uat', type: 'dev', target: 'ssh:lab', git_ref: 'main' });
+  expect(screen.getByText("Sirdar doesn't use these. The next deploy writes the .env without them.")).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Open environment' }));
   expect(onAdopted).toHaveBeenCalledWith(expect.objectContaining({ name: 'uat' }));
+});
+
+it('says an ignored SS_ENV follows the environment type', async () => {
+  api.adoptEnvironment.mockResolvedValue({
+    ...ENV, imported_secrets: [], ignored_keys: ['MINIO_ROOT_PASSWORD', 'SS_ENV'],
+  });
+  await open();
+  await userEvent.type(screen.getByLabelText('Name'), 'uat');
+  await adopt();
+  expect(await screen.findByText('SS_ENV')).toBeTruthy();
+  expect(screen.getByText("Sirdar doesn't keep these values. The next deploy leaves them out of the "
+    + '.env, except SS_ENV, which it sets from the environment type (production for a production '
+    + 'environment, staging for the rest).')).toBeTruthy();
 });
 
 it('an unknown host key asks to trust it with the target, then adopts', async () => {

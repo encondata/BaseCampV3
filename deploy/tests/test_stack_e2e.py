@@ -1,6 +1,7 @@
-"""A whole environment on this machine: build every image, start every
-stack, check every service answers and every worker stays up, dump the
-database, tear it all down. Opt-in (minutes, real containers):
+"""A whole environment on this machine, in production mode (SS_ENV, as
+Sirdar writes it for production environments): build every image, start
+every stack, check every service answers and every worker stays up, dump
+the database, tear it all down. Opt-in (minutes, real containers):
 
     SS_STACK_E2E=1 $PY -m pytest -c deploy/pytest.ini deploy/tests -m e2e -s
 
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
@@ -83,6 +85,9 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
         f"SS_WIKI_SERVICE_TOKEN={secrets.token_hex(32)}",
         f"SS_DEVICES_SERVICE_TOKEN={secrets.token_hex(32)}",
         f"DEVICES_SECRET_KEY={base64.urlsafe_b64encode(os.urandom(32)).decode()}",
+        # what Sirdar writes for a production environment: the stricter mode
+        # (staging, the default, is what every other environment runs)
+        "SS_ENV=production",
     ]
     (d / ".env").write_text("\n".join(lines) + "\n")
     build = ss("build", str(d), timeout=3600)
@@ -115,6 +120,29 @@ def test_every_service_answers(env_dir: Path, name: str, path: str) -> None:
     except TimeoutError as exc:
         pytest.fail(f"{exc}\n{service_logs(env_dir, *OWNERS[name])}")
     assert status == 200, f"{url} answered {status}\n{service_logs(env_dir, *OWNERS[name])}"
+
+
+def test_the_api_runs_in_production_mode(env_dir: Path) -> None:
+    """SS_ENV=production reached the real API: no docs, and CORS answers
+    only this environment's own sites."""
+    api = f"http://127.0.0.1:{PORTS['API']}"
+    for path in ("/docs", "/openapi.json"):
+        assert wait_http(api + path) == 404, path
+
+    def allowed(origin: str) -> str | None:
+        request = urllib.request.Request(api + "/auth/login", method="OPTIONS", headers={
+            "Origin": origin, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                return resp.headers.get("access-control-allow-origin")
+        except urllib.error.HTTPError as exc:     # a refused preflight is a 400
+            return exc.headers.get("access-control-allow-origin")
+
+    for name in ("portal", "kiosk", "wiki", "learn", "devices"):
+        origin = f"https://{name}.e2e.serversherpa.test"
+        assert allowed(origin) == origin, name
+    assert allowed("https://elsewhere.serversherpa.test") is None
 
 
 def test_spaces_accepts_the_stack_credentials(env_dir: Path) -> None:

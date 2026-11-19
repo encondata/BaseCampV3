@@ -487,3 +487,84 @@ def test_devices_settings_are_required(tmp_path, stack: str, key: str) -> None:
          str(STACK_DIR / stack / "compose.yml"), "config", "--format", "json"],
         capture_output=True, text=True, env=env)
     assert out.returncode != 0 and key in out.stderr
+
+
+# ---- SS_ENV, the API's mode: a setting in the .env (Sirdar writes production) ----
+
+def api_stack_with(tmp_path, ss_env: str | None) -> dict[str, Any]:
+    """The api stack (cert-worker and migrate too) rendered from env.example
+    with its SS_ENV line set to `ss_env` (None: left out), and no SS_ENV in
+    the shell (Compose would prefer it)."""
+    lines = [line for line in ENV_EXAMPLE.read_text().splitlines()
+             if not line.startswith("SS_ENV=")]
+    if ss_env is not None:
+        lines.append(f"SS_ENV={ss_env}")
+    env_file = tmp_path / ".env"
+    env_file.write_text("\n".join(lines) + "\n")
+    shell = {k: v for k, v in os.environ.items() if k != "SS_ENV"}
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "api/compose.yml"),
+         "--profile", "jobs", "--profile", "certs", "config", "--format", "json"],
+        capture_output=True, text=True, env=shell)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)["services"]
+
+
+def test_env_example_sets_the_mode_to_staging() -> None:
+    lines = ENV_EXAMPLE.read_text().splitlines()
+    assert [line for line in lines if line.startswith("SS_ENV=")] == ["SS_ENV=staging"]
+
+
+@pytest.mark.parametrize("ss_env, mode", [(None, "staging"), ("", "staging"),
+                                          ("staging", "staging"), ("production", "production")])
+def test_every_api_process_runs_in_the_env_files_mode(tmp_path, ss_env: str | None,
+                                                      mode: str) -> None:
+    """Left out or empty, an existing environment keeps running staging."""
+    services = api_stack_with(tmp_path, ss_env)
+    assert set(services) == {"migrate", "api", "cert-worker", *WORKERS}
+    for name, service in services.items():
+        assert service["environment"]["SS_ENV"] == mode, name
+
+
+@pytest.mark.parametrize("mode", ["staging", "production"])
+def test_the_rendered_api_starts_in_its_mode(tmp_path, monkeypatch, mode: str) -> None:
+    """The API built from exactly what the stack hands it: Settings accept
+    it (nothing production-only is missing, nothing refuses to boot), the
+    wiki workers' production check stays quiet, and production serves no
+    docs and answers only the environment's own sites."""
+    from starlette.testclient import TestClient
+
+    from serversherpa import config
+
+    env = api_stack_with(tmp_path, mode)["api"]["environment"]
+    for key in [k for k in os.environ if k.startswith("SS_")]:
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setitem(config.Settings.model_config, "env_file", None)   # the stack's values only
+    config.get_settings.cache_clear()
+    try:
+        # imported once the stack's values are set: routes/auth.py reads
+        # settings at import (create_app reads them again on each call)
+        from serversherpa.api.app import create_app
+        from serversherpa.wiki.worker import local_origin_warning
+
+        assert config.get_settings().env == mode
+        assert local_origin_warning() is None
+        client = TestClient(create_app())     # no lifespan: no database needed
+        docs = 404 if mode == "production" else 200
+        assert client.get("/docs").status_code == docs
+        assert client.get("/openapi.json").status_code == docs
+
+        def allowed(origin: str) -> str | None:
+            resp = client.options("/auth/login", headers={
+                "Origin": origin, "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type"})
+            return resp.headers.get("access-control-allow-origin")
+
+        for name in ("portal", "kiosk", "wiki", "learn", "devices"):
+            assert allowed(f"https://{name}.{DOMAIN}") == f"https://{name}.{DOMAIN}", name
+        for other in ("https://elsewhere.serversherpa.com", "http://10.0.0.9:5173"):
+            assert allowed(other) == (None if mode == "production" else other), other
+    finally:
+        config.get_settings.cache_clear()

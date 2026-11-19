@@ -127,18 +127,46 @@ database.
 app's signing certificates) reaches the API unchanged; empty refuses every
 biometric enroll.
 
-## Accepted risk: staging CORS
+## SS_ENV: staging or production
 
-These stacks run the API with `SS_ENV=staging`, and outside production the
-API accepts credentialed requests from **any** HTTPS origin
-(`api/src/serversherpa/api/app.py`, the dev/staging `allow_origin_regex`);
-`SS_ALLOWED_ORIGINS` is not enforced. The refresh cookie is SameSite=Lax, so
-unrelated sites can't use it, but a page on any `*.serversherpa.com` host
-could call this environment's API with a signed-in user's session.
-`/docs` and `/openapi.json` are also public. Accepted for UAT by Jimmy on
-2026-10-03. Revisit before seeding real accounts that matter, or before
-any environment faces untrusted users: make staging honor
-`SS_ALLOWED_ORIGINS`.
+`SS_ENV` in the `.env` is the API's mode, for the API and every worker
+(`api/compose.yml`). Left out or empty, it is `staging`, so an environment
+whose `.env` predates the setting runs exactly as before. `ss-stack up`
+passes the `.env`'s value to Compose (never one from the caller's shell)
+and refuses anything but `development`, `staging` or `production` before
+it starts a container; the API would crash-loop on any other value.
+Sirdar writes `SS_ENV=production` for production environments and
+`staging` for every other type (dev, beta, custom); adopting a hand-built
+`.env` whose `SS_ENV` doesn't match the type lists it as ignored.
+
+What production changes (`api/src/serversherpa/api/app.py`):
+
+- **CORS:** only `SS_ALLOWED_ORIGINS` (this environment's portal, kiosk,
+  wiki, learning and devices sites). Every browser caller in the stack is
+  on that list; the laptop kiosk calls through its own origin, the phone
+  apps send no Origin, and the status page and Sirdar's smoke test call
+  from the server.
+- **Docs:** no `/docs` or `/openapi.json` (404).
+- Nothing else: the sign-in cookies are Secure in staging too (only
+  `development` drops that), no setting is required only in production,
+  and no startup check refuses to boot. `development` is for a dev
+  machine: it also turns off the Secure flag, so don't use it here.
+
+**Rolling back across the change:** a commit from before `SS_ENV` was a
+setting hard-codes `staging` in `api/compose.yml`. A production
+environment rolled back (Roll back, Restore backup, an Update to an older
+commit) to such a commit runs as staging, CORS open and `/docs` public,
+until an Update to a newer commit. Accepted by Jimmy on 2026-11-19.
+
+### Accepted risk: staging CORS
+
+In staging the API accepts credentialed requests from **any** http(s)
+origin (the dev/staging `allow_origin_regex`); `SS_ALLOWED_ORIGINS` is not
+enforced. The refresh cookie is SameSite=Lax, so unrelated sites can't use
+it, but a page on any `*.serversherpa.com` host could call this
+environment's API with a signed-in user's session. `/docs` and
+`/openapi.json` are also public. Accepted for UAT by Jimmy on 2026-10-03.
+Production environments run `SS_ENV=production` instead (above).
 
 ## Manual deploy to an Ubuntu host (phase 1)
 

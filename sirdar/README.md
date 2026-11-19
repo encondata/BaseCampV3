@@ -265,6 +265,15 @@ deployment per environment at a time. Reset, Restore backup, Roll back,
 Restore VM snapshot and Delete environment replace or remove data: they need
 `deploy:change` and the environment's name typed back (`confirm_name`).
 
+**API mode (`SS_ENV`).** Step 4 writes the API's mode into the environment's
+`.env` from its type: `production` for a production environment (CORS only
+from its own sites, no `/docs` or `/openapi.json`), `staging` for dev, beta
+and custom ones (any origin, docs public). It isn't a setting of its own; it
+follows the type on every Update. A commit from before the setting
+hard-codes staging, so a production environment rolled back to one runs as
+staging until an Update to a newer commit. Details in `deploy/stack/README.md`
+(SS_ENV: staging or production).
+
 **Clean up a failed first deploy.** While the latest deployment of an environment
 that never had a successful Update, Reset, Restore backup, Roll back, Restore
 VM snapshot or Activate, and was never adopted (adopted environments are never

@@ -914,7 +914,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
             name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(dep.sha),
             proxy_ip=env.proxy_ip, bind_ip=env.bind_ip, ports=ports,
             keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket,
-            log_level=env.log_level, secrets=secrets, extra=extra))
+            log_level=env.log_level, api_mode=envfile.api_mode(env.type), secrets=secrets,
+            extra=extra))
     except envfile.RenderError as e:
         raise PrepareError(f"Sirdar couldn't write this environment's .env: {e.reason}.") \
             from None

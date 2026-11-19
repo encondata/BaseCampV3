@@ -5,7 +5,10 @@
 name: ss-${STACK_ENV:?set STACK_ENV}-api
 
 x-ss-env: &ss-env
-  SS_ENV: staging
+  # staging: any http(s) origin may call the API with credentials and /docs
+  # is public; production: only SS_ALLOWED_ORIGINS, and no /docs or
+  # /openapi.json. Sirdar writes production for production environments.
+  SS_ENV: ${SS_ENV:-staging}
   SS_LOG_LEVEL: ${SS_LOG_LEVEL:-INFO}
   SS_API_BASE_URL: https://api.${STACK_DOMAIN:?set STACK_DOMAIN}
   SS_PORTAL_ORIGIN: https://portal.${STACK_DOMAIN}

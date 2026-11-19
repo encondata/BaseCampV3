@@ -230,7 +230,11 @@ export default function AdoptEnvironmentModal({ onAdopted, onClose }: {
                     <div className="sirdar-chips">
                       {result.ignored_keys.map((k) => <span key={k} className="chip tag mono">{k}</span>)}
                     </div>
-                    <p className="page-hint">Sirdar doesn't use these. The next deploy writes the .env without them.</p>
+                    <p className="page-hint">
+                      {result.ignored_keys.includes('SS_ENV')
+                        ? "Sirdar doesn't keep these values. The next deploy leaves them out of the .env, except SS_ENV, which it sets from the environment type (production for a production environment, staging for the rest)."
+                        : "Sirdar doesn't use these. The next deploy writes the .env without them."}
+                    </p>
                   </>
                 ) : <p className="page-hint">None. Sirdar knows every key in that .env.</p>}
               </>
