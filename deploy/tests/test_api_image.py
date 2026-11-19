@@ -74,6 +74,29 @@ def test_default_command_does_not_trust_every_proxy() -> None:
     assert "*" not in cmd
 
 
+def test_installs_exactly_the_lock() -> None:
+    # the build's own `lock_deps.py verify` catches extras; this also catches
+    # pins the image never installed (a stale lock, or an arch gap)
+    from packaging.utils import canonicalize_name
+
+    from test_api_lock import parse_lock
+
+    out = docker_run(TAG, "sh", "-c", "uname -m && pip freeze --all")
+    assert out.returncode == 0, out.stderr
+    arch, *lines = out.stdout.splitlines()
+    frozen: dict[str, str] = {}
+    for line in lines:
+        # the app itself is a local-path install: `serversherpa-api @ file:///...`
+        name, _, version = line.partition(" @ ") if " @ " in line else line.partition("==")
+        frozen[canonicalize_name(name.strip())] = version.strip()
+    frozen.pop("pip")
+    assert frozen.pop("serversherpa-api", None), "serversherpa-api isn't installed"
+    _, pins, _ = parse_lock()
+    locked = {name: pin.version for name, pin in pins.items()
+              if not pin.only_on or arch in pin.only_on}
+    assert frozen == locked
+
+
 def test_home_belongs_to_the_runtime_user() -> None:
     # LibreOffice and fontconfig write caches under HOME; a root-owned
     # HOME breaks them ("Fontconfig error: No writable cache directories")
