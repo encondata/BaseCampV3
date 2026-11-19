@@ -24,12 +24,18 @@ const walk = (n: Node, out: Node[] = []): Node[] => {
   ;(n.content ?? []).forEach((c) => walk(c, out))
   return out
 }
-const readDoc = (): Node => JSON.parse(fs.readFileSync(path.join(CANON, 'zebra-ds22.json'), 'utf8'))
+type Topic = { id: string; title: string; blurb: string; doc: string }
+const TOPICS: Topic[] = JSON.parse(fs.readFileSync(path.join(CANON, 'topics.json'), 'utf8'))
+const readDoc = (file: string): Node => JSON.parse(fs.readFileSync(path.join(CANON, file), 'utf8'))
+const imagesOf = (doc: Node) =>
+  walk(doc).filter((n) => n.type === 'wikiImage').map((n) => String(n.attrs?.assetId))
 
 describe('troubleshooting content', () => {
   it('ships identical copies to Android and iOS', () => {
     const files = shared(CANON)
-    expect(files.length).toBe(7)
+    // at least topics.json, one doc and its images
+    expect(files).toContain('topics.json')
+    for (const t of TOPICS) expect(files).toContain(t.doc)
     for (const dir of COPIES) {
       expect(shared(dir)).toEqual(files)
       for (const f of files) {
@@ -38,32 +44,35 @@ describe('troubleshooting content', () => {
     }
   })
 
-  it('uses only supported nodes', () => {
-    for (const n of walk(readDoc())) {
-      expect(SUPPORTED.has(n.type)).toBe(true)
-      for (const m of n.marks ?? []) expect(m.type).toBe('bold')
-      if (n.type === 'heading') expect([2, 3]).toContain(n.attrs?.level)
+  it('every topic uses only supported nodes', () => {
+    for (const t of TOPICS) {
+      for (const n of walk(readDoc(t.doc))) {
+        expect(SUPPORTED.has(n.type), `${t.doc}: ${n.type}`).toBe(true)
+        for (const m of n.marks ?? []) expect(m.type).toBe('bold')
+        if (n.type === 'heading') expect([2, 3]).toContain(n.attrs?.level)
+      }
     }
   })
 
-  it('bundles every image the doc names', () => {
-    const named = walk(readDoc()).filter((n) => n.type === 'wikiImage').map((n) => String(n.attrs?.assetId))
+  it('bundles every image the topics name, and nothing else', () => {
     const files = fs.readdirSync(CANON)
-    for (const id of named) expect(files).toContain(id)
-    const pngs = files.filter((f) => f.endsWith('.png'))
-    for (const png of pngs) expect(named).toContain(png)
+    const named = TOPICS.flatMap((t) => imagesOf(readDoc(t.doc)))
+    for (const id of named) {
+      // only plain .png names are mirrored by sync.sh, so anything else would ship on the web alone
+      expect(id).toMatch(/^[a-z0-9][a-z0-9-]*\.png$/)
+      expect(files).toContain(id)
+    }
+    for (const png of files.filter((f) => f.endsWith('.png'))) expect(named).toContain(png)
   })
 
   it('lists the scanner topic', () => {
-    const topics = JSON.parse(fs.readFileSync(path.join(CANON, 'topics.json'), 'utf8'))
-    expect(topics).toEqual([
-      {
-        id: 'zebra-ds22',
-        title: 'Zebra Scanner Troubleshooting',
-        blurb: 'Set up, pair, and reset Zebra DS22 scanners, with programming barcodes.',
-        doc: 'zebra-ds22.json',
-      },
-    ])
-    for (const t of topics) expect(fs.existsSync(path.join(CANON, t.doc))).toBe(true)
+    expect(TOPICS).toContainEqual({
+      id: 'zebra-ds22',
+      title: 'Zebra Scanner Troubleshooting',
+      blurb: 'Set up, pair, and reset Zebra DS22 scanners, with programming barcodes.',
+      doc: 'zebra-ds22.json',
+    })
+    expect(new Set(TOPICS.map((t) => t.id)).size).toBe(TOPICS.length)
+    for (const t of TOPICS) expect(fs.existsSync(path.join(CANON, t.doc))).toBe(true)
   })
 })
