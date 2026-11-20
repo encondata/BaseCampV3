@@ -3,7 +3,6 @@ import Foundation
 /// The pure rules behind the Settings screen (Android SettingsScreen / ThisKioskPanel / DeveloperPanel).
 enum SettingsModel {
     static let nameError = "Enter a name between 1 and \(NAME_MAX) characters."
-    static let urlError = "Enter an http:// or https:// address."
     static let inspectCap = 200
 
     /// A single tab needs no strip (the signed-out sheet).

@@ -87,12 +87,13 @@ final class AppContainer {
     /// the Devices site on the shared session and `installed` this app's bundle unless a test (or a
     /// DEBUG launch argument) passes others. `api` is the API on the shared session unless a test
     /// passes a fake, and `environmentListSession` the environment list's own session unless a
-    /// test passes a stubbed one (no test reaches status.serversherpa.com).
+    /// test passes a stubbed one (no test reaches status.serversherpa.com). `environmentListUrl` is
+    /// the status site's list unless a DEBUG launch argument (UI tests) points it nowhere.
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
          backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine(),
          bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil,
          devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil, api: (any KioskApi)? = nil,
-         environmentListSession: URLSession? = nil) {
+         environmentListSession: URLSession? = nil, environmentListUrl: String = Environments.statusListURL) {
         let prefs = KioskPrefs(defaults: defaults)
         let environments = EnvironmentStore(prefs: prefs)
         let defaultEnvironment = KioskBuildConfig.defaultEnvironment
@@ -118,8 +119,8 @@ final class AppContainer {
 
         self.prefs = prefs
         self.environments = environments
-        self.environmentList = environmentListSession.map { EnvironmentListFetcher(store: environments, session: $0) }
-            ?? EnvironmentListFetcher(store: environments)
+        self.environmentList = environmentListSession.map { EnvironmentListFetcher(store: environments, session: $0, url: environmentListUrl) }
+            ?? EnvironmentListFetcher(store: environments, url: environmentListUrl)
         self.config = config
         self.secrets = secrets
         self.identity = identity
@@ -189,8 +190,11 @@ final class AppContainer {
         // sheet (and a Turn on running under it) belongs to the person signed in. The biometric
         // key stays: the next sign-in screen shows its card.
         let printJobs = self.printJobs
+        // The outbox stops at sign-out itself (no token to send with), not when a screen next
+        // reacts to it: an environment switch clears and re-points the kiosk right after.
         auth.onLogout = {
             heartbeat.stop()
+            outbox.stop()
             bluetooth.close()
             Task { await printJobs.reset() }
             rolodex.clear()
@@ -291,7 +295,18 @@ final class AppContainer {
         let sample = sampleUpdateCheck()
         return AppContainer(defaults: .standard, secrets: KeychainSecretStore(), modelContainer: opened.container,
                             storeIsTemporary: opened.isTemporary, backgroundTask: UIKitBackgroundTasking(),
-                            fontsDir: Sync.defaultFontsDir, devicesApi: sample.api, installed: sample.installed)
+                            fontsDir: Sync.defaultFontsDir, devicesApi: sample.api, installed: sample.installed,
+                            environmentListUrl: environmentListUrl())
+    }
+
+    /// DEBUG only: UI tests pass `-uiTestNoEnvironmentDownload`, and the environment chooser's
+    /// download goes to a closed local port (it fails at once, so the built-in or saved list
+    /// shows), never to the status site. Otherwise (and in Release) the status site's list.
+    private static func environmentListUrl() -> String {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiTestNoEnvironmentDownload") { return "https://127.0.0.1:9/environments.json" }
+        #endif
+        return Environments.statusListURL
     }
 
     /// DEBUG only: UI tests and simulator checks pass `-uiTestUpdate <status>`, and the update check

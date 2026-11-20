@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// What `EnvironmentSwitcher.switchTo` answered (Android `SwitchResult`).
 enum SwitchResult: Equatable, Sendable {
@@ -48,20 +49,25 @@ enum EnvironmentSwitchError: Error, Equatable {
 /// and so do its appearance, sound and other device settings: iOS has no settings sync, so the
 /// spec's reason for resetting them doesn't apply here. The heartbeat starts again at the next
 /// sign-in.
-@MainActor
+@MainActor @Observable
 final class EnvironmentSwitcher {
-    private let store: EnvironmentStore
-    private let config: KioskConfig
-    private let api: KioskApi
-    private let auth: KioskAuth
-    private let outbox: Outbox
-    private let biometric: BiometricSignIn
-    private let heartbeat: Heartbeat
-    private let cookies: RefreshCookie
-    private let prefs: KioskPrefs
-    private let resetApp: @MainActor () async throws -> Void
+    @ObservationIgnored private let store: EnvironmentStore
+    @ObservationIgnored private let config: KioskConfig
+    @ObservationIgnored private let api: KioskApi
+    @ObservationIgnored private let auth: KioskAuth
+    @ObservationIgnored private let outbox: Outbox
+    @ObservationIgnored private let biometric: BiometricSignIn
+    @ObservationIgnored private let heartbeat: Heartbeat
+    @ObservationIgnored private let cookies: RefreshCookie
+    @ObservationIgnored private let prefs: KioskPrefs
+    @ObservationIgnored private let resetApp: @MainActor () async throws -> Void
     /// The switch running now; the next one waits for it.
-    private var running: Task<SwitchResult, Error>?
+    @ObservationIgnored private var running: Task<SwitchResult, Error>?
+    /// Switches started and not yet answered.
+    @ObservationIgnored private var inFlight = 0
+    /// A switch is running (or waiting for the one before it). A Time Clock station's sign-in
+    /// page keeps its Settings sheet, and the chooser in it, up meanwhile.
+    private(set) var isSwitching = false
 
     init(store: EnvironmentStore, config: KioskConfig, api: KioskApi, auth: KioskAuth, outbox: Outbox,
          biometric: BiometricSignIn, heartbeat: Heartbeat, cookies: RefreshCookie, prefs: KioskPrefs,
@@ -88,7 +94,13 @@ final class EnvironmentSwitcher {
     /// Runs to the end once started, even if the caller is cancelled.
     func switchTo(_ target: SavedEnvironment, discard: Bool) async throws -> SwitchResult {
         let previous = running
+        inFlight += 1
+        isSwitching = true
         let task = Task { @MainActor in
+            defer {
+                self.inFlight -= 1
+                self.isSwitching = self.inFlight > 0
+            }
             _ = try? await previous?.value
             return try await self.run(target, discard: discard)
         }

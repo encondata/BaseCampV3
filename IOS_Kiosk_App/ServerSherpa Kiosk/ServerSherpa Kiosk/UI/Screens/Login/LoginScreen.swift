@@ -5,9 +5,13 @@ import SwiftUI
 /// the right; compact screens stack logo, form and status line in one column.
 struct LoginScreen: View {
     @Environment(\.container) private var container
+    @Environment(KioskConfig.self) private var config
 
     var body: some View {
+        // A fresh screen for each server: an environment switch lands on a sign-in page that asks
+        // the new server for its banners and has no card left from the old one.
         LoginScreenBody(container: container)
+            .id(config.apiUrl)
     }
 }
 
@@ -104,7 +108,10 @@ private struct LoginScreenBody: View {
                     // quiet minute still returns the station to Welcome, closing the sheet
                     .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
             }
-            .onChange(of: container.station.loginRequested) { _, requested in if !requested { kioskSheet = false } }
+            // Never while an environment switch runs in it: that would take its chooser away mid-switch.
+            .onChange(of: container.station.loginRequested) { _, requested in
+                if !requested && !container.environmentSwitcher.isSwitching { kioskSheet = false }
+            }
             // The Move password field's QR button: the kiosk's own camera, QR only. The first code
             // read is the move password and is submitted at once; an error lands on the field. Out
             // here, past the sign-in page's forced light look, so the camera follows the theme.
@@ -118,10 +125,12 @@ private struct LoginScreenBody: View {
     /// This kiosk's own name under the wordmark (Settings › This Kiosk); nil shows no line.
     private var kioskName: String? { LoginLayout.kioskNameLine(container.identity.current.name) }
 
-    /// The Settings sheet, closed on a Time Clock station once its sign-in request ends.
+    /// The Settings sheet, closed on a Time Clock station once its sign-in request ends (unless an
+    /// environment switch is running in it).
     private var settingsSheet: Binding<Bool> {
         Binding(get: { loginSettingsSheetShown(kioskSheet, selection: container.prefs.setupSelection,
-                                               loginRequested: container.station.loginRequested) },
+                                               loginRequested: container.station.loginRequested,
+                                               switching: container.environmentSwitcher.isSwitching) },
                 set: { kioskSheet = $0 })
     }
 
@@ -154,7 +163,7 @@ private struct LoginScreenBody: View {
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
-            gear
+            HStack(spacing: 8) { EnvironmentBadge(); gear }
                 .padding(.top, insets.top + 8)
                 .padding(.trailing, metrics.formTrailing - 10)
         }
@@ -167,7 +176,11 @@ private struct LoginScreenBody: View {
                 HStack(alignment: .top) {
                     LoginLogo(scale: 0.62, kioskName: kioskName)
                     Spacer(minLength: 8)
-                    gear
+                    // Under the gear, not beside it: a phone's row has no width to spare.
+                    VStack(alignment: .trailing, spacing: 4) {
+                        gear
+                        EnvironmentBadge()
+                    }
                 }
                 .padding(.top, insets.top + 12)
                 Spacer(minLength: 28)

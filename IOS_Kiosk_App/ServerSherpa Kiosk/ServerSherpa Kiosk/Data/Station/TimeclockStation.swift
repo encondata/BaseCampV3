@@ -24,9 +24,11 @@ func apiOrigin(_ url: String) -> String? {
 
 /// Whether the sign-in page's Settings sheet (This Kiosk, open signed out) stays up. On a Time
 /// Clock station it closes as soon as the sign-in request ends (Back, a sign-in, or the quiet
-/// minute running out), so nobody leaves the station stuck in Settings.
-func loginSettingsSheetShown(_ open: Bool, selection: KioskSetupSelection?, loginRequested: Bool) -> Bool {
-    open && (selection?.isTimeclockStation != true || loginRequested)
+/// minute running out), so nobody leaves the station stuck in Settings; never while an
+/// environment switch started in it is `switching` (that would close its chooser mid-switch).
+func loginSettingsSheetShown(_ open: Bool, selection: KioskSetupSelection?, loginRequested: Bool,
+                             switching: Bool = false) -> Bool {
+    open && (selection?.isTimeclockStation != true || loginRequested || switching)
 }
 
 /// The Time Clock station's live state (the web's `GET /edge/timeclock/station`, kept on the

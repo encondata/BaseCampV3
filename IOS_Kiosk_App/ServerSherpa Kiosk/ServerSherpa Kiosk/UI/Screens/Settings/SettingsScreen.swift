@@ -49,7 +49,9 @@ struct SettingsScreen: View {
 
     @ViewBuilder private func panel(_ id: SettingsTabId) -> some View {
         switch id {
-        case .thisKiosk: ThisKioskPanel()
+        // After a switch the kiosk is signed out and cleared: the sign-in page's sheet closes, and
+        // the app's stack (already left by the sign-out) is emptied.
+        case .thisKiosk: ThisKioskPanel(onSwitched: { onDone?(); path?.wrappedValue.removeAll() })
         case .appearance: AppearancePanel()
         case .sound: SoundPanel()
         case .devices: DevicesPanel()
