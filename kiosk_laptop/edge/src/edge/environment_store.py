@@ -66,8 +66,9 @@ def _write_json(path: Path, doc: dict) -> None:
     os.replace(tmp, path)
 
 
-def _url(value: object, *, empty_ok: bool = False) -> str | None:
-    """An http(s) URL with a host, trailing `/` removed; None when not."""
+def clean_url(value: object, *, empty_ok: bool = False) -> str | None:
+    """An http(s) URL with a host, trimmed and with any trailing `/`
+    removed (a typed Custom URL's rule); None when not."""
     if not isinstance(value, str):
         return None
     value = value.strip().rstrip("/")
@@ -89,8 +90,8 @@ def _from_saved(doc: object) -> Current | None:
         env = to_env(doc)
         return Current.named(env) if env is not None else None
     if doc.get("kind") == "custom":
-        api_url = _url(doc.get("api_url"))
-        portal_url = _url(doc.get("portal_url"), empty_ok=True)
+        api_url = clean_url(doc.get("api_url"))
+        portal_url = clean_url(doc.get("portal_url"), empty_ok=True)
         if api_url is None or portal_url is None:
             return None
         return Current.custom(api_url, portal_url)

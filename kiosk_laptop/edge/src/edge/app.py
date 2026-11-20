@@ -19,7 +19,7 @@ from urllib.parse import unquote
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from edge import outbox, static
+from edge import environment_switch, outbox, static
 from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
@@ -140,6 +140,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
 
     app.include_router(auth_routes.router)
     app.include_router(edge_routes.router)
+    app.include_router(environment_switch.router)
     app.include_router(kiosk_routes.router)
     app.include_router(rfid_routes.router)
     app.include_router(dock_routes.router)
