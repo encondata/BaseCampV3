@@ -251,8 +251,10 @@ struct SyncMeta: Codable, Equatable, Sendable {
         }
     }
 
-    /// "Clear local data": the move tables, label data and the meta rows — never the outbox.
+    /// "Clear local data": the move tables, label data and the meta rows — never the outbox. A sync
+    /// still waiting on the server (the old one, in an environment switch) stores nothing after.
     func clearLocalData() async throws {
+        currentRun += 1
         try await store.clearLocalData()
         hydrated = false
         status = SyncStatus()

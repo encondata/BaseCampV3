@@ -85,6 +85,14 @@ final class Heartbeat {
         registration = nil
     }
 
+    /// An environment switch: stops (every beat already sent, the loop's or a `now()` /
+    /// `signInNow()` still waiting, drops the old server's reply) and forgets a pending sign-in,
+    /// which belonged to that server. The next sign-in starts it again as usual.
+    func stopAndDropReplies() {
+        stop()
+        pendingSignIn = nil
+    }
+
     /// Beat right now (after a rename). Resolves after the attempt.
     func now() async { await beat() }
 

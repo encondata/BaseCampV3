@@ -173,6 +173,27 @@ struct SyncTests {
         #expect(await late.next() == SyncStatus())
     }
 
+    /// A sync still waiting on the (old) server when the local data is cleared, as an environment
+    /// switch's Reset app does, stores nothing when its answer lands.
+    @Test func aSyncInFlightWhenTheDataIsClearedStoresNothing() async throws {
+        let hold = HoldGate()
+        api.assets = {
+            await hold.wait()
+            return KioskAssetsSync(initiativeId: "i1", initiativeName: "Move A", generatedAt: "now", assets: [KioskAssetRow(id: "a1", assetId: "A-1")])
+        }
+        let s = sync()
+        let run = Task { await s.runNow(initiativeId: "i1", initiativeName: "Move A") }
+        #expect(await waitUntil { api.calls.contains("syncAssets") })
+        try await s.clearLocalData()
+        await hold.open()
+        await run.value
+
+        #expect(try await store.assets().isEmpty)
+        #expect(try await store.meta() == nil)
+        #expect(s.status == SyncStatus())
+        #expect(s.rosterVersion == 1)                                    // the clear's, no replace after it
+    }
+
     @Test func hydrateWithoutMetaStaysIdle() async {
         let s = sync()
         await s.hydrate()

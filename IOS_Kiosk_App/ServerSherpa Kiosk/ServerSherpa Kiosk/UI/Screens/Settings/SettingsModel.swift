@@ -20,22 +20,39 @@ enum SettingsModel {
         identity.setName(name) ? nil : nameError
     }
 
-    /// Both URLs are checked before either is stored. nil when saved.
-    /// A new API origin while a session exists signs the kiosk out first: the
-    /// session is cleared (the live token never goes to the new host) and auth
-    /// returns to the login screen. The old host's refresh cookie stays keyed to it.
-    /// A new API origin also drops a Time Clock station's key, signed in or not (the key is
-    /// never sent to another host).
-    @MainActor static func saveUrls(api: String, portal: String, config: KioskConfig, session: SessionRefresher, auth: KioskAuth,
-                                    station: TimeclockStation) async -> String? {
-        guard let newApi = KioskConfig.normalizeUrl(api), KioskConfig.normalizeUrl(portal) != nil else { return urlError }
-        station.apiUrlChanging(to: newApi)
-        if auth.state != .anon, !RedirectGuard.sameOrigin(URL(string: config.apiUrl), URL(string: newApi)) {
-            await session.clear()
-            auth.endSession()
+    /// The typed URLs as the Custom environment to switch to, both normalized; nil when either
+    /// isn't an http:// or https:// address.
+    static func customTarget(api: String, portal: String) -> SavedEnvironment? {
+        guard let api = KioskConfig.normalizeUrl(api), let portal = KioskConfig.normalizeUrl(portal) else { return nil }
+        return .custom(apiUrl: api, portalUrl: portal)
+    }
+
+    /// How many scans a switch would leave unsent (never "0").
+    static func unsentScansText(_ n: Int) -> String {
+        switch n {
+        case 1: "1 unsent scan hasn't been sent yet."
+        case 2...: "\(n) unsent scans haven't been sent yet."
+        default: "Unsent scans haven't been sent yet."
         }
-        _ = config.saveCustom(apiUrl: api, portalUrl: portal)
-        return nil
+    }
+
+    /// What a switch that didn't happen says; nil when it was done.
+    static func switchMessage(_ result: SwitchResult) -> String? {
+        switch result {
+        case .done: nil
+        case .pending(let n): unsentScansText(n)
+        case .refused(SwitchResult.customNeedsSuperAdmin): "Sign in as a developer, founder or super admin to use a custom URL."
+        case .refused(SwitchResult.discardNeedsAdmin): "Sign in as an admin to discard unsent scans."
+        case .refused(SwitchResult.accessCheckOffline): "Can't reach the server to check your access."
+        case .refused(let code): "Couldn't switch environment (\(code))."
+        }
+    }
+
+    /// What a switch that threw says (nothing was saved).
+    static func switchFailedMessage(_ error: Error) -> String {
+        error as? EnvironmentSwitchError == .outboxUnreadable
+            ? "Couldn't read this kiosk's unsent scans, so nothing was switched. Try again."
+            : "Couldn't switch environment. Try again."
     }
 
     @MainActor static func localDataLine(_ status: SyncStatus) -> String {

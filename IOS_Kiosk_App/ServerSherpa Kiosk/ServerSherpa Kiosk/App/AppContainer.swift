@@ -15,6 +15,8 @@ final class AppContainer {
     let secrets: SecretStore
     let identity: Identity
     let sessionStore: SessionStore
+    /// The refresh cookie for each API host, in `secrets`.
+    let cookies: RefreshCookie
     let api: KioskApi
     /// A Time Clock station's calls under its station key (no session).
     let stationApi: StationApi
@@ -67,6 +69,12 @@ final class AppContainer {
     /// True when the on-disk store could not be used this launch and the kiosk
     /// runs in memory: nothing written (queued scans included) survives a relaunch.
     let storeIsTemporary: Bool
+    /// Settings › This Kiosk's environment switch: its gates, then sign-out and a clear of
+    /// everything that belonged to the old server.
+    private(set) lazy var environmentSwitcher = EnvironmentSwitcher(
+        store: environments, config: config, api: api, auth: auth, outbox: outbox, biometric: biometric,
+        heartbeat: heartbeat, cookies: cookies, prefs: prefs,
+        resetApp: { [unowned self] in try await self.resetApp() })
 
     private var active = false
     private var launched = false
@@ -77,11 +85,14 @@ final class AppContainer {
     /// passes a fake (nothing makes its central until a Bluetooth printer is used).
     /// `biometricKeys` is the Secure Enclave key store unless a test passes a fake. `devicesApi` is
     /// the Devices site on the shared session and `installed` this app's bundle unless a test (or a
-    /// DEBUG launch argument) passes others.
+    /// DEBUG launch argument) passes others. `api` is the API on the shared session unless a test
+    /// passes a fake, and `environmentListSession` the environment list's own session unless a
+    /// test passes a stubbed one (no test reaches status.serversherpa.com).
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
          backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine(),
          bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil,
-         devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil) {
+         devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil, api: (any KioskApi)? = nil,
+         environmentListSession: URLSession? = nil) {
         let prefs = KioskPrefs(defaults: defaults)
         let environments = EnvironmentStore(prefs: prefs)
         let defaultEnvironment = KioskBuildConfig.defaultEnvironment
@@ -96,7 +107,7 @@ final class AppContainer {
         // cross-origin redirect guard.
         let session = URLSessionKioskApi.makeSession()
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
-        let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
+        let api = api ?? URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
         let stationApi = URLSessionStationApi(session: session)
         let stationKeys = StationKeyStore(secrets: secrets)
         let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
@@ -107,11 +118,13 @@ final class AppContainer {
 
         self.prefs = prefs
         self.environments = environments
-        self.environmentList = EnvironmentListFetcher(store: environments)
+        self.environmentList = environmentListSession.map { EnvironmentListFetcher(store: environments, session: $0) }
+            ?? EnvironmentListFetcher(store: environments)
         self.config = config
         self.secrets = secrets
         self.identity = identity
         self.sessionStore = sessionStore
+        self.cookies = cookies
         self.api = api
         self.stationApi = stationApi
         self.stationKeys = stationKeys
@@ -327,7 +340,7 @@ final class AppContainer {
         coordinator.start()
         async let restored: Void = restoreSession()
         async let hydrated: Void = hydrateAndBuildLabels()
-        async let loaded: Void = outbox.load()
+        async let loaded = outbox.load()
         _ = await (restored, hydrated, loaded)
         authChanged()
         #if DEBUG

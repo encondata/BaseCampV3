@@ -331,31 +331,6 @@ struct StationModeTests {
         #expect(api.calls.isEmpty)
     }
 
-    @Test func savingADifferentApiUrlWhileSignedOutClearsTheKey() async throws {
-        let defaults = freshDefaults()
-        let c = try container(defaults)
-        _ = c.config.saveCustom(apiUrl: "https://api.example.com", portalUrl: "https://portal.example.com")
-        c.prefs.setupSelection = timeclockSelection()
-        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
-        c.auth.endSession()
-        #expect(await SettingsModel.saveUrls(api: "https://evil.example", portal: c.config.portalUrl, config: c.config,
-                                             session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
-        #expect(!c.station.hasKey)
-        #expect(c.stationKeys.get() == nil)
-        #expect(c.stationKeys.origin() == nil)
-    }
-
-    @Test func savingTheSameApiOriginKeepsTheKey() async throws {
-        let c = try container(freshDefaults())
-        _ = c.config.saveCustom(apiUrl: "https://api.example.com", portalUrl: "https://portal.example.com")
-        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
-        c.auth.endSession()
-        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: c.config,
-                                             session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
-        #expect(c.station.hasKey)
-        #expect(c.station.credentials()?.key == "k3y")
-    }
-
     @Test func aMoveSessionThatDropsTheStationsSetupDropsItsKey() async throws {
         let prefs = KioskPrefs(defaults: freshDefaults())
         let kioskApi = FakeKioskApi()

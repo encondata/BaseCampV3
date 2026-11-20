@@ -76,16 +76,29 @@ struct ThisKioskPanel: View {
                     .onChange(of: portal) { urlError = nil; typed() }
                 KioskToast(text: urlError, error: true)
                 SecondaryButton("Save URLs") {
+                    // Until the environment chooser lands: typed URLs switch to a Custom environment.
+                    guard let target = SettingsModel.customTarget(api: api, portal: portal) else {
+                        urlError = SettingsModel.urlError
+                        return
+                    }
+                    // The same URLs again: nothing to switch.
+                    guard target != config.environment else {
+                        urlError = nil
+                        saved = "URLs saved."
+                        return
+                    }
                     Task {
-                        if let error = await SettingsModel.saveUrls(api: api, portal: portal, config: config,
-                                                                    session: container.sessionStore, auth: auth,
-                                                                    station: container.station) {
-                            urlError = error
-                        } else {
-                            urlError = nil
-                            api = config.apiUrl
-                            portal = config.portalUrl
-                            saved = "URLs saved."
+                        do {
+                            if let message = SettingsModel.switchMessage(try await container.environmentSwitcher.switchTo(target, discard: false)) {
+                                urlError = message
+                            } else {
+                                urlError = nil
+                                api = config.apiUrl
+                                portal = config.portalUrl
+                                saved = "URLs saved."
+                            }
+                        } catch {
+                            urlError = SettingsModel.switchFailedMessage(error)
                         }
                     }
                 }

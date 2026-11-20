@@ -2,11 +2,10 @@ import Foundation
 import Testing
 @testable import ServerSherpa_Kiosk
 
-/// Android SettingsScreenTest (the non-RFID cases), as model tests: which tabs show, the name save, the URL save.
+/// Android SettingsScreenTest (the non-RFID cases), as model tests: which tabs show, the name save, the typed-URL switch.
 @MainActor
 struct SettingsModelTests {
     private let prefs = KioskPrefs(defaults: freshDefaults())
-    private let station = TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "SER" }, apiUrl: { TEST_API_URL })
 
     private func tabs(admin: Bool = false, developer: Bool = false, signedIn: Bool) -> [SettingsTab] {
         visibleTabs(isAdmin: admin, isDeveloper: developer, signedIn: signedIn)
@@ -58,57 +57,27 @@ struct SettingsModelTests {
         #expect(SettingsModel.selectedTab(requested: .thisKiosk, tabs: staff) == .thisKiosk)
     }
 
-    private func signedOut() -> (FakeRefresher, KioskAuth) {
-        let refresher = FakeRefresher()
-        let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
-        auth.endSession()
-        return (refresher, auth)
+    /// Typed URLs become the Custom environment to switch to, both normalized; either one that
+    /// isn't an http(s) address gives nothing to switch to.
+    @Test func typedUrlsBecomeANormalizedCustomTarget() {
+        #expect(SettingsModel.customTarget(api: " https://api.example.com/ ", portal: "http://portal.example.com")
+                == .custom(apiUrl: "https://api.example.com", portalUrl: "http://portal.example.com"))
+        #expect(SettingsModel.customTarget(api: "ftp://x", portal: "https://p.example.com") == nil)
+        #expect(SettingsModel.customTarget(api: "https://a.example.com", portal: "nope") == nil)
     }
 
-    @Test func urlSaveStoresBothNormalized() async {
-        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
-        let (refresher, auth) = signedOut()
-        #expect(await SettingsModel.saveUrls(api: " https://api.example.com/ ", portal: "http://portal.example.com", config: config, session: refresher, auth: auth, station: station) == nil)
-        #expect(config.apiUrl == "https://api.example.com")
-        #expect(config.portalUrl == "http://portal.example.com")
-        #expect(refresher.cleared == 0)                  // signed out: nothing to sign out of
-    }
-
-    @Test func urlValidationMessageAndNothingStoredWhenEitherIsBad() async {
-        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
-        let (refresher, auth) = signedOut()
-        let api = config.apiUrl, portal = config.portalUrl
-        #expect(await SettingsModel.saveUrls(api: "ftp://x", portal: "https://p.example.com", config: config, session: refresher, auth: auth, station: station) == "Enter an http:// or https:// address.")
-        #expect(await SettingsModel.saveUrls(api: "https://a.example.com", portal: "nope", config: config, session: refresher, auth: auth, station: station) == "Enter an http:// or https:// address.")
-        #expect(config.apiUrl == api && config.portalUrl == portal)
-    }
-
-    /// The live token must never go to a new API host: saving a new API origin
-    /// while signed in clears the session and returns to the login screen.
-    @Test func aNewApiOriginWhileSignedInSignsOut() async {
-        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
-        _ = config.saveCustom(apiUrl: "https://api.old.example.com", portalUrl: "https://portal.example.com")
-        let refresher = FakeRefresher()
-        let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
-        await auth.completePair(fakeSession())
-        #expect(await SettingsModel.saveUrls(api: "https://api.new.example.com", portal: config.portalUrl, config: config, session: refresher, auth: auth, station: station) == nil)
-        #expect(refresher.cleared == 1)
-        #expect(refresher.stored == nil)
-        #expect(auth.state == .anon)
-        #expect(config.apiUrl == "https://api.new.example.com")
-    }
-
-    /// The same origin (default port spelled out, a trailing slash) keeps the session.
-    @Test func theSameApiOriginWhileSignedInKeepsTheSession() async {
-        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
-        _ = config.saveCustom(apiUrl: "https://api.example.com", portalUrl: "https://portal.example.com")
-        let refresher = FakeRefresher()
-        let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
-        await auth.completePair(fakeSession())
-        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: config, session: refresher, auth: auth, station: station) == nil)
-        #expect(refresher.cleared == 0)
-        if case .authed = auth.state {} else { Issue.record("expected still signed in") }
-        #expect(config.portalUrl == "https://portal.example.com")
+    /// A switch that didn't happen says why, in the gates' copy; a done one says nothing here.
+    @Test func switchResultsSayWhyNothingChanged() {
+        #expect(SettingsModel.switchMessage(.done) == nil)
+        #expect(SettingsModel.switchMessage(.pending(1)) == "1 unsent scan hasn't been sent yet.")
+        #expect(SettingsModel.switchMessage(.pending(3)) == "3 unsent scans haven't been sent yet.")
+        #expect(SettingsModel.switchMessage(.refused("custom_needs_super_admin"))
+                == "Sign in as a developer, founder or super admin to use a custom URL.")
+        #expect(SettingsModel.switchMessage(.refused("discard_needs_admin")) == "Sign in as an admin to discard unsent scans.")
+        #expect(SettingsModel.switchMessage(.refused("access_check_offline")) == "Can't reach the server to check your access.")
+        #expect(SettingsModel.switchFailedMessage(EnvironmentSwitchError.outboxUnreadable)
+                == "Couldn't read this kiosk's unsent scans, so nothing was switched. Try again.")
+        #expect(SettingsModel.switchFailedMessage(CocoaError(.fileWriteUnknown)) == "Couldn't switch environment. Try again.")
     }
 
     @Test func localDataLineSaysNothingDownloadedUntilDone() {

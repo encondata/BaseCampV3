@@ -169,6 +169,42 @@ struct HeartbeatTests {
         #expect(EnvironmentStore(prefs: prefs).everRegistered)
     }
 
+    /// An environment switch: a reply still on its way writes nothing, and a sign-in still
+    /// pending (the old server's) is forgotten, so the next start's first beat is no sign-in.
+    @Test func stopAndDropRepliesDropsALateReplyAndForgetsAPendingSignIn() async {
+        let api = FakeKioskApi(); let gate = TickGate(); let hold = HoldGate()
+        let failing = LockedFlag(true), holding = LockedFlag(false)
+        api.heartbeatResult = { body in
+            if failing.value { throw ApiError.network() }
+            return HeartbeatResult(deviceId: "d", name: body.name, registration: "ok", clearSetup: "x9")
+        }
+        api.heartbeatGate = { if holding.value { await hold.wait() } }
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        prefs.setupSelection = testSelection(initiativeId: "i1")
+        let hb = harness(api, gate: gate, prefs: prefs)
+        hb.start(signIn: .password)
+        await waitUntil { api.heartbeatsAnswered == 1 }                  // failed: the sign-in stays pending
+        failing.value = false; holding.value = true
+        let late = Task { await hb.now() }
+        await waitUntil { api.heartbeats.count == 2 }
+        #expect(api.heartbeats[1].signIn == true)
+
+        hb.stopAndDropReplies()
+        await hold.open()
+        await late.value
+        #expect(prefs.setupClear == nil)
+        #expect(prefs.setupSelection != nil)
+        #expect(hb.setupClearSignal == 0)
+        #expect(hb.registration == nil)
+
+        failing.value = true; holding.value = false
+        hb.start(signIn: nil)
+        await waitUntil { api.heartbeats.count == 3 }
+        #expect(api.heartbeats[2].signIn == false)
+        #expect(api.heartbeats[2].loginMethod == nil)
+        hb.stop()
+    }
+
     @Test func defaultRawInfoIsAppleDeviceInfo() async {
         let api = FakeKioskApi(); let gate = TickGate()
         let prefs = KioskPrefs(defaults: freshDefaults())

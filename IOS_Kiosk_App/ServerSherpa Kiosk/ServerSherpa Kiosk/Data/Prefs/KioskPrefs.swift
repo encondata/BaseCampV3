@@ -202,6 +202,13 @@ final class KioskPrefs {
         setupClear = r
     }
 
+    /// An environment switch: what the old server left here, the last sign-in method and the
+    /// Clear Setup record (its id belongs to that server), in one main-actor step.
+    func clearServerRecords() {
+        signInMethod = nil
+        setupClear = nil
+    }
+
     /// Kiosk Setup completed: the "An administrator cleared…" banner goes away.
     func dismissSetupClearNotice() {
         guard var r = setupClear, r.notice else { return }

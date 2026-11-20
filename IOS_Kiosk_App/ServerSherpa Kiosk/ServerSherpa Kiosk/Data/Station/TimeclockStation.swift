@@ -126,13 +126,6 @@ final class TimeclockStation {
         storeKey(key, origin: origin)
     }
 
-    /// The API URL is about to change to `newUrl` (Settings › This Kiosk, signed in or not): a
-    /// different origin drops the key.
-    func apiUrlChanging(to newUrl: String) {
-        guard keys.get() != nil, keys.origin() != apiOrigin(newUrl) else { return }
-        clearKey()
-    }
-
     /// A Regular re-setup, Reset app, a move session dropping the setup, or a key the portal refused.
     func clearKey() {
         keys.clear()

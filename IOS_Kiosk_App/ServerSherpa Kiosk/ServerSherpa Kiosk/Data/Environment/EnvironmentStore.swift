@@ -35,6 +35,9 @@ final class EnvironmentStore {
         return true
     }
 
+    /// Whether `save(env)` would save it (it passes the read-back check).
+    func accepts(_ env: SavedEnvironment) -> Bool { Self.checked(env) != nil }
+
     var everRegistered: Bool { prefs.everRegistered }
 
     func markRegistered() { prefs.markEverRegistered() }
