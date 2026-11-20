@@ -1,6 +1,6 @@
 """What installing an app takes right now, and the signed links that do it.
 
-- `ios_state`: for the web page, whether this iPhone can install an iOS app
+- `ios_state`: for the web page, whether this iPhone or iPad can install an iOS app
   yet (registered with Apple, in the app's Ad Hoc profile, and the version
   re-signed with that profile). Looking queues the re-signing when it is
   missing or failed, in the caller's transaction.
@@ -20,19 +20,26 @@ from serversherpa_devices.config import get_settings
 from serversherpa_devices.db.models import App, AppVersion, IosDevice, IosProfile, Job, SignedBuild
 from serversherpa_devices.services.links import make_install_token
 
-REGISTER_FIRST = "This iPhone isn't registered."
-REGISTERING = "Registering this iPhone with Apple…"
-DISABLED = "This iPhone was removed from Devices."
-PREPARING = "Preparing the app for this iPhone…"
-BUILD_FAILED = ("This app couldn't be prepared for this iPhone. "
+# The messages name the device: "iPad" or "iPhone" when that's known (see
+# device_noun), else "device". Fill one in with worded().
+REGISTER_FIRST = "This {device} isn't registered."
+REGISTERING = "Registering this {device} with Apple…"
+DISABLED = "This {device} was removed from Devices."
+PREPARING = "Preparing the app for this {device}…"
+BUILD_FAILED = ("This app couldn't be prepared for this {device}. "
                 "It will try again in a few minutes.")
+DEVICE = "device"
+# Apple's device classes, and the hint the web page sends (only these two;
+# anything else is ignored, never echoed).
+_CLASS_NOUNS = {"IPAD": "iPad", "IPHONE": "iPhone"}
+_HINT_NOUNS = {"ipad": "iPad", "iphone": "iPhone"}
 # A failed re-signing is tried again at most this often.
 RETRY_AFTER = dt.timedelta(minutes=10)
 
 
 class IosState(TypedDict):
     # not_set_up | register_first | registering | failed (registering the
-    # iPhone) | disabled | preparing | build_failed (re-signing the app) | ready
+    # device) | disabled | preparing | build_failed (re-signing the app) | ready
     state: str
     message: str
     install_url: NotRequired[str]
@@ -43,6 +50,25 @@ class IosState(TypedDict):
 
 def _state(state: str, message: str) -> IosState:
     return {"state": state, "message": message}
+
+
+def hint_noun(hint: str | None) -> str | None:
+    """"iPad" or "iPhone" for the page's `device` hint ("ipad" | "iphone");
+    None for anything else."""
+    return _HINT_NOUNS.get(hint) if isinstance(hint, str) else None
+
+
+def device_noun(device: IosDevice | None, hint: str | None = None) -> str:
+    """What to call the viewer's device: its registered class (iPad or
+    iPhone), else the page's hint, else "device"."""
+    if device is not None and device.device_class in _CLASS_NOUNS:
+        return _CLASS_NOUNS[device.device_class]
+    return hint_noun(hint) or DEVICE
+
+
+def worded(template: str, noun: str = DEVICE) -> str:
+    """One of the messages above, naming the device `noun`."""
+    return template.format(device=noun)
 
 
 # Links.
@@ -141,36 +167,38 @@ async def capability_refused(db: AsyncSession, app: App) -> bool:
 # The web page's state.
 
 async def ios_state(db: AsyncSession, app: App, device_ref: uuid.UUID | None, *,
-                    version: AppVersion) -> IosState:
-    """Whether the iPhone `device_ref` (an ios_devices id) can install
-    `version` of the iOS app `app`. An app with no version to install has
-    no state at all (the caller leaves it out)."""
+                    version: AppVersion, hint: str | None = None) -> IosState:
+    """Whether the iPhone or iPad `device_ref` (an ios_devices id) can
+    install `version` of the iOS app `app`. `hint` is the page's guess at
+    what it runs on ("ipad" | "iphone"), for the wording only. An app with
+    no version to install has no state at all (the caller leaves it out)."""
     if not await catalog.apple_settings_ready(db):
         return _state("not_set_up", catalog.ios_not_set_up_message())
     device = await db.get(IosDevice, device_ref) if device_ref is not None else None
+    noun = device_noun(device, hint)
     if device is None:
-        return _state("register_first", REGISTER_FIRST)
+        return _state("register_first", worded(REGISTER_FIRST, noun))
     if device.status == "pending":
-        return _state("registering", REGISTERING)
+        return _state("registering", worded(REGISTERING, noun))
     if device.status == "failed":
         # Adding it again starts over; until then the worker may still be
         # trying (Apple refused it, but not for good).
         return {"state": "failed", "message": device.error or "",
                 "retrying": await _job_waiting(db, "register_device", "device_id", device.id)}
     if device.status == "disabled":
-        return _state("disabled", DISABLED)
+        return _state("disabled", worded(DISABLED, noun))
 
     profile = await app_profile(db, app)
-    # No profile yet, or one made before this iPhone was registered: the
+    # No profile yet, or one made before this device was registered: the
     # rebuild that registering queued makes a new one and signs with it.
     if profile is None or device.id not in (profile.device_ids or []):
-        return _state("preparing", PREPARING)
+        return _state("preparing", worded(PREPARING, noun))
     state, signed = await build_state(db, version, profile)
     if state == "failed":
-        return {"state": "build_failed", "message": BUILD_FAILED, "retrying": True}
+        return {"state": "build_failed", "message": worded(BUILD_FAILED, noun), "retrying": True}
     if state == "refused":
-        return {"state": "build_failed", "message": signed.error or BUILD_FAILED,
+        return {"state": "build_failed", "message": signed.error or worded(BUILD_FAILED, noun),
                 "retrying": False}
     if signed is None:
-        return _state("preparing", PREPARING)
+        return _state("preparing", worded(PREPARING, noun))
     return {"state": "ready", "message": "", "install_url": ios_install_url(signed)}

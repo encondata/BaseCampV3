@@ -1,4 +1,4 @@
-"""Add this iPhone: one-time enroll tokens, the Profile Service .mobileconfig
+"""Add this iPhone or iPad: one-time enroll tokens, the Profile Service .mobileconfig
 that asks iOS for the device's attributes, reading iOS's signed answer, and
 recording the device.
 
@@ -43,7 +43,7 @@ def has_control_characters(value: str) -> bool:
 def make_token(*, person_id: uuid.UUID, person_name: str, device_name: str,
                can_reenable: bool, can_update_existing: bool) -> tuple[str, EnrollToken]:
     """A new token and its (unsaved) row. The flags are what the creator may
-    do to an iPhone that's already listed (see record_device)."""
+    do to a device that's already listed (see record_device)."""
     token = secrets.token_urlsafe(32)
     row = EnrollToken(token_hash=hash_token(token), person_id=person_id,
                       person_name=person_name, device_name=device_name,
@@ -61,17 +61,18 @@ async def live_token(db: AsyncSession, token: str, *, lock: bool = False) -> Enr
     return row
 
 
-def mobileconfig(*, public_url: str, token: str) -> bytes:
+def mobileconfig(*, public_url: str, token: str, noun: str = "device") -> bytes:
     """The Profile Service payload: iOS sends the device's attributes to the
-    callback URL, signed, with `Challenge` echoed back."""
+    callback URL, signed, with `Challenge` echoed back. `noun` ("iPad",
+    "iPhone" or "device") is only what the profile calls the device."""
     return plistlib.dumps({
         "PayloadType": "Profile Service",
         "PayloadVersion": 1,
         "PayloadUUID": str(uuid.uuid4()).upper(),
         "PayloadIdentifier": "com.serversherpa.devices.enroll",
-        "PayloadDisplayName": "ServerSherpa Devices — add this iPhone",
+        "PayloadDisplayName": f"ServerSherpa Devices — add this {noun}",
         "PayloadOrganization": "ServerSherpa",
-        "PayloadDescription": "Sends this iPhone's identifier to ServerSherpa Devices "
+        "PayloadDescription": f"Sends this {noun}'s identifier to ServerSherpa Devices "
                               "so it can install ServerSherpa apps.",
         "PayloadContent": {
             "URL": f"{public_url.rstrip('/')}/enroll/{token}/callback",

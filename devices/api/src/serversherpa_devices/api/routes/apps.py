@@ -44,7 +44,7 @@ class AppOut(BaseModel):
     name: str
     icon_url: str | None
     current: VersionOut | None
-    # iOS apps on GET /apps: what the viewing iPhone (device_ref) can do.
+    # iOS apps on GET /apps: what the viewing iPhone or iPad (device_ref) can do.
     ios_state: install_state.IosState | None = None
 
 
@@ -72,7 +72,7 @@ _CURRENT = and_(AppVersion.app_id == App.id, AppVersion.is_current,
 
 
 def _device_ref(value: str | None) -> uuid.UUID | None:
-    """The page's stored iPhone id; anything unreadable is no iPhone."""
+    """The page's stored device id; anything unreadable is no device."""
     try:
         return uuid.UUID(value) if value else None
     except ValueError:
@@ -81,7 +81,9 @@ def _device_ref(value: str | None) -> uuid.UUID | None:
 
 @router.get("/apps", response_model=list[AppOut])
 async def list_apps(db: Db, _: Annotated[Principal, Depends(require("view"))],
-                    device_ref: str | None = None):
+                    device_ref: str | None = None, device: str | None = None):
+    # `device`: the page's guess ("ipad" | "iphone") for the ios_state
+    # wording; anything else is ignored.
     rows = (await db.execute(
         select(App, AppVersion).outerjoin(AppVersion, _CURRENT)
         .order_by(App.name, App.platform, App.identifier))).all()
@@ -90,7 +92,8 @@ async def list_apps(db: Db, _: Annotated[Principal, Depends(require("view"))],
     for app, current in rows:
         item = _app_out(app, current)
         if app.platform == "ios" and current is not None:   # nothing to install: no state
-            item["ios_state"] = await install_state.ios_state(db, app, ref, version=current)
+            item["ios_state"] = await install_state.ios_state(db, app, ref, version=current,
+                                                             hint=device)
         out.append(item)
     await db.commit()   # ios_state may have queued re-signing
     return out

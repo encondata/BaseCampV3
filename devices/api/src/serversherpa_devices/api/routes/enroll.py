@@ -1,4 +1,4 @@
-"""Add this iPhone. `router` (under /api) makes the link for a signed-in
+"""Add this iPhone or iPad. `router` (under /api) makes the link for a signed-in
 person; `public_router` (at the app root) serves the .mobileconfig to
 Safari and takes iOS's signed answer. Neither public route has a session:
 the single-use token in the path is the only credential."""
@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from pydantic import BaseModel, StringConstraints, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa_devices import catalog, enroll
+from serversherpa_devices import catalog, enroll, install_state
 from serversherpa_devices.auth.deps import client_ip, require
 from serversherpa_devices.auth.main_api import MainApiClient, Principal, get_main_api
 from serversherpa_devices.config import get_settings
@@ -33,7 +33,7 @@ EXPIRED_PAGE = """<!doctype html>
 <title>Link expired</title>
 </head>
 <body style="font-family: -apple-system, system-ui, sans-serif; margin: 2rem 1rem;">
-<p>This link has expired. Go back to Devices and tap Add this iPhone again.</p>
+<p>This link has expired. Go back to Devices and {again}</p>
 </body>
 </html>
 """
@@ -42,6 +42,9 @@ EXPIRED_PAGE = """<!doctype html>
 class EnrollIn(BaseModel):
     device_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                                   max_length=60)]
+    # What the page runs on ("ipad" | "iphone"), for the profile's wording
+    # only; anything else is ignored.
+    device: str | None = None
 
     @field_validator("device_name")
     @classmethod
@@ -55,12 +58,15 @@ class EnrollOut(BaseModel):
     url: str
 
 
-def _expired() -> HTMLResponse:
-    return HTMLResponse(EXPIRED_PAGE, status_code=410, headers={"Cache-Control": "no-store"})
+def _expired(noun: str | None = None) -> HTMLResponse:
+    # The web page's button is "Add this iPad" / "Add this iPhone".
+    again = f"tap Add this {noun} again." if noun else "add this device again."
+    return HTMLResponse(EXPIRED_PAGE.replace("{again}", again), status_code=410,
+                        headers={"Cache-Control": "no-store"})
 
 
 def _unreadable() -> PlainTextResponse:
-    return PlainTextResponse("This iPhone's answer couldn't be read.", status_code=400,
+    return PlainTextResponse("This device's answer couldn't be read.", status_code=400,
                              headers={"Cache-Control": "no-store"})
 
 
@@ -74,17 +80,23 @@ async def create_link(body: EnrollIn, db: Db,
                                    can_update_existing=principal.can("change"))
     db.add(row)
     await db.commit()
-    return {"url": f"/enroll/{token}.mobileconfig"}
+    url = f"/enroll/{token}.mobileconfig"
+    hint = body.device if install_state.hint_noun(body.device) else None
+    return {"url": f"{url}?device={hint}" if hint else url}
 
 
 @public_router.get("/{token}.mobileconfig")
-async def get_mobileconfig(token: str, db: Db):
+async def get_mobileconfig(token: str, db: Db, device: str | None = None):
+    # `device` ("ipad" | "iphone") words the profile; anything else is "device".
+    noun = install_state.hint_noun(device)
     if await enroll.live_token(db, token) is None:
-        return _expired()
+        return _expired(noun)
+    filename = f"add-this-{(noun or 'device').lower()}.mobileconfig"
     return Response(
-        enroll.mobileconfig(public_url=get_settings().public_url, token=token),
+        enroll.mobileconfig(public_url=get_settings().public_url, token=token,
+                            noun=noun or "device"),
         media_type="application/x-apple-aspen-config",
-        headers={"Content-Disposition": 'attachment; filename="add-this-iphone.mobileconfig"',
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
                  "Cache-Control": "no-store"})
 
 

@@ -41,6 +41,8 @@ _WAITING = ("registering", "preparing")
 class InstallIn(BaseModel):
     version_id: uuid.UUID | None = None
     device_ref: uuid.UUID | None = None
+    # The page's guess ("ipad" | "iphone") for the wording; anything else is ignored.
+    device: str | None = None
 
 
 class InstallOut(BaseModel):
@@ -48,7 +50,7 @@ class InstallOut(BaseModel):
 
 
 @router.post("/apps/{app_id}/install", response_model=InstallOut,
-             responses={202: {"description": "iOS: the iPhone or the build isn't ready yet"}})
+             responses={202: {"description": "iOS: the device or the build isn't ready yet"}})
 async def install(app_id: uuid.UUID, body: InstallIn, db: Db,
                   # Allowed in read-only mode: it changes no catalog data
                   # (queuing re-signing is housekeeping).
@@ -68,7 +70,8 @@ async def install(app_id: uuid.UUID, body: InstallIn, db: Db,
     if app.platform == "android":
         return {"url": install_state.apk_url(app, version)}
 
-    state = await install_state.ios_state(db, app, body.device_ref, version=version)
+    state = await install_state.ios_state(db, app, body.device_ref, version=version,
+                                          hint=body.device)
     await db.commit()   # it may have queued re-signing
     if state["state"] == "ready":
         return {"url": state["install_url"]}
