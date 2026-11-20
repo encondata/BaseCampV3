@@ -106,3 +106,73 @@ async def test_route_environments_anonymous(client, cloud):
         "id": "prod", "name": "Prod", "domain": "serversherpa.com",
         "api_url": "https://api.serversherpa.com",
         "portal_url": "https://portal.serversherpa.com", "is_prod": True}
+
+
+DEEP = b"[" * 60000  # well under the 64 KB cap, deep enough to blow the JSON parser's stack
+
+
+def test_parse_deep_nesting_is_unusable():
+    assert len(DEEP) < 64 * 1024
+    assert parse_list(DEEP) is None
+
+
+@pytest.mark.parametrize("version", [1.0, True, "1"])
+def test_parse_version_must_be_the_integer_1(version):
+    assert parse_list(body(GOOD, version=version)) is None
+
+
+async def test_source_deep_nested_cache_falls_back_to_built_in(tmp_path):
+    (tmp_path / "environments-cache.json").write_bytes(DEEP)
+    src = ListSource(tmp_path)
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            router.get(STATUS_LIST_URL).respond(500)
+            envs, kind = await src.current()
+            assert kind == "built_in" and envs == list(BUILT_IN)
+    finally:
+        await src.aclose()
+
+
+async def test_route_environments_deep_nested_download_falls_back(client, cloud):
+    cloud.get(STATUS_LIST_URL).respond(200, content=DEEP)
+    r = await client.get("/edge/environments")
+    assert r.status_code == 200
+    assert r.json()["source"] == "built_in"
+
+
+class _DripStream(httpx.AsyncByteStream):
+    """A valid list sent a few bytes at a time, slower than the 5 s total."""
+
+    def __init__(self, raw: bytes, pause: float) -> None:
+        self._raw, self._pause = raw, pause
+
+    async def __aiter__(self):
+        import asyncio
+        for i in range(0, len(self._raw), 8):
+            await asyncio.sleep(self._pause)
+            yield self._raw[i:i + 8]
+
+
+class _DripTransport(httpx.AsyncBaseTransport):
+    def __init__(self, raw: bytes, pause: float) -> None:
+        self._raw, self._pause = raw, pause
+
+    async def handle_async_request(self, request):
+        return httpx.Response(200, stream=_DripStream(self._raw, self._pause))
+
+
+async def test_source_slow_drip_download_is_bounded_to_5_seconds(tmp_path):
+    import time
+    raw = body(GOOD)
+    # each chunk lands well inside any per-read timeout, but the whole body
+    # takes about 10 s
+    pause = 10.0 / (len(raw) / 8)
+    src = ListSource(tmp_path, transport=_DripTransport(raw, pause))
+    try:
+        started = time.monotonic()
+        envs, kind = await src.current()
+        elapsed = time.monotonic() - started
+        assert kind == "built_in" and envs == list(BUILT_IN)
+        assert 4.5 <= elapsed < 6.5
+    finally:
+        await src.aclose()

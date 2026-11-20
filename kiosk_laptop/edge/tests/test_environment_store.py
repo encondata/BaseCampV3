@@ -75,7 +75,7 @@ def test_corrupt_environment_json_falls_back_to_settings(settings):
     for raw in ("not json", "[1]", '{"kind": "named", "id": "rc1"}',
                 '{"kind": "named", "id": "rc1", "name": "RC1", "domain": "evil.example.com"}',
                 '{"kind": "custom", "api_url": "ftp://x", "portal_url": ""}',
-                '{"kind": "other"}'):
+                '{"kind": "other"}', "[" * 60000):
         path.write_text(raw)
         cur = load_current(settings.data_dir, settings)
         assert (cur.kind, cur.api_url, cur.portal_url) == (

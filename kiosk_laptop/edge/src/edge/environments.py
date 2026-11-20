@@ -5,6 +5,7 @@ Order of preference: a fresh download, then the last good download, then the
 built-in list. The download is https only, follows no redirects, sends no
 cookies or credentials, times out after 5 s and is capped at 64 KB."""
 
+import asyncio
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import httpx
 STATUS_LIST_URL = "https://status.serversherpa.com/environments.json"
 CACHE_FILE = "environments-cache.json"
 MAX_BYTES = 64 * 1024
+TOTAL_TIMEOUT = 5.0  # the whole download, not each read
 ROOT_DOMAIN = "serversherpa.com"
 
 _ID = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
@@ -59,9 +61,13 @@ def parse_list(raw: bytes) -> list[Env] | None:
         return None
     try:
         doc = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # deep nesting well under the size cap blows the parser's stack
         return None
-    if not isinstance(doc, dict) or doc.get("version") != 1:
+    if not isinstance(doc, dict):
+        return None
+    version = doc.get("version")
+    if type(version) is not int or version != 1:  # 1.0 and true are not 1
         return None
     entries = doc.get("environments")
     if not isinstance(entries, list):
@@ -103,6 +109,15 @@ class ListSource:
         await self.client.aclose()
 
     async def _download(self) -> bytes | None:
+        # httpx's timeout is per phase; a server that drips bytes would hold
+        # the download open far longer, so bound the whole thing
+        try:
+            async with asyncio.timeout(TOTAL_TIMEOUT):
+                return await self._fetch()
+        except TimeoutError:
+            return None
+
+    async def _fetch(self) -> bytes | None:
         try:
             async with self.client.stream("GET", STATUS_LIST_URL) as resp:
                 if resp.status_code != 200:

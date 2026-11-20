@@ -110,7 +110,7 @@ def from_installer(settings: Settings) -> Current:
 def load_current(data_dir: Path, settings: Settings) -> Current:
     try:
         saved = _from_saved(json.loads((data_dir / ENVIRONMENT_FILE).read_text()))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         saved = None
     return saved if saved is not None else from_installer(settings)
 
