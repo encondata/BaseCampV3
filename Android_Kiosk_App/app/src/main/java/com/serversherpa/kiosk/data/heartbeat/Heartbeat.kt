@@ -5,6 +5,7 @@ import com.serversherpa.kiosk.core.model.HeartbeatIn
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.auth.LoginMethod
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import kotlinx.coroutines.CancellationException
@@ -27,13 +28,15 @@ import kotlinx.coroutines.launch
  * sign_in) and are retried next tick. A Clear Setup the reply asks for is
  * applied once (setup dropped, Setup banner raised), announced on
  * [setupCleared], and acknowledged on an immediate re-beat and every beat
- * after until the reply stops asking for it.
+ * after until the reply stops asking for it. A reply with any registration
+ * but "none" sets the kiosk's has-been-registered flag.
  */
 class Heartbeat(
     private val api: KioskApi,
     private val identity: Identity,
     private val config: KioskConfig,
     private val prefs: KioskPrefs,
+    private val environments: EnvironmentStore,
     private val deviceInfo: () -> Map<String, String>,
     private val intervalMs: Long = 60_000,
 ) {
@@ -101,6 +104,8 @@ class Heartbeat(
                 _setupCleared.tryEmit(asked!!)
                 if (job?.isActive == true) beat()      // acknowledge right away (not after stop())
             }
+            // Any registration at all, from any server, and the kiosk counts as registered for good.
+            if (result.registration != RegistrationState.NONE.wire) environments.markRegistered()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

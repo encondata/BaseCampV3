@@ -7,7 +7,9 @@ import com.serversherpa.kiosk.core.model.HeartbeatResult
 import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.auth.LoginMethod
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.prefs.SetupClearRecord
@@ -34,8 +36,9 @@ class HeartbeatTest {
 
     private fun harness(scope: kotlinx.coroutines.CoroutineScope, api: FakeKioskApi): Pair<Heartbeat, KioskPrefs> {
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "hb.preferences_pb") })
-        val config = KioskConfig(prefs, "https://api", "https://portal", "0.1.0")
-        return Heartbeat(api, Identity(prefs), config, prefs, deviceInfo = { mapOf("model" to "MC2200") }, intervalMs = 60_000) to prefs
+        val environments = EnvironmentStore(prefs)
+        val config = KioskConfig(environments, SavedEnvironment.Named("dev", "Dev", "dev.serversherpa.com"), "0.1.0")
+        return Heartbeat(api, Identity(prefs), config, prefs, environments, deviceInfo = { mapOf("model" to "MC2200") }, intervalMs = 60_000) to prefs
     }
 
     @Test fun beatsImmediatelyThenEveryMinuteAndReportsRegistration() = runTest {
@@ -187,5 +190,22 @@ class HeartbeatTest {
         fail = false
         hb.signInNow()
         assertEquals("link", api.heartbeats.last().login_method)
+    }
+
+    /** Any registration but "none" marks the kiosk as registered for good; "none" doesn't. */
+    @Test fun aRegistrationSetsTheEverRegisteredFlagAndNoneDoesNot() = runTest {
+        val api = FakeKioskApi()
+        var registration = "none"
+        api.heartbeatResult = { HeartbeatResult("d1", it.name, registration, null) }
+        val (hb, prefs) = harness(backgroundScope, api)
+        val environments = EnvironmentStore(prefs)
+        hb.now()
+        assertEquals(false, environments.everRegistered.first())
+        registration = "ok"
+        hb.now()
+        assertEquals(true, environments.everRegistered.first())
+        registration = "none"
+        hb.now()
+        assertEquals(true, environments.everRegistered.first())   // never cleared
     }
 }

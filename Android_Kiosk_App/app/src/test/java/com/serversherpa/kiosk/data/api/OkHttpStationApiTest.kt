@@ -1,11 +1,12 @@
 package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.useApi
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -110,7 +111,7 @@ class OkHttpStationApiTest {
             val other = okhttp3.mockwebserver.MockWebServer().also { it.start() }
             try {
                 val creds = h.creds                                      // taken (validated) first
-                h.prefs.setApiUrl(other.url("/").toString().trimEnd('/')) // then the URL changes
+                h.environments.useApi(other.url("/").toString().trimEnd('/')) // then the URL changes
                 h.server.enqueue(jsonResponse(200, """{"generated_at":"x","people":[]}"""))
                 other.enqueue(jsonResponse(200, """{"generated_at":"x","people":[]}"""))
                 h.stationApi.people(creds, "s1")

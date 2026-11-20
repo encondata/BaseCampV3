@@ -37,6 +37,9 @@ sealed interface SavedEnvironment {
     ) : SavedEnvironment
 }
 
+/** [this] as the environment a kiosk saves when it is picked. */
+fun Env.asSaved(): SavedEnvironment.Named = SavedEnvironment.Named(id, name, domain)
+
 val SavedEnvironment.apiUrl: String get() = when (this) {
     is SavedEnvironment.Named -> "https://api.$domain"
     is SavedEnvironment.Custom -> customApiUrl
@@ -101,10 +104,13 @@ object Environments {
         val id = str("id") ?: return null
         val name = str("name") ?: return null
         val domain = str("domain") ?: return null
-        if (!ID.matches(id) || id.endsWith("-")) return null
-        if (name.isBlank() || !DOMAIN.matches(domain)) return null
-        return Env(id, name.trim(), domain)
+        return Env(id, name.trim(), domain).takeIf(::isValid)
     }
+
+    /** Whether [env] passes the list's entry rules (id, non-blank name, a serversherpa.com
+     *  domain). A saved Named environment is checked with these too when it is read back. */
+    fun isValid(env: Env): Boolean =
+        ID.matches(env.id) && !env.id.endsWith("-") && env.name.isNotBlank() && DOMAIN.matches(env.domain)
 
     /** The kiosk's saved typed URLs as an environment: a built-in one when the API URL is exactly
      *  its `https://api.<domain>` (scheme and host in any case, default port and a trailing slash

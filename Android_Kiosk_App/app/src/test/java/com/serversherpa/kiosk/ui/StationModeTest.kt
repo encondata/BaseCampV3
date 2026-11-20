@@ -8,13 +8,14 @@ import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.TEST_PORTAL_URL
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.KioskPersonRow
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
@@ -28,6 +29,7 @@ import com.serversherpa.kiosk.input.ScanSource
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.KEY_MISSING_TEXT
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.PAUSED_TEXT
+import com.serversherpa.kiosk.useApi
 import com.serversherpa.kiosk.waitUntilIdlingMain
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -205,7 +207,7 @@ class StationModeTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("api-url").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("api-url").performTextReplacement("https://evil.example.com")
         compose.onNodeWithText("Save URLs").performClick()
-        compose.waitUntilIdlingMain { runBlocking { s.c.prefs.apiUrl.first() } == "https://evil.example.com" }
+        compose.waitUntilIdlingMain { runBlocking { s.c.config.apiUrlNow() } == "https://evil.example.com" }
         compose.waitUntilIdlingMain { s.c.station.hasKey.value == false }
         assertNull(s.c.stationKeys.get(ORIGIN))
     }
@@ -213,7 +215,7 @@ class StationModeTest {
     /** A key stored for one API with the URL since changed (any way at all): no station request
      *  goes out, the key is dropped, and Welcome shows the waiting copy. */
     @Test fun aStoredKeyWithAChangedUrlSendsNothingAndWaits() {
-        val s = station(beforeContent = { prefs.setApiUrl("https://evil.example.com") })
+        val s = station(beforeContent = { environments.useApi("https://evil.example.com") })
         waitForText(KEY_MISSING_TEXT)
         compose.mainClock.advanceTimeBy(5_000)
         assertEquals(emptyList<String>(), s.station.calls)
@@ -223,11 +225,11 @@ class StationModeTest {
     @Test fun savingTheSameOriginKeepsTheKey() {
         val s = station()
         waitForText("Welcome!")
-        runBlocking { s.c.saveApiUrl("http://127.0.0.1:1/") }
+        runBlocking { s.c.saveCustom("http://127.0.0.1:1/", TEST_PORTAL_URL) }
         assertEquals("k1", s.c.stationKeys.get(ORIGIN))
-        runBlocking { s.c.saveApiUrl("http://127.0.0.1:1/v2") }       // a path on the same origin
+        runBlocking { s.c.saveCustom("http://127.0.0.1:1/v2", TEST_PORTAL_URL) }       // a path on the same origin
         assertEquals("k1", s.c.stationKeys.get(ORIGIN))
-        runBlocking { s.c.saveApiUrl("http://127.0.0.1:2") }          // another port is another server
+        runBlocking { s.c.saveCustom("http://127.0.0.1:2", TEST_PORTAL_URL) }          // another port is another server
         assertNull(s.c.stationKeys.get(ORIGIN))
     }
 

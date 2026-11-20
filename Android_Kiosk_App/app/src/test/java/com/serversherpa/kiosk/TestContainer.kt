@@ -5,13 +5,15 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.test.core.app.ApplicationProvider
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
 import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.api.MemorySecretStore
+import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.auth.BiometricKeys
 import com.serversherpa.kiosk.data.auth.BiometricReadiness
 import com.serversherpa.kiosk.data.auth.FakeBiometricKeys
-import com.serversherpa.kiosk.data.api.MemorySecretStore
-import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.db.KioskDatabase
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import com.serversherpa.kiosk.data.printer.BluetoothLeClient
 import com.serversherpa.kiosk.data.printer.FakeBluetoothLe
 import com.serversherpa.kiosk.data.push.FakeFcmTokens
@@ -27,7 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 
-/** An AppContainer safe under Robolectric: memory secrets, in-memory Room, an API URL that fails fast.
+/** An AppContainer safe under Robolectric: memory secrets, in-memory Room, a Custom environment whose API URL fails fast.
  *  [rfidReader] defaults to a fresh [FakeRfidReader]; a test that needs a reader with different timing
  *  or failure behavior (e.g. a connect() that must stay in flight until released) can pass its own.
  *  [api] and [stationApi] replace the real HTTP clients (the session, auth and heartbeat use [api]).
@@ -65,6 +67,12 @@ fun testContainer(
         fcmTokensOverride = fcmTokens,
         updatesOverride = updates,
     )
-    runBlocking { c.prefs.setApiUrl("http://127.0.0.1:1") }
+    runBlocking { c.environments.useApi("http://127.0.0.1:1") }
     return c
 }
+
+/** Where a test container's portal points: nothing answers there. */
+const val TEST_PORTAL_URL = "http://127.0.0.1:1"
+
+/** Points the kiosk at [apiUrl] (a Custom environment), as a test's server needs. */
+suspend fun EnvironmentStore.useApi(apiUrl: String) = save(SavedEnvironment.Custom(apiUrl, TEST_PORTAL_URL))

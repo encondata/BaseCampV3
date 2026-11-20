@@ -13,6 +13,7 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.loadPhoto
+import com.serversherpa.kiosk.useApi
 import java.util.Base64
 import java.util.Collections
 import java.util.concurrent.TimeUnit
@@ -85,7 +86,7 @@ class InternetTestWiringTest {
         server.start()
         c = testContainer()
         runBlocking {
-            c.prefs.setApiUrl(server.url("/").toString().trimEnd('/'))
+            c.environments.useApi(server.url("/").toString().trimEnd('/'))
             c.prefs.setDevMode(true)
         }
     }

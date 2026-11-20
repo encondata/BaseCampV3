@@ -26,7 +26,6 @@ android {
         versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "KIOSK_VERSION", "\"$versionName\"")
-        buildConfigField("String", "DEFAULT_PORTAL_URL", "\"https://portal.dev.serversherpa.com\"")
     }
 
     // The Play upload key lives outside the repo: ~/.gradle/gradle.properties holds the
@@ -57,13 +56,14 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "DEFAULT_API_URL", "\"https://api.dev.serversherpa.com\"")
+            // The environment a kiosk connects to until one is picked (core/environment's built-in ids).
+            buildConfigField("String", "DEFAULT_ENVIRONMENT_ID", "\"dev\"")
         }
         release {
             isMinifyEnabled = false
             signingConfigs.findByName("upload")?.let { signingConfig = it }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            buildConfigField("String", "DEFAULT_API_URL", "\"https://api.serversherpa.com\"")
+            buildConfigField("String", "DEFAULT_ENVIRONMENT_ID", "\"prod\"")
         }
     }
     compileOptions {

@@ -79,7 +79,7 @@ class AppResetTest {
         // Kept: the unsent scan, the sign-in, the server and the kiosk's identity and preferences.
         assertEquals(listOf("c1"), c.db.outbox().all().map { it.clientScanId })
         assertTrue(c.auth.state.value is AuthState.Authed)
-        assertEquals("http://127.0.0.1:1", c.prefs.apiUrl.first())
+        assertEquals("http://127.0.0.1:1", c.config.apiUrlNow())
         assertEquals("Dock 4", c.prefs.name.first())
         assertEquals("K-123", c.prefs.serial.first())
         assertTrue(c.prefs.devMode.first())

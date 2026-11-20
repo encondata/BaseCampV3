@@ -1,8 +1,11 @@
 package com.serversherpa.kiosk.data.api
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.useApi
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,9 +21,8 @@ class ApiHarness(tmpDir: File) : AutoCloseable {
     val server = MockWebServer().also { it.start() }
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = scope) { File(tmpDir, "t.preferences_pb") })
-    val config = KioskConfig(prefs, "https://unused.example", "https://portal.unused.example", "0.1.0").also {
-        runBlocking { prefs.setApiUrl(server.url("/").toString().trimEnd('/')) }
-    }
+    val environments = EnvironmentStore(prefs).also { runBlocking { it.useApi(server.url("/").toString().trimEnd('/')) } }
+    val config = KioskConfig(environments, SavedEnvironment.Named("unused", "Unused", "unused.serversherpa.com"), "0.1.0")
     val secrets = MemorySecretStore()
     val cookieJar = RefreshCookieJar(secrets)
     val client: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar).build()
