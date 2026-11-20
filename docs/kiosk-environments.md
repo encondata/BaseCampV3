@@ -38,7 +38,8 @@ These six are also the built-in list, in this order.
   `prod` is allowed).
 - `name` is what people see. It must be a non-empty string.
 - `domain` is `serversherpa.com` or ends in `.serversherpa.com`: lower-case
-  letters, digits, hyphens and dots only. No scheme, port, path or user
+  letters, digits, hyphens and dots only, and no label (the part between two
+  dots) starts or ends with a hyphen. No scheme, port, path or user
   info. A foreign domain is dropped, so a tampered file can't send a kiosk
   outside serversherpa.com.
 - Entries are shown in file order.

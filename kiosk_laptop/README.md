@@ -165,7 +165,8 @@ to be signed in.
 
 - The choice is saved in the data folder as `environment.json`. It wins over
   `EDGE_CLOUD_API_URL` and `EDGE_PORTAL_URL`, the addresses the installer
-  set.
+  set. If `environment.json` can't be read or isn't valid, the kiosk uses the
+  installer's addresses instead.
 - To go back to the installer's addresses, stop the kiosk, delete
   `environment.json` from the data folder and start it again.
 - A switch wipes the laptop's move data, the same as Wipe, and signs the
