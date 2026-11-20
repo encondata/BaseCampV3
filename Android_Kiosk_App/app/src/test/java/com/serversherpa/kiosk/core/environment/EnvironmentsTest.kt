@@ -74,6 +74,24 @@ class EnvironmentsTest {
         assertTrue(Environments.migrate("https://api.uat.serversherpa.com/v1", null, "p") is SavedEnvironment.Custom)
     }
 
+    @Test fun migrateQueryUserInfoOrFragmentIsCustomNotBuiltIn() {
+        // a query, user info or fragment is not the built-in address either (as on iOS)
+        for (api in listOf("https://api.uat.serversherpa.com?x=1", "https://user@api.uat.serversherpa.com",
+                           "https://user:pw@api.uat.serversherpa.com", "https://api.uat.serversherpa.com#frag")) {
+            val saved = Environments.migrate(api, null, "p")
+            assertEquals(api, SavedEnvironment.Custom(api, "p"), saved)
+        }
+    }
+
+    @Test fun migrateAcceptsUnderscoreHostsAsCustom() {
+        // java.net.URI gives no host for these, but the old URL rule accepted them: a kiosk that
+        // worked before the upgrade must stay on its server, never fall to the build default
+        assertEquals(SavedEnvironment.Custom("http://my_host:8000", "https://portal.x"),
+            Environments.migrate("http://my_host:8000", null, "https://portal.x"))
+        assertEquals(SavedEnvironment.Custom("http://my_host:8000", "http://my_host:5173"),
+            Environments.migrate(" http://my_host:8000/ ", "http://my_host:5173/", "https://portal.x"))
+    }
+
     @Test fun migrateNothingSaved() {
         assertNull(Environments.migrate(null, null, "https://portal.x"))
         assertNull(Environments.migrate("  ", "http://p", "https://portal.x"))

@@ -114,19 +114,24 @@ object Environments {
 
     /** The kiosk's saved typed URLs as an environment: a built-in one when the API URL is exactly
      *  its `https://api.<domain>` (scheme and host in any case, default port and a trailing slash
-     *  ignored), else Custom. [defaultPortal] stands in when no portal URL was saved. Null when
-     *  nothing usable was saved, so nothing is migrated. */
+     *  ignored; no path, query, fragment or user info), else Custom. [defaultPortal] stands in
+     *  when no portal URL was saved. Null when nothing usable was saved, so nothing is migrated. */
     fun migrate(savedApi: String?, savedPortal: String?, defaultPortal: String): SavedEnvironment? {
-        val api = cleanUrl(savedApi) ?: return null
-        val portal = cleanUrl(savedPortal) ?: defaultPortal
-        val origin = originOf(api)
-        if (origin != null && api.substringAfter("://").none { it == '/' }) {
+        val api = savedUrl(savedApi) ?: return null
+        val portal = savedUrl(savedPortal) ?: defaultPortal
+        val origin = bareOrigin(api)
+        if (origin != null) {
             for (env in BUILT_IN) {
-                if (origin == originOf(env.apiUrl)) return SavedEnvironment.Named(env.id, env.name, env.domain)
+                if (origin == bareOrigin(env.apiUrl)) return SavedEnvironment.Named(env.id, env.name, env.domain)
             }
         }
         return SavedEnvironment.Custom(api, portal)
     }
+
+    /** A saved URL the kiosk could use before the picker: one with an http(s) scheme and a host,
+     *  or, failing that, one the old rule accepted (a host java.net.URI can't read, such as one
+     *  with an underscore, worked before the upgrade and must not drop the kiosk to the default). */
+    private fun savedUrl(raw: String?): String? = cleanUrl(raw) ?: legacyUrl(raw)
 
     /** Trimmed, trailing `/` removed, http(s) with a host; null otherwise. */
     private fun cleanUrl(raw: String?): String? {
@@ -139,8 +144,21 @@ object Environments {
         return v
     }
 
-    private fun originOf(url: String): String? {
+    /** The pre-picker rule (KioskConfig.normalizeUrl): trimmed, trailing `/` removed, starts with
+     *  `http://` or `https://` and has something after it. */
+    private fun legacyUrl(raw: String?): String? {
+        val v = raw?.trim()?.trimEnd('/') ?: return null
+        if (!v.startsWith("http://") && !v.startsWith("https://")) return null
+        if (v.substringAfter("://").isEmpty()) return null
+        return v
+    }
+
+    /** `scheme://host:port` (lower case, default port filled in) of a URL that is only an origin:
+     *  null when it has a path, query, fragment or user info. */
+    private fun bareOrigin(url: String): String? {
         val uri = try { URI(url) } catch (e: Exception) { return null }
+        if (!uri.rawPath.isNullOrEmpty() || uri.rawQuery != null || uri.rawFragment != null ||
+            uri.rawUserInfo != null) return null
         val scheme = uri.scheme?.lowercase() ?: return null
         val host = uri.host?.lowercase() ?: return null
         val port = when {

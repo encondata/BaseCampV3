@@ -211,7 +211,8 @@ class HeartbeatTest {
     }
 
     /** An environment switch: a beat still waiting on the old server when the heartbeat stops
-     *  writes nothing from its reply (no registration, no Clear Setup, no sign-in method). */
+     *  writes nothing from its reply (no registration, no Clear Setup, no sign-in method), except
+     *  the has-been-registered flag: a registration from any server counts for good (as on iOS). */
     @Test fun aReplyArrivingAfterStopAndDropRepliesWritesNothing() = runTest {
         val gate = CompletableDeferred<Unit>()
         val api = object : FakeKioskApi() {
@@ -238,7 +239,7 @@ class HeartbeatTest {
         assertEquals(SetupState.COMPLETE, prefs.setupState.first())
         assertEquals("link", prefs.signInMethod.first())
         assertEquals(emptyList<String>(), events)
-        assertEquals(false, prefs.everRegistered.first())
+        assertEquals(true, prefs.everRegistered.first())
         // A beat that starts afterwards is the new server's: its reply counts.
         hb.now()
         assertEquals(RegistrationState.OK, hb.registration.value)

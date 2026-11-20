@@ -114,6 +114,10 @@ class Heartbeat(
                 raw_info = deviceInfo(), sign_in = asSignIn != null || signInWithoutMethod, login_method = asSignIn?.wire,
                 setup_cleared = ack,
             ))
+            // Any registration at all, from any server, and the kiosk counts as registered for
+            // good: marked before the stale-reply check below, as on iOS, so a beat that lands
+            // across a switch still counts.
+            if (result.registration != RegistrationState.NONE.wire) environments.markRegistered()
             val asked = result.clear_setup
             val applied = replies.withLock {
                 if (sentIn != epoch) return                // sent before a switch: the old server's answer
@@ -131,8 +135,6 @@ class Heartbeat(
                 _setupCleared.tryEmit(asked!!)
                 if (job?.isActive == true) beat()      // acknowledge right away (not after stop())
             }
-            // Any registration at all, from any server, and the kiosk counts as registered for good.
-            if (result.registration != RegistrationState.NONE.wire) environments.markRegistered()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

@@ -122,6 +122,14 @@ class EnvironmentStoreTest {
         assertEquals(SavedEnvironment.Custom("http://10.10.48.103:8000", defaultPortal), store.saved.first())
     }
 
+    /** A host java.net.URI can't read (an underscore) worked before the upgrade: it stays Custom,
+     *  never falls to the build default with the typed URL deleted. */
+    @Test fun anUnderscoreHostStaysCustom() = runBlocking {
+        data.edit { it[legacyApi] = "http://my_host:8000" }
+        store.migrateIfNeeded(defaultPortal)
+        assertEquals(SavedEnvironment.Custom("http://my_host:8000", defaultPortal), store.saved.first())
+    }
+
     @Test fun nothingIsMigratedWhenNothingWasSaved() = runBlocking {
         store.migrateIfNeeded(defaultPortal)
         assertNull(store.saved.first())
