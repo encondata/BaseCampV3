@@ -61,7 +61,7 @@ describe('InstallButton', () => {
     expect(within(dialog).getByText('Tap Continue, then Allow.')).toBeTruthy();
     expect(within(dialog).getByText('Open Settings, tap Profile Downloaded, then Install.')).toBeTruthy();
     expect(within(dialog).getByText("You'll come back here automatically.")).toBeTruthy();
-    expect(within(dialog).getByText("iOS shows the profile as Not Signed; that's expected.")).toBeTruthy();
+    expect(within(dialog).queryByText(/Not Signed|Not Verified/)).toBeNull();   // the profile is signed now
 
     const cont = within(dialog).getByRole('button', { name: 'Continue' }) as HTMLButtonElement;
     expect(cont.disabled).toBe(true);
@@ -91,7 +91,7 @@ describe('InstallButton', () => {
     expect(screen.queryByRole('button', { name: 'Add this iPhone' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Add this iPad' }));
     const dialog = screen.getByRole('dialog', { name: 'Add this iPad' });
-    expect(within(dialog).getByText("iOS shows the profile as Not Signed; that's expected.")).toBeTruthy();
+    expect(within(dialog).queryByText(/Not Signed|Not Verified/)).toBeNull();   // the profile is signed now
     await userEvent.type(within(dialog).getByLabelText('Name this iPad'), "Jimmy's iPad");
     await userEvent.click(within(dialog).getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(goTo).toHaveBeenCalledWith('/enroll/abc.mobileconfig?device=ipad'));
