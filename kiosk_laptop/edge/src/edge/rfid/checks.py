@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
-from edge import hostnet, laptop_setup
+from edge import environment_store, hostnet, laptop_setup
 from edge.rfid import events, pairing, station_key, ziotc
 from edge.rfid.ziotc import ReaderError
 from edge.upstream import CloudOffline
@@ -147,6 +147,7 @@ async def _registration(name, st, session) -> dict:
         return result(name, "fail", UNEXPECTED)
     if not isinstance(body, dict):
         return result(name, "fail", UNEXPECTED)
+    environment_store.note_heartbeat_reply(st.settings.data_dir, body)
     registration = body.get("registration")
     device = body.get("name")
     info = {"wan_ip": body.get("client_ip"), "registration": registration,

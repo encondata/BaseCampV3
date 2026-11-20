@@ -24,6 +24,7 @@ from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
+from edge.environment_store import load_current
 from edge.environments import ListSource
 from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host, read_host_os
 from edge.identity import load_or_create
@@ -106,7 +107,10 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.identity = load_or_create(settings.data_dir)
     app.state.store = Store(settings.data_dir / "edge.db")
     app.state.keys = load_or_create_keys(settings.data_dir)
-    app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport)
+    # the saved environment wins over the installer's URLs (settings keeps those)
+    app.state.environment = load_current(settings.data_dir, settings)
+    app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport,
+                                  base_url=app.state.environment.api_url)
     app.state.env_list = ListSource(settings.data_dir, transport=transport)
     app.state.outbox = OutboxWorker(app.state.store, app.state.upstream,
                                     lambda: app.state.identity.serial)
@@ -150,7 +154,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
         lan = name not in ("localhost", "127.0.0.1", "[::1]")
         body = (
             "window.__KIOSK_CONFIG__ = { apiUrl: window.location.origin, "
-            f"portalUrl: {json.dumps(settings.portal_url)}, "
+            f"portalUrl: {json.dumps(request.app.state.environment.portal_url)}, "
             '"mode": "laptop", '
             f'"lanAccess": {json.dumps(lan)}, '
             f'"hostOs": {json.dumps(read_host_os(settings.data_dir))}, '

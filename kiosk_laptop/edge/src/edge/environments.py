@@ -69,18 +69,27 @@ def parse_list(raw: bytes) -> list[Env] | None:
     out: list[Env] = []
     seen: set[str] = set()
     for item in entries:
-        if not isinstance(item, dict):
+        env = to_env(item)
+        if env is None or env.id in seen:
             continue
-        env_id, name, domain = item.get("id"), item.get("name"), item.get("domain")
-        if not (isinstance(env_id, str) and isinstance(name, str) and isinstance(domain, str)):
-            continue
-        if not _ID.fullmatch(env_id) or env_id.endswith("-") or env_id in seen:
-            continue
-        if not name.strip() or not _DOMAIN.fullmatch(domain):
-            continue
-        seen.add(env_id)
-        out.append(Env(env_id, name.strip(), domain))
+        seen.add(env.id)
+        out.append(env)
     return out or None
+
+
+def to_env(item: object) -> Env | None:
+    """One list entry (or a saved named environment) as an Env, or None when
+    its id, name or domain breaks the rules."""
+    if not isinstance(item, dict):
+        return None
+    env_id, name, domain = item.get("id"), item.get("name"), item.get("domain")
+    if not (isinstance(env_id, str) and isinstance(name, str) and isinstance(domain, str)):
+        return None
+    if not _ID.fullmatch(env_id) or env_id.endswith("-"):
+        return None
+    if not name.strip() or not _DOMAIN.fullmatch(domain):
+        return None
+    return Env(env_id, name.strip(), domain)
 
 
 class ListSource:

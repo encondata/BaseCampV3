@@ -34,7 +34,7 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
-from edge import config_sync, laptop_setup
+from edge import config_sync, environment_store, laptop_setup
 from edge.db import Store, now_iso
 from edge.deps import current_session, err
 from edge.identity import Identity
@@ -201,6 +201,16 @@ def _apply_clear_setup(store: Store, resp: httpx.Response) -> None:
         station_key.apply_clear_setup(store)
 
 
+def _note_registration(data_dir, resp: httpx.Response) -> None:
+    """A heartbeat reply that says the kiosk is registered sets the laptop's
+    has-been-registered flag (environment_store)."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return
+    environment_store.note_heartbeat_reply(data_dir, data)
+
+
 async def forward(request: Request, path: str) -> Response:
     st = request.app.state
     session = current_session(request)
@@ -252,5 +262,6 @@ async def forward(request: Request, path: str) -> Response:
         store_cache(st.store, target, 200, resp.text)
     if path == HEARTBEAT and resp.status_code == 200:
         _apply_clear_setup(st.store, resp)
+        _note_registration(st.settings.data_dir, resp)
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in DROP_HEADERS}
     return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)

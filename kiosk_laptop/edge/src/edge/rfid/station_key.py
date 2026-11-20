@@ -32,7 +32,7 @@ import logging
 import httpx
 from cryptography.fernet import InvalidToken
 
-from edge import laptop_setup, timeclock
+from edge import environment_store, laptop_setup, timeclock
 from edge.crypto import Keys, decrypt, encrypt
 from edge.db import Store, now_iso
 from edge.rfid import events
@@ -245,6 +245,7 @@ async def _issue(st, person_id: str) -> bool:
         return False
     store_key(st.store, st.keys, raw)
     log.info("station key stored")
+    environment_store.mark_registered(st.settings.data_dir)  # only a registered kiosk gets a key
     return True
 
 

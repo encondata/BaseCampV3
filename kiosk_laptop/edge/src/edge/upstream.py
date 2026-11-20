@@ -46,21 +46,38 @@ def _detail_code(resp: httpx.Response) -> str | None:
 
 
 class Upstream:
-    def __init__(self, settings: Settings, store: Store, keys: Keys, *, transport=None) -> None:
+    def __init__(self, settings: Settings, store: Store, keys: Keys, *, transport=None,
+                 base_url: str | None = None) -> None:
+        """`base_url` is the server the laptop's saved environment names
+        (environment_store); without one, the installer's URL."""
         self.store = store
         self.keys = keys
-        self.client = httpx.AsyncClient(base_url=settings.cloud_api_url,
-                                        timeout=httpx.Timeout(15.0, connect=5.0),
-                                        transport=transport)
-        # Cloud cookies belong to one person: make the jar structurally unable
-        # to store or return any. Callers pass explicit Cookie headers.
-        self.client.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+        self._transport = transport
+        self.client = self._client(base_url or settings.cloud_api_url)
         self.online = False
         self.last_contact: str | None = None
         self._locks: dict[str, asyncio.Lock] = {}
 
+    def _client(self, base_url: str) -> httpx.AsyncClient:
+        client = httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(15.0, connect=5.0),
+                                   transport=self._transport)
+        # Cloud cookies belong to one person: make the jar structurally unable
+        # to store or return any. Callers pass explicit Cookie headers.
+        client.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+        return client
+
     async def aclose(self) -> None:
         await self.client.aclose()
+
+    async def repoint(self, base_url: str) -> None:
+        """Talk to another server from now on. The client is swapped in place:
+        the outbox worker and the syncer hold this same Upstream. Nothing is
+        known about the new server yet, so the edge counts as offline until
+        it answers."""
+        old, self.client = self.client, self._client(base_url)
+        self.online = False
+        self.last_contact = None
+        await old.aclose()
 
     async def request(self, method: str, path: str, **kw) -> httpx.Response:
         try:

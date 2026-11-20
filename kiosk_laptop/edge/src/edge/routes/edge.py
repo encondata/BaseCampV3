@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from edge import config_sync, laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
 from edge.deps import json_object as _json_object
+from edge.environment_store import ever_registered
 from edge.identity import rename
 from edge.rfid import uploader
 from edge.rfid.tagreads import note_cache_write
@@ -66,6 +67,17 @@ async def environments(request: Request) -> dict:
     return {"source": source, "environments": [
         {"id": e.id, "name": e.name, "domain": e.domain, "api_url": e.api_url,
          "portal_url": e.portal_url, "is_prod": e.is_prod} for e in envs]}
+
+
+@router.get("/environment")
+async def environment(request: Request) -> dict:
+    """The server this laptop talks to now, and whether any server has ever
+    registered it. Anonymous, like the list."""
+    st = request.app.state
+    cur = st.environment
+    return {"kind": cur.kind, "id": cur.id, "name": cur.name, "domain": cur.domain,
+            "api_url": cur.api_url, "portal_url": cur.portal_url, "is_prod": cur.is_prod,
+            "ever_registered": ever_registered(st.settings.data_dir)}
 
 
 @router.get("/status")
