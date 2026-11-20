@@ -270,4 +270,23 @@ class OutboxTest {
         ob.enqueue(input("B-2")); advanceTimeBy(600); settle()
         assertEquals(OutboxStatus.ACCEPTED, ob.snapshot.value.rows.single().status)
     }
+
+    /** A store that can't be read leaves the outbox unloaded, and says so: an empty snapshot then
+     *  doesn't mean nothing is queued. The next load reads it. */
+    @Test fun loadSaysWhetherTheStoreCouldBeRead() = runTest {
+        val kept = MemoryOutboxStore()
+        kept.upsert(listOf(OutboxMachine.newRow(input(), "c1", 1, 0)))
+        var readable = false
+        val store = object : OutboxStore {
+            override suspend fun all(): List<OutboxRow> = if (readable) kept.all() else throw IllegalStateException("disk")
+            override suspend fun upsert(rows: List<OutboxRow>) = kept.upsert(rows)
+            override suspend fun delete(ids: List<String>) = kept.delete(ids)
+        }
+        val ob = outbox(FakeKioskApi(), store)
+        assertEquals(false, ob.load())
+        assertEquals(0, ob.snapshot.value.counts.total)
+        readable = true
+        assertEquals(true, ob.load())
+        assertEquals(1, ob.snapshot.value.counts.queued)
+    }
 }

@@ -10,11 +10,15 @@ import com.serversherpa.kiosk.core.model.MeInfo
 import com.serversherpa.kiosk.core.outbox.EnqueueInput
 import com.serversherpa.kiosk.core.outbox.OutboxAsset
 import com.serversherpa.kiosk.core.outbox.OutboxMachine
+import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.api.MemorySecretStore
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.db.toEntity
 import com.serversherpa.kiosk.data.fakeSession
+import com.serversherpa.kiosk.data.outbox.MemoryOutboxStore
+import com.serversherpa.kiosk.data.outbox.Outbox
+import com.serversherpa.kiosk.data.outbox.OutboxStore
 import com.serversherpa.kiosk.data.prefs.BiometricEnrollment
 import com.serversherpa.kiosk.testContainer
 import kotlinx.coroutines.cancel
@@ -25,6 +29,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -219,5 +224,38 @@ class EnvironmentSwitcherTest {
 
         assertEquals(prod, c.environments.saved.first())
         assertTrue(c.environments.everRegistered.first())
+    }
+
+    /** An outbox whose store can't be read is never taken for an empty one: the switch throws
+     *  before doing anything, and the unsent scans stay for the server they belong to. */
+    @Test fun anUnreadableOutboxStopsTheSwitchBeforeAnythingIsCleared() = runBlocking<Unit> {
+        val kept = MemoryOutboxStore()
+        kept.upsert((1..2).map { OutboxMachine.newRow(EnqueueInput("A-$it", "barcode", asset, "s1", "i1", "packed"), "c$it", it.toLong(), 0) })
+        var readable = false
+        val store = object : OutboxStore {
+            override suspend fun all(): List<OutboxRow> = if (readable) kept.all() else throw IllegalStateException("disk")
+            override suspend fun upsert(rows: List<OutboxRow>) = kept.upsert(rows)
+            override suspend fun delete(ids: List<String>) = kept.delete(ids)
+        }
+        val outbox = Outbox(store, api, c.identity, c.scope)
+        val switcher = EnvironmentSwitcher(
+            c.environments, api, authState = { c.auth.state.value }, outbox, c.biometric, push = { c.pushRegistrar }, c.pushKeys,
+            c.stationKeys, c.prefs, c.cookieJar, c.heartbeat, logout = { c.logout() }, resetApp = { c.resetApp() },
+        )
+        c.prefs.setSetupSelection(KioskSetupSelection("i1", "Move A", "s1", "Dallas", "source", "packed", "Packed"))
+        secrets.put("cookie|127.0.0.1|ss_refresh", "{}")
+        signIn()
+
+        try { switcher.switchTo(uat, discard = false); fail("expected OutboxUnreadable") } catch (_: OutboxUnreadable) { }
+
+        assertTrue(c.environments.saved.first() is SavedEnvironment.Custom)   // the test server, still
+        assertEquals(2, kept.all().size)
+        assertTrue(c.auth.state.value is AuthState.Authed)
+        assertTrue("logout" !in api.calls)
+        assertEquals("{}", secrets.get("cookie|127.0.0.1|ss_refresh"))
+        assertTrue(c.prefs.setupSelection.first() != null)
+
+        readable = true                                                       // the store reads again
+        assertEquals(SwitchResult.Pending(2), switcher.switchTo(uat, discard = false))
     }
 }

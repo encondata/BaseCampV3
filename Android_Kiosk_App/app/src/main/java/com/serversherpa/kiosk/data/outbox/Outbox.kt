@@ -69,8 +69,11 @@ class Outbox(
         rebuild()
     }
 
-    suspend fun load() = mutex.withLock {
-        if (loaded) return@withLock
+    /** Reads the store once. False when it couldn't be read: the snapshot is then empty without
+     *  meaning nothing is queued, so a caller that counts on it (an environment switch) must not
+     *  go on. */
+    suspend fun load(): Boolean = mutex.withLock {
+        if (loaded) return@withLock true
         val rows = try {
             store.all()
         } catch (e: CancellationException) {
@@ -78,12 +81,13 @@ class Outbox(
         } catch (e: Exception) {
             // Leave `loaded` false so the next start() reads the store again.
             android.util.Log.w("Outbox", "Couldn't read the outbox from storage", e)
-            return@withLock
+            return@withLock false
         }
         all = LinkedHashMap(rows.associateBy { it.clientScanId })
         nextSeq = (rows.maxOfOrNull { it.seq } ?: 0L) + 1
         rebuild()
         loaded = true
+        true
     }
 
     /**

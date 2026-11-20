@@ -42,6 +42,9 @@ sealed interface SwitchResult {
     }
 }
 
+/** The outbox's store couldn't be read, so the unsent scans can't be counted: no switch. */
+class OutboxUnreadable : Exception("outbox_unreadable")
+
 /**
  * Moves the kiosk to another server (spec "Who can change what" and "What a switch does"), with
  * the laptop edge's rules (kiosk_laptop/edge/src/edge/environment_switch.py). The environment
@@ -88,11 +91,14 @@ class EnvironmentSwitcher(
     fun unsentCount(): Int = outbox.snapshot.value.counts.let { it.queued + it.failed }
 
     /**
-     * Switches to [target], discarding unsent scans when [discard] (an admin's call). Throws when
-     * the old server's data can't be cleared (storage); the saved environment is then unchanged.
+     * Switches to [target], discarding unsent scans when [discard] (an admin's call). Throws
+     * [OutboxUnreadable] before anything is done when the outbox can't be read (an unreadable
+     * outbox never counts as empty), and throws when the old server's data can't be cleared
+     * (storage); the saved environment is unchanged either way.
      */
     suspend fun switchTo(target: SavedEnvironment, discard: Boolean): SwitchResult = lock.withLock {
-        outbox.load()
+        // The recount below reads the same loaded snapshot, which every enqueue keeps current.
+        if (!outbox.load()) throw OutboxUnreadable()
         val pending = unsentCount()
         val customGate = target is SavedEnvironment.Custom && store.everRegistered.first()
         val discardGate = pending > 0 && discard
