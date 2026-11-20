@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * While someone is signed in and the app is in front: an immediate beat,
@@ -29,7 +31,8 @@ import kotlinx.coroutines.launch
  * applied once (setup dropped, Setup banner raised), announced on
  * [setupCleared], and acknowledged on an immediate re-beat and every beat
  * after until the reply stops asking for it. A reply with any registration
- * but "none" sets the kiosk's has-been-registered flag.
+ * but "none" sets the kiosk's has-been-registered flag. [stopAndDropReplies]
+ * (an environment switch) makes every beat already sent drop its reply.
  */
 class Heartbeat(
     private val api: KioskApi,
@@ -51,6 +54,10 @@ class Heartbeat(
 
     private var job: Job? = null
     @Volatile private var pendingSignIn: LoginMethod? = null
+    /** A reply is applied under [replies], and only while [epoch] is still the one its beat was
+     *  sent in: [stopAndDropReplies] bumps it under the same lock. */
+    private val replies = Mutex()
+    @Volatile private var epoch = 0
 
     fun start(scope: CoroutineScope, signIn: LoginMethod?) {
         stop()
@@ -68,6 +75,21 @@ class Heartbeat(
         _registration.value = null
     }
 
+    /**
+     * An environment switch: stops, forgets a pending sign-in, and makes every beat already sent
+     * (the loop's, or a [now] or [signInNow] still waiting) drop the old server's reply instead of
+     * writing it. A reply being applied right now finishes first, so once this returns nothing
+     * from those beats is written. The next start beats again as usual.
+     */
+    suspend fun stopAndDropReplies() {
+        stop()
+        replies.withLock {
+            epoch++
+            pendingSignIn = null
+            _registration.value = null            // again: a reply applied while this waited set it
+        }
+    }
+
     /** Beat right now (after a rename). Resolves after the attempt. */
     suspend fun now() = beat()
 
@@ -82,6 +104,7 @@ class Heartbeat(
     }
 
     private suspend fun beat(signInWithoutMethod: Boolean = false) {
+        val sentIn = epoch
         val (serial, name) = identity.get()
         val asSignIn = pendingSignIn
         try {
@@ -91,15 +114,19 @@ class Heartbeat(
                 raw_info = deviceInfo(), sign_in = asSignIn != null || signInWithoutMethod, login_method = asSignIn?.wire,
                 setup_cleared = ack,
             ))
-            if (asSignIn != null && pendingSignIn === asSignIn) pendingSignIn = null
-            if (asSignIn != null) prefs.setSignInMethod(asSignIn.wire)
-            // Settle and apply before anything else can throw, so a clear is never deferred.
-            prefs.settleSetupClearAck(ack, result.clear_setup)
             val asked = result.clear_setup
-            // True only the first time for an id, so the re-beat below happens at most
-            // once per clear: a server repeating the id can't drive a loop.
-            val applied = asked != null && prefs.applySetupClear(asked)
-            _registration.value = RegistrationState.fromWire(result.registration)
+            val applied = replies.withLock {
+                if (sentIn != epoch) return                // sent before a switch: the old server's answer
+                if (asSignIn != null && pendingSignIn === asSignIn) pendingSignIn = null
+                if (asSignIn != null) prefs.setSignInMethod(asSignIn.wire)
+                // Settle and apply before anything else can throw, so a clear is never deferred.
+                prefs.settleSetupClearAck(ack, asked)
+                // True only the first time for an id, so the re-beat below happens at most
+                // once per clear: a server repeating the id can't drive a loop.
+                val applied = asked != null && prefs.applySetupClear(asked)
+                _registration.value = RegistrationState.fromWire(result.registration)
+                applied
+            }
             if (applied) {
                 _setupCleared.tryEmit(asked!!)
                 if (job?.isActive == true) beat()      // acknowledge right away (not after stop())

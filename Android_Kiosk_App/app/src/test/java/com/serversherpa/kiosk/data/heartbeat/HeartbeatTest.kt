@@ -14,6 +14,7 @@ import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.prefs.SetupClearRecord
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -207,5 +208,39 @@ class HeartbeatTest {
         registration = "none"
         hb.now()
         assertEquals(true, environments.everRegistered.first())   // never cleared
+    }
+
+    /** An environment switch: a beat still waiting on the old server when the heartbeat stops
+     *  writes nothing from its reply (no registration, no Clear Setup, no sign-in method). */
+    @Test fun aReplyArrivingAfterStopAndDropRepliesWritesNothing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val api = object : FakeKioskApi() {
+            override suspend fun heartbeat(body: com.serversherpa.kiosk.core.model.HeartbeatIn): HeartbeatResult {
+                gate.await(); return super.heartbeat(body)
+            }
+        }
+        api.heartbeatResult = { HeartbeatResult("d", it.name, "ok", null, clear_setup = "x9") }
+        val (hb, prefs) = harness(backgroundScope, api)
+        prefs.setSetupState(SetupState.COMPLETE)
+        val events = mutableListOf<String>()
+        backgroundScope.launch { hb.setupCleared.collect { events += it } }
+        backgroundScope.launch { hb.signInNow() }                    // outside the beat loop: stop() can't cancel it
+        prefs.setSignInMethod("password")
+        settle()
+
+        hb.stopAndDropReplies()
+        prefs.setSignInMethod("link")
+        gate.complete(Unit); settle()
+
+        assertEquals(1, api.heartbeats.size)
+        assertNull(hb.registration.value)
+        assertNull(prefs.setupClear.first())
+        assertEquals(SetupState.COMPLETE, prefs.setupState.first())
+        assertEquals("link", prefs.signInMethod.first())
+        assertEquals(emptyList<String>(), events)
+        assertEquals(false, prefs.everRegistered.first())
+        // A beat that starts afterwards is the new server's: its reply counts.
+        hb.now()
+        assertEquals(RegistrationState.OK, hb.registration.value)
     }
 }

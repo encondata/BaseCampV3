@@ -11,6 +11,8 @@ import com.serversherpa.kiosk.core.outbox.OutboxMachine
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.toEntity
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -71,5 +73,27 @@ class SyncTest {
         assertEquals(SyncPhase.IDLE, fresh.status.value.phase)
         assertEquals(0, db.assets().count()); assertNull(db.meta().get(com.serversherpa.kiosk.data.db.MOVE_META_KEY))
         assertEquals(1, db.outbox().all().size)
+    }
+
+    /** An environment switch clears the local data while a sync may still be waiting on the old
+     *  server: that sync's answer must not be stored afterwards. */
+    @Test fun aSyncInFlightWhenTheDataIsClearedStoresNothing() = runBlocking<Unit> {
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val held = object : FakeKioskApi() {
+            override suspend fun syncPeople(): KioskPeopleSync { entered.complete(Unit); gate.await(); return super.syncPeople() }
+        }
+        held.assets = { KioskAssetsSync("i1", "Move A", "now", listOf(KioskAssetRow("a1", "A-1", make_model = "X"))) }
+        val s = Sync(held, db, kotlinx.coroutines.GlobalScope, clock = { 1_700_000_000_000L })
+        val run = async(kotlinx.coroutines.Dispatchers.Default) { s.runNow("i1", "Move A") }
+        entered.await()
+
+        s.clearLocalData()
+        gate.complete(Unit)
+        run.await()
+
+        assertEquals(0, db.assets().count())
+        assertNull(Sync.readMeta(db))
+        assertEquals(SyncPhase.IDLE, s.status.value.phase)
     }
 }

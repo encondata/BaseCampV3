@@ -43,6 +43,9 @@ open class FakeKioskApi : KioskApi {
     override suspend fun pollPair(code: String, pollToken: String) = pollResult().also { calls += "poll" }
     override suspend fun heartbeat(body: HeartbeatIn): HeartbeatResult { calls += "heartbeat"; heartbeats += body; return heartbeatResult(body) }
     override suspend fun signOut(serial: String) { calls += "signOut" }
+    /** GET /auth/me: refused (401) unless a test sets an answer. Suspending, so a test can act mid-call. */
+    var meResult: suspend () -> MeInfo = { throw ApiError(401, "not_authenticated") }
+    override suspend fun me(): MeInfo { calls += "me"; return meResult() }
     // ── biometric sign-in ──
     // Suspending, so a test can hold a call open. Each call is recorded in `calls` first.
     var bioEnrollChallengeResult: suspend (String) -> String = { "nonce-1" }

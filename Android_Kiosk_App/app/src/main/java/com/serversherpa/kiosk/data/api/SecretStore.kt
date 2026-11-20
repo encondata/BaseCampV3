@@ -9,6 +9,8 @@ interface SecretStore {
     fun get(key: String): String?
     fun put(key: String, value: String)
     fun remove(key: String)
+    /** Every key stored now (an environment switch finds each host's refresh cookie by it). */
+    fun keys(): Set<String>
 }
 
 class MemorySecretStore : SecretStore {
@@ -16,6 +18,7 @@ class MemorySecretStore : SecretStore {
     override fun get(key: String) = map[key]
     override fun put(key: String, value: String) { map[key] = value }
     override fun remove(key: String) { map.remove(key) }
+    override fun keys(): Set<String> = map.keys.toSet()
 }
 
 /** EncryptedSharedPreferences "kiosk_session" under an Android Keystore master key. */
@@ -29,4 +32,5 @@ class AndroidSecretStore(context: Context) : SecretStore {
     override fun get(key: String): String? = prefs.getString(key, null)
     override fun put(key: String, value: String) { prefs.edit().putString(key, value).apply() }
     override fun remove(key: String) { prefs.edit().remove(key).apply() }
+    override fun keys(): Set<String> = prefs.all.keys.toSet()
 }

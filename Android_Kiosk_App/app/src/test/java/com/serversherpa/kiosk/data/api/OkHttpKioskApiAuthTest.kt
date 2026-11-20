@@ -128,4 +128,20 @@ class OkHttpKioskApiAuthTest {
             assertEquals(null, h.api.login("a@b.c", "pw").kiosk_move)
         }
     }
+
+    /** GET /auth/me under the session: the environment switch's live access check. */
+    @Test fun meReadsRolesRankAndGlobalScope() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.server.enqueue(sessionResponse()); h.api.login("a@b.c", "pw"); h.server.takeRequest()
+            h.server.enqueue(jsonResponse(200, """{"person":{"id":"p1"},"roles":["developer"],"max_rank":100,"scope":{"global":true,"client_ids":[]},"totp":{}}"""))
+            val me = h.api.me()
+            assertEquals(listOf("developer"), me.roles)
+            assertEquals(100, me.max_rank)
+            assertTrue(me.scope.global)
+            val req = h.server.takeRequest()
+            assertEquals("GET", req.method)
+            assertEquals("/auth/me", req.path)
+            assertEquals("Bearer tok1", req.getHeader("Authorization"))
+        }
+    }
 }

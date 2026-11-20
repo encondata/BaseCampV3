@@ -198,6 +198,10 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     val signInMethod: Flow<String?> = store.data.map { it[Keys.signInMethod] }
     suspend fun setSignInMethod(wire: String) { store.edit { it[Keys.signInMethod] = wire } }
 
+    /** An environment switch: what the old server's heartbeats left here, the last sign-in
+     *  method and the Clear Setup record (its id belongs to that server), in one write. */
+    suspend fun clearServerRecords() { store.edit { it.remove(Keys.signInMethod); it.remove(Keys.setupClear) } }
+
     /** This phone's biometric sign-in, or null (none, or nothing readable). One key, one write. */
     val biometric: Flow<BiometricEnrollment?> = store.data.map { p ->
         p[Keys.biometric]?.let { raw -> try { json.decodeFromString<BiometricEnrollment>(raw) } catch (e: Exception) { null } }

@@ -8,6 +8,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.environment.SavedEnvironment
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.MemorySecretStore
+import com.serversherpa.kiosk.data.api.SecretStore
 import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.auth.BiometricKeys
 import com.serversherpa.kiosk.data.auth.BiometricReadiness
@@ -39,7 +40,8 @@ import kotlinx.coroutines.runBlocking
  *  [FakeBiometricKeys] with no biometric hardware unless a test passes its own, so no test touches
  *  AndroidKeyStore and no password sign-in is offered fingerprint by accident. [fcmTokens] is a
  *  [FakeFcmTokens] unless a test passes its own (NoFcmTokens: a build without Firebase), so no test
- *  touches Firebase. [updates] is [NoAppUpdates] unless a test passes its own. */
+ *  touches Firebase. [updates] is [NoAppUpdates] unless a test passes its own. [secrets] is a fresh
+ *  [MemorySecretStore] unless a test passes its own (to look at, or seed, what the secure store holds). */
 fun testContainer(
     rfidReader: RfidReader = FakeRfidReader(),
     api: KioskApi? = null,
@@ -49,6 +51,7 @@ fun testContainer(
     biometricKeys: BiometricKeys = FakeBiometricKeys(BiometricReadiness.NO_HARDWARE),
     fcmTokens: FcmTokens = FakeFcmTokens(),
     updates: AppUpdates = NoAppUpdates,
+    secrets: SecretStore = MemorySecretStore(),
 ): AppContainer {
     val app = ApplicationProvider.getApplicationContext<Application>()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -56,7 +59,7 @@ fun testContainer(
     val store = dataStore ?: PreferenceDataStoreFactory.create(scope = scope) { file }
     val c = AppContainer(
         app,
-        secrets = MemorySecretStore(),
+        secrets = secrets,
         db = KioskDatabase.inMemory(app),
         dataStore = store,
         rfidReaderOverride = rfidReader,

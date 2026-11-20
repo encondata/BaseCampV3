@@ -49,6 +49,8 @@ class Outbox(
     private var all: MutableMap<String, OutboxRow> = LinkedHashMap()
     private var nextSeq = 1L
     private var loaded = false
+    /** Bumped by [discardAll] (under the mutex): a batch sent before it keeps no outcome. */
+    private var epoch = 0
 
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private var senderJob: Job? = null
@@ -197,7 +199,9 @@ class Outbox(
 
     private suspend fun flushOnce() {
         val serial = identity.get().serial
+        var sentIn = 0
         val batch = mutex.withLock {
+            sentIn = epoch
             val due = OutboxMachine.dueRows(all.values.toList(), clock())
             if (due.isEmpty()) return
             val sending = OutboxMachine.markSending(due)
@@ -235,9 +239,11 @@ class Outbox(
             OutboxMachine.applyFailure(batch, code, clock())
         }
         // The POST already happened: persist its outcome even if the sender is being
-        // cancelled right now, or the batch would strand as `sending`.
+        // cancelled right now, or the batch would strand as `sending`. Unless the outbox was
+        // discarded meanwhile (an environment switch): the rows are gone and stay gone.
         withContext(NonCancellable) {
             mutex.withLock {
+                if (sentIn != epoch) return@withLock
                 try { save(updated) } catch (e: Exception) {
                     // Storage failed: never leave rows `sending`, or they'd be stranded.
                     android.util.Log.w("Outbox", "Couldn't save a batch's outcome", e)
@@ -287,4 +293,17 @@ class Outbox(
 
     /** The operator confirmed these scans are being abandoned. */
     suspend fun discardFailed() = dropRows { it.status == OutboxStatus.FAILED }
+
+    /**
+     * An environment switch an admin let discard the unsent scans: every row goes, whatever its
+     * state, from the store too (rows a failed [load] never read included). A batch already on
+     * its way to the old server keeps no outcome: its answer is dropped, not saved back. Throws
+     * when the store can't be cleared, leaving the rows in place.
+     */
+    suspend fun discardAll() = mutex.withLock {
+        store.delete((store.all().map { it.clientScanId } + all.keys).distinct())
+        all.clear()
+        epoch++
+        rebuild()
+    }
 }

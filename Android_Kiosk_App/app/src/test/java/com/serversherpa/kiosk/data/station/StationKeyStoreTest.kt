@@ -64,6 +64,7 @@ class StationKeyStoreTest {
         override fun get(key: String) = inner.get(key)
         override fun put(key: String, value: String) = write { inner.put(key, value) }
         override fun remove(key: String) = write { inner.remove(key) }
+        override fun keys() = inner.keys()
     }
 
     /** Re-keying for a new API, killed after any write: the old key is never left bound to the

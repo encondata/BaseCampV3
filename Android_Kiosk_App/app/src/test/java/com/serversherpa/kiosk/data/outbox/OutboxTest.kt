@@ -247,4 +247,27 @@ class OutboxTest {
         advanceTimeBy(OutboxMachine.NOMATCH_SWEEP_MS); settle()   // the sweep loop is still alive and retries next tick
         assertEquals(0, ob.snapshot.value.counts.total)
     }
+
+    /** An environment switch discards every row, whatever its state, from the store too. A batch
+     *  whose POST was already out (to the old server) has its answer dropped, not saved back. */
+    @Test fun discardAllDropsEveryRowAndTheAnswerOfABatchInFlight() = runTest {
+        val api = FakeKioskApi()
+        val gate = CompletableDeferred<Unit>()
+        api.postScansResult = { body -> gate.await(); KioskScanBatchOut(accepted = body.scans.map { s -> s.client_scan_id }) }
+        val store = MemoryOutboxStore()
+        val ob = outbox(api, store); ob.start(); settle()
+        ob.enqueue(input("A-1")); ob.enqueue(input("nomatch", matched = false))
+        advanceTimeBy(600); settle()
+        assertEquals(listOf(OutboxStatus.NOMATCH, OutboxStatus.SENDING), ob.snapshot.value.rows.map { it.status })
+
+        ob.discardAll()
+        assertEquals(0, ob.snapshot.value.counts.total)
+        gate.complete(Unit); settle()
+
+        assertTrue(ob.snapshot.value.rows.isEmpty())
+        assertTrue(store.all().isEmpty())
+        // The sender carries on with new work.
+        ob.enqueue(input("B-2")); advanceTimeBy(600); settle()
+        assertEquals(OutboxStatus.ACCEPTED, ob.snapshot.value.rows.single().status)
+    }
 }

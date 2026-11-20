@@ -48,6 +48,7 @@ import com.serversherpa.kiosk.data.update.createAppUpdates
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.environment.EnvironmentListFetcher
 import com.serversherpa.kiosk.data.environment.EnvironmentStore
+import com.serversherpa.kiosk.data.environment.EnvironmentSwitcher
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelBuilder
@@ -144,6 +145,7 @@ class AppContainer(
         override fun get(key: String): String? = androidSecrets.get(key)
         override fun put(key: String, value: String) = androidSecrets.put(key, value)
         override fun remove(key: String) = androidSecrets.remove(key)
+        override fun keys(): Set<String> = androidSecrets.keys()
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val prefs = KioskPrefs(dataStore)
@@ -240,6 +242,13 @@ class AppContainer(
         )
     })
     val foreground = MutableStateFlow(false)
+    /** Settings › This Kiosk's environment change: the gates, then everything of the old server cleared. */
+    val environmentSwitcher by lazy {
+        EnvironmentSwitcher(
+            environments, api, authState = { auth.state.value }, outbox, biometric, push = { pushRegistrar }, pushKeys,
+            stationKeys, prefs, cookieJar, heartbeat, logout = { logout() }, resetApp = { resetApp() },
+        )
+    }
 
     /** The in-app update check: real in the direct flavor, [NoAppUpdates] in the Play one. */
     val updates: AppUpdates by lazy {

@@ -108,6 +108,19 @@ class PushRegistrar(
         Result.failure(PushSetupFailed(state, e))
     }
 
+    /**
+     * An environment switch: this phone's push registration deleted on the old server while
+     * someone is still signed in there (best effort: a failed delete is let go and the switch goes
+     * on), then the key and the FCM token dropped here. Waits for a running check or turn-on, so
+     * none of them stores a key afterwards.
+     */
+    suspend fun forgetForSwitch() = lock.withLock {
+        if (personId() != null && withContext(io) { store.hasKey() }) {
+            try { api.deletePush() } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
+        forgetHere()
+    }
+
     private suspend fun forgetHere() {
         withContext(io) { store.clear() }
         try { fcm.delete() } catch (e: CancellationException) { currentCoroutineContext().ensureActive() } catch (_: Exception) { }
