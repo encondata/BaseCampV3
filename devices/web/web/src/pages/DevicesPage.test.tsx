@@ -75,10 +75,11 @@ describe('DevicesPage', () => {
     expect(await screen.findByText('Last checked 2026-11-02 18:45')).toBeTruthy();
   });
 
-  it('lists the iPhones with a status chip each', async () => {
+  it('lists the iPhones and iPads with a status chip each', async () => {
     stubApi({ 'GET /api/devices': listing(new Date().toISOString()) });
     renderPage();
     const pat = await rowWith("Pat's iPhone");
+    expect(screen.getByRole('table', { name: 'iPhones and iPads' })).toBeTruthy();
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
     expect(headers).toEqual(['Name', 'Model', 'iOS', 'Added by', 'Added', 'Status', '']);
     expect(within(pat).getByText('iPhone14,5')).toBeTruthy();
@@ -92,6 +93,12 @@ describe('DevicesPage', () => {
     const crew = await rowWith('Crew iPhone');
     expect(within(crew).getByText('Failed').className).toBe('chip c-red');
     expect(within(crew).getByText('Apple refused this device.')).toBeTruthy();
+  });
+
+  it('says when no iPhones or iPads are added', async () => {
+    stubApi({ 'GET /api/devices': { devices: [], counts: [] } });
+    renderPage();
+    expect(await screen.findByText('No iPhones or iPads added yet.')).toBeTruthy();
   });
 
   it('Disable shows review copy', async () => {
@@ -117,7 +124,7 @@ describe('DevicesPage', () => {
   });
 
   it('a disabled iPhone Apple never confirmed shows why', async () => {
-    const why = "Apple didn't confirm disabling this iPhone, so Apple still lists it as enabled. "
+    const why = "Apple didn't confirm disabling this device, so Apple still lists it as enabled. "
       + "It's out of every profile here; disable it in Apple's developer site too.";
     stubApi({ 'GET /api/devices': { ...listing(new Date().toISOString()), devices: [{ ...OLD, error: why }] } });
     renderPage();

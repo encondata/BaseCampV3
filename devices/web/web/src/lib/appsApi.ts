@@ -1,10 +1,11 @@
 /** The devices API calls behind the pages: the catalog, installing,
- *  adding an iPhone, the version actions, uploading, the iPhone list and
+ *  adding an iPhone or iPad, the version actions, uploading, the device list and
  *  the Apple settings. Shapes follow devices/api routes apps.py,
  *  install.py, enroll.py, uploads.py, devices.py, apple.py. */
 import { ApiError } from '@portal/lib/api';
 
 import { devicesFetch } from './devicesApi';
+import type { ViewerDevice } from './platform';
 
 export type Platform = 'android' | 'ios';
 
@@ -19,7 +20,7 @@ export interface VersionOut {
   is_current: boolean;
 }
 
-/** `failed` is registering the iPhone; `build_failed` is preparing the app. */
+/** `failed` is registering the device; `build_failed` is preparing the app. */
 export type IosStateName =
   'not_set_up' | 'register_first' | 'registering' | 'failed' | 'disabled' | 'preparing'
   | 'build_failed' | 'ready';
@@ -111,7 +112,7 @@ export interface InspectOut {
   problems: string[];
 }
 
-/** An install link to open, or (iOS) the iPhone or the build isn't ready yet. */
+/** An install link to open, or (iOS) the device or the build isn't ready yet. */
 export type InstallResult = { url: string } | { state: string; message: string };
 
 export const PLATFORM_LABEL: Record<Platform, string> = { android: 'Android', ios: 'iOS' };
@@ -132,9 +133,13 @@ async function postJson<T>(path: string, body: unknown, method = 'POST'): Promis
   return resp.json() as Promise<T>;
 }
 
-export function listApps(deviceRef: string | null): Promise<AppOut[]> {
-  const query = deviceRef ? `?device_ref=${encodeURIComponent(deviceRef)}` : '';
-  return getJson(`/api/apps${query}`);
+/** `device` (an iOS viewer's iPad or iPhone) only words ios_state's messages. */
+export function listApps(deviceRef: string | null, device: ViewerDevice | null = null): Promise<AppOut[]> {
+  const params = new URLSearchParams();
+  if (deviceRef) params.set('device_ref', deviceRef);
+  if (device) params.set('device', device.toLowerCase());
+  const query = params.toString();
+  return getJson(`/api/apps${query ? `?${query}` : ''}`);
 }
 
 export function getApp(id: string): Promise<AppDetail> {
@@ -169,15 +174,19 @@ export function disableDevice(deviceId: string): Promise<DeviceOut> {
   return postJson(`/api/devices/${encodeURIComponent(deviceId)}/disable`, {});
 }
 
-export function installApp(appId: string, opts: { versionId?: string; deviceRef?: string | null }): Promise<InstallResult> {
+export function installApp(appId: string, opts: {
+  versionId?: string; deviceRef?: string | null; device?: ViewerDevice | null;
+}): Promise<InstallResult> {
   const body: Record<string, string> = {};
   if (opts.versionId) body.version_id = opts.versionId;
   if (opts.deviceRef) body.device_ref = opts.deviceRef;
+  if (opts.device) body.device = opts.device.toLowerCase();
   return postJson(`/api/apps/${encodeURIComponent(appId)}/install`, body);
 }
 
-export function enrollIphone(deviceName: string): Promise<{ url: string }> {
-  return postJson('/api/enroll', { device_name: deviceName });
+/** The add-this-device profile link; `device` words the profile. */
+export function enrollDevice(deviceName: string, device: ViewerDevice): Promise<{ url: string }> {
+  return postJson('/api/enroll', { device_name: deviceName, device: device.toLowerCase() });
 }
 
 export function makeCurrent(versionId: string): Promise<VersionOut> {

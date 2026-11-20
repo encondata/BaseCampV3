@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../lib/platform', () => ({ viewerPlatform: () => 'desktop' }));
+vi.mock('../lib/platform', () => ({ viewerPlatform: () => 'desktop', viewerDevice: () => 'iPhone' }));
 vi.mock('../lib/goTo', () => ({ goTo: vi.fn() }));
 vi.mock('@portal/lib/qr', () => ({ qrDataUrl: () => 'data:image/png;qr' }));
 vi.mock('@portal/lib/api', async (importOriginal) => ({

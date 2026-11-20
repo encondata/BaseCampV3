@@ -18,7 +18,7 @@ import {
 import { dayTime } from '../lib/dates';
 import { readDeviceRef } from '../lib/deviceRef';
 import { goTo } from '../lib/goTo';
-import { viewerPlatform } from '../lib/platform';
+import { viewerDevice, viewerPlatform } from '../lib/platform';
 
 const COLUMNS: DataTableColumn[] = [
   { key: 'version', label: 'Version', mono: true },
@@ -60,10 +60,11 @@ export default function AppDetailPage() {
     setError(null);
     try {
       const result = await installApp(app.id, {
-        versionId: version.id, deviceRef: app.platform === 'ios' ? readDeviceRef() : null,
+        versionId: version.id,
+        ...(app.platform === 'ios' ? { deviceRef: readDeviceRef(), device: viewerDevice() } : {}),
       });
       if ('url' in result) goTo(result.url);
-      else setNotice(result.message);   // iOS: re-signing this version for the iPhone
+      else setNotice(result.message);   // iOS: re-signing this version for the device
     } catch (err) {
       setError(errorText(err));
     }

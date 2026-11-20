@@ -14,3 +14,16 @@ export function viewerPlatform(nav: NavigatorLike = navigator): ViewerPlatform {
   if (/Macintosh/.test(ua) && (nav.maxTouchPoints ?? 0) > 1) return 'ios';
   return 'desktop';
 }
+
+export type ViewerDevice = 'iPad' | 'iPhone';
+
+/** What to call an iOS viewer's device: an iPad (its own user agent, or the
+ *  Mac one iPadOS sends with multi-touch), else an iPhone (an iPod touch
+ *  included). Only meaningful when viewerPlatform() is 'ios'. */
+export function viewerDevice(nav: NavigatorLike = navigator): ViewerDevice {
+  const ua = nav.userAgent;
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/iPhone|iPod/.test(ua)) return 'iPhone';
+  if (/Macintosh/.test(ua) && (nav.maxTouchPoints ?? 0) > 1) return 'iPad';
+  return 'iPhone';
+}
