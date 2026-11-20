@@ -67,7 +67,8 @@ async def test_unlock_wrong_and_right(client):
     assert r.status_code == 403 and code(r) == "wrong_password"
     r = await client.post("/edge/environment/unlock", json={})
     assert r.status_code == 403 and code(r) == "wrong_password"
-    r = await client.post("/edge/environment/unlock", content=b"[1]")
+    r = await client.post("/edge/environment/unlock", content=b"[1]",
+                          headers={"content-type": "application/json"})
     assert r.status_code == 422 and code(r) == "bad_request"
     r = await client.post("/edge/environment/unlock", json={"password": "cumulus"})
     assert r.status_code == 204 and r.content == b""
@@ -369,3 +370,66 @@ async def test_a_call_pinned_to_the_old_server_never_reaches_the_new_one(app, cl
         await up.request("GET", "/system/status", generation=old_gen)
     assert not new.called
     assert (await up.request("GET", "/system/status")).status_code == 200
+
+
+# ── work queued while the switch waits on the old server ──
+
+async def test_work_queued_during_the_sign_out_is_not_wiped(app, client, cloud):
+    store = app.state.store
+    headers = signed_in(app)
+
+    def queue_a_scan(request):  # a LAN browser's scan lands mid round-trip
+        outbox.enqueue_scans(store, "p-2", "Sam", [{"client_scan_id": "late"}])
+        return httpx.Response(204)
+
+    cloud.post("/auth/logout").mock(side_effect=queue_a_scan)
+    r = await switch(client, headers)
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "outbox_not_empty", "pending": 1}
+    assert count(app, "outbox") == 1
+    assert app.state.environment.kind == "custom"  # still the installer's server
+    assert not (app.state.settings.data_dir / "environment.json").exists()
+    assert str(app.state.upstream.client.base_url) == "http://cloud.test"
+
+
+async def test_discard_covers_only_the_work_it_was_approved_for(app, client, cloud):
+    store = app.state.store
+    outbox.enqueue_scans(store, "p-1", "Jane", [{"client_scan_id": "s1"}])
+    headers = signed_in(app)
+    me(cloud, 60)
+
+    def queue_a_scan(request):
+        outbox.enqueue_scans(store, "p-2", "Sam", [{"client_scan_id": "late"}])
+        return httpx.Response(204)
+
+    cloud.post("/auth/logout").mock(side_effect=queue_a_scan)
+    r = await switch(client, headers, discard=True)
+    assert r.status_code == 409 and r.json()["detail"]["pending"] == 2
+    assert count(app, "outbox") == 2
+
+
+# ── cross-origin requests ──
+
+@pytest.mark.parametrize("path", ["/edge/environment/unlock", "/edge/environment"])
+async def test_only_a_same_origin_json_request_is_taken(app, client, path):
+    body = json.dumps({"password": "cumulus", "target": {"id": "uat"}})
+    r = await client.post(path, content=body, headers={"content-type": "text/plain"})
+    assert r.status_code == 415 and code(r) == "json_required"
+    r = await client.post(path, content=body)  # no content type at all
+    assert r.status_code == 415 and code(r) == "json_required"
+    json_type = {"content-type": "application/json"}
+    for bad in ({"origin": "http://evil.test"}, {"origin": "null"},
+                {"origin": "http://edge.test:8443"}, {"sec-fetch-site": "cross-site"},
+                {"sec-fetch-site": "same-site"},
+                {"origin": "http://edge.test", "sec-fetch-site": "cross-site"}):
+        r = await client.post(path, content=body, headers={**json_type, **bad})
+        assert r.status_code == 403 and code(r) == "cross_origin", bad
+    assert not (app.state.settings.data_dir / "environment.json").exists()
+
+    ok = 204 if path.endswith("unlock") else 200
+    for good in ({"origin": "http://edge.test", "sec-fetch-site": "same-origin"},
+                 {"origin": "https://EDGE.test"},  # a TLS proxy in front: same host
+                 {"sec-fetch-site": "none"},
+                 {"content-type": "application/json; charset=utf-8"}):
+        r = await client.post(path, content=body, headers={**json_type, **good})
+        assert r.status_code == ok, (good, r.text)

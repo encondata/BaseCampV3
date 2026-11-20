@@ -30,6 +30,19 @@ cloud client is re-pointed; and the refresh cookie is deleted. The reader's
 LAN pairing, the identity and the registered flag stay: no table holds an
 id the old server issued beyond what Wipe and this clear.
 
+Both routes take only a same-origin JSON request: a body that isn't
+`application/json` is 415 `json_required` (a plain-text or form POST from
+another web page needs no CORS preflight, a JSON one does and the edge grants
+none), and an `Origin` other than the edge's own host, or a `Sec-Fetch-Site`
+other than `same-origin`/`none`, is 403 `cross_origin`. A request with
+neither header (curl, a script on the laptop) is allowed. The kiosk web app
+is served by the edge, so its calls are same-origin.
+
+Work that appears while the switch waits on the old server (the access
+check, the sign-out) is never wiped unseen: the unsent count is taken again
+after the last await, and more than was approved for discard (none, without
+`discard`) is 409 `outbox_not_empty` with the new count, nothing wiped.
+
 Work under way meanwhile (a sync, an outbox drain, an upload) can't bring
 the old server's data back: its answers arrive after the re-point as
 ServerChanged and are dropped (edge/upstream.py). The wipe, the save and
@@ -40,6 +53,7 @@ import asyncio
 import hmac
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -72,6 +86,29 @@ def _lock(st) -> asyncio.Lock:
     if found is None:
         found = st.environment_lock = asyncio.Lock()
     return found
+
+
+def _same_origin_json(request: Request) -> None:
+    """Refuse what a cross-origin web page could send. The Origin is matched
+    on host and port only (the Host header, as the browser sent it): a TLS
+    proxy in front of the edge changes the scheme the edge sees, never the
+    host the browser named."""
+    kind = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if kind != "application/json":
+        raise err(415, "json_required")
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site.strip().lower() not in ("same-origin", "none"):
+        raise err(403, "cross_origin")
+    origin = request.headers.get("origin")
+    if origin is None:
+        return
+    try:
+        parts = urlsplit(origin.strip())
+    except ValueError:
+        raise err(403, "cross_origin") from None
+    host = request.headers.get("host", "").strip().lower()
+    if parts.scheme not in ("http", "https") or not host or parts.netloc.lower() != host:
+        raise err(403, "cross_origin")
 
 
 def _password_ok(body: dict) -> bool:
@@ -150,6 +187,7 @@ def _clear_server_ties(store) -> None:
 
 @router.post("/environment/unlock", status_code=204)
 async def unlock(request: Request) -> Response:
+    _same_origin_json(request)
     body = await json_object(request, max_bytes=MAX_BODY)
     if not _password_ok(body):
         raise err(403, "wrong_password")
@@ -159,6 +197,7 @@ async def unlock(request: Request) -> Response:
 @router.post("/environment")
 async def switch(request: Request) -> JSONResponse:
     st = request.app.state
+    _same_origin_json(request)
     body = await json_object(request, max_bytes=MAX_BODY)
     if not _password_ok(body):
         raise err(403, "wrong_password")
@@ -182,6 +221,9 @@ async def switch(request: Request) -> JSONResponse:
 
         await _sign_out(st, session)
         # from here to the client swap in repoint: no await
+        unsent = unsent_count(st)  # work queued while we waited on the old server
+        if unsent > (pending if discard else 0):
+            raise err(409, "outbox_not_empty", pending=unsent)
         wipe_move_data(st)
         _clear_server_ties(st.store)
         save_current(st.settings.data_dir, target)
