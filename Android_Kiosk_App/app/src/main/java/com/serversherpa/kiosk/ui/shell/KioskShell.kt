@@ -56,6 +56,7 @@ import com.serversherpa.kiosk.nettest.NetTestChip // INTERNET-TEST
 import com.serversherpa.kiosk.nettest.netTestFootValue // INTERNET-TEST
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.MiniButton
+import com.serversherpa.kiosk.ui.screens.settings.EnvironmentBadge
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
@@ -120,6 +121,8 @@ fun KioskShell(nav: NavHostController, scroll: Boolean = true, content: @Composa
                         color = c.snow, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
+                    // Off Prod, the environment's name (nothing on Prod).
+                    EnvironmentBadge(compact = true)
                 }
                 // The kiosk's own name, then who is on it. The person gives way first,
                 // so the kiosk's name is never the thing that gets clipped.

@@ -69,10 +69,15 @@ fun testContainer(
         biometricKeysOverride = biometricKeys,
         fcmTokensOverride = fcmTokens,
         updatesOverride = updates,
+        environmentListUrl = TEST_ENVIRONMENT_LIST_URL,
     )
     runBlocking { c.environments.useApi("http://127.0.0.1:1") }
     return c
 }
+
+/** Where a test container downloads the environment list from: nothing answers there, so the
+ *  chooser gets the saved or built-in list and no test reaches the status site. */
+const val TEST_ENVIRONMENT_LIST_URL = "http://127.0.0.1:1/environments.json"
 
 /** Where a test container's portal points: nothing answers there. */
 const val TEST_PORTAL_URL = "http://127.0.0.1:1"

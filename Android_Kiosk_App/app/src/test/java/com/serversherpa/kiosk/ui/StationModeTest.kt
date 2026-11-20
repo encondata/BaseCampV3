@@ -15,8 +15,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
-import com.serversherpa.kiosk.TEST_PORTAL_URL
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.environment.Environments
 import com.serversherpa.kiosk.core.model.KioskPersonRow
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.setup.SetupState
@@ -81,6 +81,17 @@ class StationModeTest {
         }
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskApp() } }
         return Station(c, api, st)
+    }
+
+    private fun waitForTag(tag: String) =
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+
+    /** Welcome → gear → sign-in → gear → Settings › This Kiosk. */
+    private fun openSettings() {
+        compose.onAllNodesWithContentDescription("Settings").onFirst().performClick()
+        waitForText("Back to the time clock")
+        compose.onNodeWithContentDescription("Kiosk settings").performClick()
+        waitForTag("env-change")
     }
 
     private fun waitForText(text: String, substring: Boolean = false) =
@@ -195,21 +206,26 @@ class StationModeTest {
 
     // ---- the key stays with the server that issued it ----
 
-    /** Welcome → gear → sign-in → gear → Settings › This Kiosk, signed out: saving another API
-     *  URL drops the key at once, and Welcome then waits for a new one. */
-    @Test fun aSignedOutUrlChangeClearsTheKey() {
+    /** Welcome → gear → sign-in → gear → Settings › This Kiosk, signed out: a switch to another
+     *  environment drops the key and the station setup, and the kiosk lands on sign-in. */
+    @Test fun aSignedOutSwitchClearsTheKeyAndLandsOnSignIn() {
         val s = station()
         waitForText("Welcome!")
         compose.waitUntilIdlingMain { "people" in s.station.calls }
-        compose.onAllNodesWithContentDescription("Settings").onFirst().performClick()
-        waitForText("Back to the time clock")
-        compose.onNodeWithContentDescription("Kiosk settings").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithTag("api-url").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("api-url").performTextReplacement("https://evil.example.com")
-        compose.onNodeWithText("Save URLs").performClick()
-        compose.waitUntilIdlingMain { runBlocking { s.c.config.apiUrlNow() } == "https://evil.example.com" }
-        compose.waitUntilIdlingMain { s.c.station.hasKey.value == false }
+        openSettings()
+        compose.onNodeWithTag("env-change").performClick()
+        waitForTag("env-password")
+        compose.onNodeWithTag("env-password").performTextReplacement(Environments.PASSWORD)
+        compose.onNodeWithTag("env-continue").performClick()
+        waitForTag("env-row-uat")
+        compose.onNodeWithTag("env-row-uat").performClick()
+        waitForTag("env-confirm")
+        compose.onNodeWithTag("env-confirm").performClick()
+        compose.waitUntilIdlingMain { runBlocking { s.c.config.apiUrlNow() } == "https://api.uat.serversherpa.com" }
+        waitForText("Sign in to start scanning.")
+        compose.onNodeWithText("Back to the time clock").assertDoesNotExist()   // no longer a station
         assertNull(s.c.stationKeys.get(ORIGIN))
+        assertNull(runBlocking { s.c.prefs.setupSelection.first() })
     }
 
     /** A key stored for one API with the URL since changed (any way at all): no station request
@@ -222,48 +238,40 @@ class StationModeTest {
         assertNull(s.c.stationKeys.get(ORIGIN))
     }
 
-    @Test fun savingTheSameOriginKeepsTheKey() {
-        val s = station()
-        waitForText("Welcome!")
-        runBlocking { s.c.saveCustom("http://127.0.0.1:1/", TEST_PORTAL_URL) }
-        assertEquals("k1", s.c.stationKeys.get(ORIGIN))
-        runBlocking { s.c.saveCustom("http://127.0.0.1:1/v2", TEST_PORTAL_URL) }       // a path on the same origin
-        assertEquals("k1", s.c.stationKeys.get(ORIGIN))
-        runBlocking { s.c.saveCustom("http://127.0.0.1:2", TEST_PORTAL_URL) }          // another port is another server
-        assertNull(s.c.stationKeys.get(ORIGIN))
-    }
-
     @Test fun settingsSignedOutReturnsToWelcomeAfterIdle() {
         station()
         waitForText("Welcome!")
         compose.onAllNodesWithContentDescription("Settings").onFirst().performClick()
         waitForText("Back to the time clock")
         compose.onNodeWithContentDescription("Kiosk settings").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithTag("api-url").fetchSemanticsNodes().isNotEmpty() }
+        waitForTag("env-change")
         compose.mainClock.advanceTimeBy(30_000)
-        compose.onNodeWithTag("api-url").assertIsDisplayed()               // not yet
+        compose.onNodeWithTag("env-change").assertIsDisplayed()            // not yet
         compose.mainClock.advanceTimeBy(31_000)
         waitForText("Welcome!")
-        compose.onNodeWithTag("api-url").assertDoesNotExist()
+        compose.onNodeWithTag("env-change").assertDoesNotExist()
     }
 
-    /** Soft-keyboard typing sends no touch: the fields count their own changes as activity. */
+    /** The environment chooser is its own window, so the page sees none of its touches: typing
+     *  in it, and tapping it, count as activity themselves. Typing the kiosk name does too. */
     @Test fun typingInSettingsSignedOutKeepsItOpen() {
         station()
         waitForText("Welcome!")
-        compose.onAllNodesWithContentDescription("Settings").onFirst().performClick()
-        waitForText("Back to the time clock")
-        compose.onNodeWithContentDescription("Kiosk settings").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithTag("api-url").fetchSemanticsNodes().isNotEmpty() }
-        compose.mainClock.advanceTimeBy(40_000)
-        compose.onNodeWithTag("api-url").performTextReplacement("http://127.0.0.1:")
+        openSettings()
         compose.mainClock.advanceTimeBy(40_000)
         compose.onNodeWithTag("kiosk-name").performTextReplacement("Dock 4 clock")
         compose.mainClock.advanceTimeBy(40_000)
-        compose.onNodeWithTag("api-url").assertIsDisplayed()               // 120 s in, still typing
+        compose.onNodeWithTag("env-change").performClick()
+        waitForTag("env-password")
+        compose.mainClock.advanceTimeBy(40_000)
+        compose.onNodeWithTag("env-password").performTextReplacement("cum")
+        compose.mainClock.advanceTimeBy(40_000)
+        compose.onNodeWithTag("env-password").performClick()                 // a tap inside the chooser
+        compose.mainClock.advanceTimeBy(40_000)
+        compose.onNodeWithTag("env-password").assertIsDisplayed()          // 200 s in, still in use
         compose.mainClock.advanceTimeBy(21_000)
         waitForText("Welcome!")
-        compose.onNodeWithTag("api-url").assertDoesNotExist()
+        compose.onNodeWithTag("env-password").assertDoesNotExist()
     }
 
     @Test fun signInSignedOutReturnsToWelcomeAfterIdle() {

@@ -24,7 +24,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class EnvironmentWiringTest {
     /** With nothing saved, the kiosk connects to the build's default environment (Dev in a
-     *  debug build), and the Custom save keeps its URLs. */
+     *  debug build), and a saved Custom environment keeps its URLs. */
     @Test fun nothingSavedMeansTheBuildDefault() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -37,7 +37,7 @@ class EnvironmentWiringTest {
             assertEquals("https://api.dev.serversherpa.com", c.config.apiUrlNow())
             assertEquals("https://portal.dev.serversherpa.com", c.config.portalUrlNow())
 
-            c.saveCustom("http://10.10.48.103:8000", "http://10.10.48.103:5173")
+            c.environments.save(SavedEnvironment.Custom("http://10.10.48.103:8000", "http://10.10.48.103:5173"))
             assertEquals(SavedEnvironment.Custom("http://10.10.48.103:8000", "http://10.10.48.103:5173"), c.environments.saved.first())
             assertEquals("http://10.10.48.103:8000", c.config.apiUrlNow())
         } finally {

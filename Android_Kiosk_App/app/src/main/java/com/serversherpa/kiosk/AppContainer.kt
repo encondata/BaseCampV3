@@ -136,6 +136,8 @@ class AppContainer(
     fcmTokensOverride: FcmTokens? = null,
     /** Tests: the update check (the direct flavor's real one talks to devices.<env>). */
     updatesOverride: AppUpdates? = null,
+    /** Tests: where the environment list is downloaded from (never the status site). */
+    environmentListUrl: String = Environments.STATUS_LIST_URL,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -162,7 +164,7 @@ class AppContainer(
     val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar).dispatcher(kioskDispatcher())
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     /** The environment chooser's list (status site, else the last good copy, else built in). */
-    val environmentList = EnvironmentListFetcher(httpClient, environments)
+    val environmentList = EnvironmentListFetcher(httpClient, environments, environmentListUrl)
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = apiOverride ?: OkHttpKioskApi(httpClient, config, session,
         route = InternetTestRoutes::portal, // INTERNET-TEST
@@ -490,18 +492,6 @@ class AppContainer(
      *  for. Throws ApiError. */
     suspend fun issueStationKey() {
         station.issueAndStore(api, identity.get().serial) { heartbeat.signInNow() }
-    }
-
-    /**
-     * Settings › This Kiosk's typed API and portal URLs (normalized), saved as a Custom
-     * environment, whoever saves them (signed in or not), until the environment picker replaces
-     * those fields. A Time Clock station's key issued by another origin is dropped at once: it
-     * must never reach another server. The station then waits for a new key.
-     */
-    suspend fun saveCustom(apiUrl: String, portalUrl: String) {
-        environments.save(SavedEnvironment.Custom(apiUrl, portalUrl))
-        val origin = KioskConfig.originOf(apiUrl) ?: apiUrl
-        withContext(Dispatchers.IO) { stationKeys.keepOnlyFor(origin) }
     }
 
     /**

@@ -57,12 +57,6 @@ class StationKeyStore(private val secrets: SecretStore) {
         _present.value = false
     }
 
-    /** A new API URL was saved: a key issued by any other origin is cleared now. */
-    @Synchronized
-    fun keepOnlyFor(origin: String) {
-        if (secrets.get(ACCOUNT) != null && secrets.get(ORIGIN_ACCOUNT) != origin) clear()
-    }
-
     companion object {
         const val ACCOUNT = "station_key"
         const val ORIGIN_ACCOUNT = "station_key_origin"

@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -136,7 +137,7 @@ internal fun LoginMountains(modifier: Modifier = Modifier, fadeLeft: Boolean = f
 
 /** The logo mark, the wordmark, the tagline and (kept from the old band) which kiosk this is. */
 @Composable
-internal fun LoginBrand(kioskName: String, modifier: Modifier = Modifier) {
+internal fun LoginBrand(kioskName: String, modifier: Modifier = Modifier, badge: @Composable () -> Unit = {}) {
     // The right 28 dp is left for the settings gear, which LoginContent pins in the corner.
     Box(modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(end = 28.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -154,8 +155,10 @@ internal fun LoginBrand(kioskName: String, modifier: Modifier = Modifier) {
                     "DATACENTER RELOCATION TOOLS", fontFamily = FragmentMono, fontSize = 10.sp, letterSpacing = 2.sp, lineHeight = 14.sp,
                     color = LoginPalette.Slate, modifier = Modifier.padding(top = 6.dp),
                 )
-                if (kioskName.isNotBlank()) {
-                    Text(kioskName, fontFamily = FragmentMono, fontSize = 11.sp, color = LoginPalette.Ink, modifier = Modifier.padding(top = 4.dp))
+                // The kiosk's name, and the non-Prod badge on the same line (no taller on a short phone).
+                Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (kioskName.isNotBlank()) Text(kioskName, fontFamily = FragmentMono, fontSize = 11.sp, color = LoginPalette.Ink)
+                    badge()
                 }
             }
         }

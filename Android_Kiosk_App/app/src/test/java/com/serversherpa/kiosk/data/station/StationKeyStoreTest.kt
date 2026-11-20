@@ -49,14 +49,6 @@ class StationKeyStoreTest {
         assertNull(secrets.get("station_key"))
     }
 
-    @Test fun keepOnlyForClearsAnotherOriginsKeyAndKeepsItsOwn() {
-        store.put("k3y", home)
-        store.keepOnlyFor(home)
-        assertEquals("k3y", store.get(home))
-        store.keepOnlyFor("http://10.0.0.5:8000")
-        assertNull(secrets.get("station_key"))
-    }
-
     /** A store that dies (the app is killed) on its [dieAt]th write. */
     private class Dying(val inner: MemorySecretStore, val dieAt: Int) : com.serversherpa.kiosk.data.api.SecretStore {
         var writes = 0
