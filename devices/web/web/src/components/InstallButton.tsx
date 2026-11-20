@@ -66,7 +66,6 @@ function AddDeviceModal({ device, onClose }: { device: ViewerDevice; onClose: ()
           <li>Open Settings, tap Profile Downloaded, then Install.</li>
           <li>You'll come back here automatically.</li>
         </ol>
-        <p className="full page-hint">iOS shows the profile as Not Signed; that's expected.</p>
         {error && <p className="full pf-error">{error}</p>}
       </form>
     </StandardModal>
