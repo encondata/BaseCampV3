@@ -49,7 +49,7 @@ struct StationModeTests {
 
     @Test func aRelaunchedArmedStationRestsOnWelcome() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens: the restore fails at once
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens: the restore fails at once
         do {
             let first = try container(defaults)
             first.prefs.setupSelection = timeclockSelection()
@@ -178,7 +178,7 @@ struct StationModeTests {
 
     @Test func signingInThroughTheContainerClearsTheGearRequest() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")
         let c = try container(defaults)
         c.prefs.setupSelection = timeclockSelection()
         c.station.requestLogin()
@@ -329,31 +329,6 @@ struct StationModeTests {
         let backend = StationTcBackend(api: api, store: try makeStore(), station: station)
         await #expect(throws: StationTcBackend.notReady) { try await backend.status(personId: "p1") }
         #expect(api.calls.isEmpty)
-    }
-
-    @Test func savingADifferentApiUrlWhileSignedOutClearsTheKey() async throws {
-        let defaults = freshDefaults()
-        let c = try container(defaults)
-        _ = c.config.setApiUrl("https://api.example.com")
-        c.prefs.setupSelection = timeclockSelection()
-        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
-        c.auth.endSession()
-        #expect(await SettingsModel.saveUrls(api: "https://evil.example", portal: c.config.portalUrl, config: c.config,
-                                             session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
-        #expect(!c.station.hasKey)
-        #expect(c.stationKeys.get() == nil)
-        #expect(c.stationKeys.origin() == nil)
-    }
-
-    @Test func savingTheSameApiOriginKeepsTheKey() async throws {
-        let c = try container(freshDefaults())
-        _ = c.config.setApiUrl("https://api.example.com")
-        c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
-        c.auth.endSession()
-        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: c.config,
-                                             session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
-        #expect(c.station.hasKey)
-        #expect(c.station.credentials()?.key == "k3y")
     }
 
     @Test func aMoveSessionThatDropsTheStationsSetupDropsItsKey() async throws {

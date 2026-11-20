@@ -30,6 +30,24 @@ struct RefreshCookieTests {
         #expect(cookie.value(forHost: "api.dev.serversherpa.com") == nil)
     }
 
+    @Test func clearAllForgetsEveryHostsCookieAndNothingElse() {
+        let secrets = MemorySecretStore()
+        let cookie = RefreshCookie(secrets: secrets)
+        cookie.set(host: "api.dev.serversherpa.com", value: "a")
+        cookie.set(host: "api.uat.serversherpa.com", value: "b")
+        cookie.set(host: "10.10.48.103", value: "c")
+        secrets.set("kiosk.serial", "kiosk-ios-1")
+        secrets.set("station.key", "k")
+        cookie.clearAll()
+        #expect(secrets.keys().sorted() == ["kiosk.serial", "station.key"])
+    }
+
+    @Test func aMemorySecretStoreListsItsKeys() {
+        let secrets = MemorySecretStore()
+        secrets.set("a", "1"); secrets.set("b", "2"); secrets.set("a", nil)
+        #expect(secrets.keys() == ["b"])
+    }
+
     @Test func aResponseWithoutTheCookieLeavesTheStoredOne() {
         let cookie = RefreshCookie(secrets: MemorySecretStore())
         cookie.capture(from: response("ss_refresh=abc; Path=/auth"), url: api)

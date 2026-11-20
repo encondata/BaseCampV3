@@ -138,6 +138,9 @@ struct KioskShell<Content: View>: View {
                     regularRow(showChip: true, showTitle: true)
                     regularRow(showChip: false, showTitle: true)
                     regularRow(showChip: false, showTitle: false)
+                    // Off Prod the environment badge takes the room: the wordmark gives way
+                    // (the logo stays) before the bar becomes two rows.
+                    regularRow(showChip: false, showTitle: false, showWordmark: false)
                     compactRows
                 }
             } else if sizeClass == .compact {
@@ -171,9 +174,9 @@ struct KioskShell<Content: View>: View {
         }
     }
 
-    private func regularRow(showChip: Bool, showTitle: Bool) -> some View {
+    private func regularRow(showChip: Bool, showTitle: Bool, showWordmark: Bool = true) -> some View {
         HStack(spacing: 12) {
-            brand(showChip: showChip, showTitle: showTitle)
+            brand(showChip: showChip, showTitle: showTitle, showWordmark: showWordmark)
             backButton
             Spacer(minLength: 8)
             kioskName
@@ -181,13 +184,17 @@ struct KioskShell<Content: View>: View {
         }
     }
 
-    private func brand(showChip: Bool, showTitle: Bool) -> some View {
+    private func brand(showChip: Bool, showTitle: Bool, showWordmark: Bool = true) -> some View {
         HStack(spacing: 8) {
             Image("Logo").resizable().scaledToFit().frame(width: 26, height: 26).accessibilityHidden(true)
-            (Text("Server").foregroundStyle(palette.snow) + Text("Sherpa").foregroundStyle(palette.accent))
-                .font(KioskType.sans(17, .semibold))
-                .lineLimit(1)
-                .fixedSize()
+            if showWordmark {
+                (Text("Server").foregroundStyle(palette.snow) + Text("Sherpa").foregroundStyle(palette.accent))
+                    .font(KioskType.sans(17, .semibold))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            // Not on Prod: which environment this kiosk is on.
+            EnvironmentBadge()
             if showChip { Text(modeChipText(isPad: UIDevice.current.userInterfaceIdiom == .pad))
                 .font(KioskType.mono(10)).tracking(1)
                 .foregroundStyle(palette.snow.opacity(0.7))

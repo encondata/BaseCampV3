@@ -1,29 +1,29 @@
 import Foundation
 import Observation
 
-/// Runtime configuration: the stored URL wins, else the build default.
-/// Computed from prefs on every read, so Observation tracks it and nothing is cached.
+/// Runtime configuration: the saved environment's addresses, else the build's default
+/// environment's (`EnvironmentStore.current`). Computed from prefs on every read, so Observation
+/// tracks it and nothing is cached.
 @MainActor @Observable
 final class KioskConfig {
-    @ObservationIgnored private let prefs: KioskPrefs
-    @ObservationIgnored private let defaultApiUrl: String
-    @ObservationIgnored private let defaultPortalUrl: String
+    @ObservationIgnored private let store: EnvironmentStore
+    @ObservationIgnored let defaultEnvironment: SavedEnvironment
     let kioskVersion: String
 
     init(
-        prefs: KioskPrefs,
-        defaultApiUrl: String = KioskBuildConfig.defaultApiUrl,
-        defaultPortalUrl: String = KioskBuildConfig.defaultPortalUrl,
+        store: EnvironmentStore,
+        defaultEnvironment: SavedEnvironment = KioskBuildConfig.defaultEnvironment,
         kioskVersion: String = KioskBuildConfig.kioskVersion
     ) {
-        self.prefs = prefs
-        self.defaultApiUrl = defaultApiUrl
-        self.defaultPortalUrl = defaultPortalUrl
+        self.store = store
+        self.defaultEnvironment = defaultEnvironment
         self.kioskVersion = kioskVersion
     }
 
-    var apiUrl: String { Self.normalizeUrl(prefs.apiUrl ?? "") ?? defaultApiUrl }
-    var portalUrl: String { Self.normalizeUrl(prefs.portalUrl ?? "") ?? defaultPortalUrl }
+    /// The environment the kiosk connects to.
+    var environment: SavedEnvironment { store.current(defaultEnvironment) }
+    var apiUrl: String { environment.apiUrl }
+    var portalUrl: String { environment.portalUrl }
 
     /// Trimmed, trailing slashes removed; only http(s) origins with a non-empty host are accepted.
     nonisolated static func normalizeUrl(_ raw: String) -> String? {
@@ -36,16 +36,9 @@ final class KioskConfig {
         return v
     }
 
-    /// Stores the normalized URL; false (and nothing stored) when invalid.
-    func setApiUrl(_ raw: String) -> Bool {
-        guard let v = Self.normalizeUrl(raw) else { return false }
-        prefs.apiUrl = v
-        return true
-    }
-
-    func setPortalUrl(_ raw: String) -> Bool {
-        guard let v = Self.normalizeUrl(raw) else { return false }
-        prefs.portalUrl = v
-        return true
+    /// Saves typed URLs as a Custom environment, both normalized; false (and nothing saved) when
+    /// either is invalid.
+    func saveCustom(apiUrl: String, portalUrl: String) -> Bool {
+        store.save(.custom(apiUrl: apiUrl, portalUrl: portalUrl))
     }
 }

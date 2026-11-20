@@ -143,6 +143,35 @@ struct SessionData: Codable, Equatable, Sendable {
     }
 }
 
+/// `GET /auth/me` as an environment switch's gates read it: the signed-in person's roles, top
+/// rank and whether their scope is global, live from the server. Every field must be there (none
+/// has a default): an answer missing one doesn't decode, and so never passes a gate.
+struct MeInfo: Decodable, Equatable, Sendable {
+    var roles: [String]
+    var maxRank: Int
+    var isGlobal: Bool
+
+    init(roles: [String], maxRank: Int, isGlobal: Bool) {
+        self.roles = roles
+        self.maxRank = maxRank
+        self.isGlobal = isGlobal
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case roles, scope
+        case maxRank = "max_rank"
+    }
+
+    private enum ScopeKeys: String, CodingKey { case global }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        roles = try c.decode([String].self, forKey: .roles)
+        maxRank = try c.decode(Int.self, forKey: .maxRank)
+        isGlobal = try c.nestedContainer(keyedBy: ScopeKeys.self, forKey: .scope).decode(Bool.self, forKey: .global)
+    }
+}
+
 struct LoginIn: Codable, Equatable, Sendable {
     var email: String
     var password: String

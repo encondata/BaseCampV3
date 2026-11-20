@@ -15,6 +15,10 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.serversherpa.kiosk.core.environment.Environments
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
+import com.serversherpa.kiosk.core.environment.asSaved
+import com.serversherpa.kiosk.core.environment.portalUrl
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.rfid.SledBarcode
 import com.serversherpa.kiosk.core.rfid.SledInfo
@@ -42,6 +46,9 @@ import com.serversherpa.kiosk.data.update.AppUpdates
 import com.serversherpa.kiosk.data.update.UpdateDeps
 import com.serversherpa.kiosk.data.update.createAppUpdates
 import com.serversherpa.kiosk.data.db.KioskDatabase
+import com.serversherpa.kiosk.data.environment.EnvironmentListFetcher
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
+import com.serversherpa.kiosk.data.environment.EnvironmentSwitcher
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelBuilder
@@ -129,6 +136,8 @@ class AppContainer(
     fcmTokensOverride: FcmTokens? = null,
     /** Tests: the update check (the direct flavor's real one talks to devices.<env>). */
     updatesOverride: AppUpdates? = null,
+    /** Tests: where the environment list is downloaded from (never the status site). */
+    environmentListUrl: String = Environments.STATUS_LIST_URL,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -138,15 +147,24 @@ class AppContainer(
         override fun get(key: String): String? = androidSecrets.get(key)
         override fun put(key: String, value: String) = androidSecrets.put(key, value)
         override fun remove(key: String) = androidSecrets.remove(key)
+        override fun keys(): Set<String> = androidSecrets.keys()
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val prefs = KioskPrefs(dataStore)
     val internetTest = InternetTest(dataStore, scope) // INTERNET-TEST
-    val config = KioskConfig(prefs, BuildConfig.DEFAULT_API_URL, BuildConfig.DEFAULT_PORTAL_URL, BuildConfig.KIOSK_VERSION)
+    /** The saved environment, the last good environment list and the has-been-registered flag. */
+    val environments = EnvironmentStore(prefs)
+    /** Where the kiosk connects until an environment is picked: Dev in debug builds, Prod in release. */
+    val defaultEnvironment: SavedEnvironment = checkNotNull(Environments.byId(BuildConfig.DEFAULT_ENVIRONMENT_ID)) {
+        "DEFAULT_ENVIRONMENT_ID ${BuildConfig.DEFAULT_ENVIRONMENT_ID} is not a built-in environment"
+    }.asSaved()
+    val config = KioskConfig(environments, defaultEnvironment, BuildConfig.KIOSK_VERSION)
     val identity = Identity(prefs)
     val cookieJar = RefreshCookieJar(secretStore)
     val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar).dispatcher(kioskDispatcher())
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    /** The environment chooser's list (status site, else the last good copy, else built in). */
+    val environmentList = EnvironmentListFetcher(httpClient, environments, environmentListUrl)
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = apiOverride ?: OkHttpKioskApi(httpClient, config, session,
         route = InternetTestRoutes::portal, // INTERNET-TEST
@@ -218,7 +236,7 @@ class AppContainer(
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
     val isZebraHost: Boolean = isZebraHost(app)
     val hasCamera: Boolean = hasCamera(app)
-    val heartbeat = Heartbeat(api, identity, config, prefs, deviceInfo = {
+    val heartbeat = Heartbeat(api, identity, config, prefs, environments, deviceInfo = {
         mapOf(
             "manufacturer" to Build.MANUFACTURER, "model" to Build.MODEL,
             "android_version" to Build.VERSION.RELEASE, "sdk_int" to Build.VERSION.SDK_INT.toString(),
@@ -226,6 +244,13 @@ class AppContainer(
         )
     })
     val foreground = MutableStateFlow(false)
+    /** Settings › This Kiosk's environment change: the gates, then everything of the old server cleared. */
+    val environmentSwitcher by lazy {
+        EnvironmentSwitcher(
+            environments, api, authState = { auth.state.value }, outbox, biometric, push = { pushRegistrar }, pushKeys,
+            stationKeys, prefs, cookieJar, heartbeat, logout = { logout() }, resetApp = { resetApp() },
+        )
+    }
 
     /** The in-app update check: real in the direct flavor, [NoAppUpdates] in the Play one. */
     val updates: AppUpdates by lazy {
@@ -316,6 +341,11 @@ class AppContainer(
     }
 
     fun start() {
+        // URLs typed before the environment picker become the saved environment (once). Until it
+        // lands, config already resolves them the same way. Nothing may escape the scope.
+        scope.launch {
+            try { environments.migrateIfNeeded(defaultEnvironment.portalUrl) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
         internetTest.start(auth.state, prefs.devMode, heartbeat.setupCleared) // INTERNET-TEST
         // Two launches: the footer's sync line must not wait on auth's network call.
         scope.launch { identity.get(); auth.restore() }
@@ -462,17 +492,6 @@ class AppContainer(
      *  for. Throws ApiError. */
     suspend fun issueStationKey() {
         station.issueAndStore(api, identity.get().serial) { heartbeat.signInNow() }
-    }
-
-    /**
-     * Settings › This Kiosk's API URL, whoever saves it (signed in or not). A Time Clock
-     * station's key issued by another origin is dropped at once: it must never reach another
-     * server. The station then waits for a new key.
-     */
-    suspend fun saveApiUrl(url: String) {
-        prefs.setApiUrl(url)
-        val origin = KioskConfig.originOf(url) ?: url
-        withContext(Dispatchers.IO) { stationKeys.keepOnlyFor(origin) }
     }
 
     /**

@@ -7,7 +7,7 @@ struct AppContainerTests {
     /// Scans flush only while the app is in front AND someone is signed in.
     @Test func outboxRunsOnlyWhileActiveAndSignedIn() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens: a stray heartbeat fails at once
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens: a stray heartbeat fails at once
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
                              modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking())
         c.onActive()
@@ -23,6 +23,34 @@ struct AppContainerTests {
         c.authChanged()
         #expect(!c.outbox.isRunning)                 // signed out again
         c.onBackground()
+    }
+
+    /// With nothing saved, the kiosk connects to the build's default environment (Dev in tests).
+    @Test func nothingSavedUsesTheBuildDefaultEnvironment() throws {
+        let c = AppContainer(defaults: freshDefaults(), secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking())
+        #expect(c.environments.saved == nil)
+        #expect(c.config.apiUrl == "https://api.dev.serversherpa.com")
+        #expect(c.config.portalUrl == "https://portal.dev.serversherpa.com")
+        #expect(c.environmentList.url == Environments.statusListURL)
+    }
+
+    /// An upgraded kiosk's typed URLs become its saved environment when the app starts, and the
+    /// old keys go (Review Focus 4).
+    @Test func typedUrlsMigrateWhenTheAppStarts() throws {
+        let defaults = freshDefaults()
+        defaults.set("https://api.uat.serversherpa.com", forKey: "ss.kiosk.apiUrl")
+        let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking())
+        #expect(c.environments.saved == .named(id: "uat", name: "UAT", domain: "uat.serversherpa.com"))
+        #expect(c.config.apiUrl == "https://api.uat.serversherpa.com")
+        #expect(defaults.object(forKey: "ss.kiosk.apiUrl") == nil)
+
+        let other = freshDefaults()
+        other.set("http://10.10.48.103:8000", forKey: "ss.kiosk.apiUrl")
+        let d = AppContainer(defaults: other, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking())
+        #expect(d.environments.saved == .custom(apiUrl: "http://10.10.48.103:8000", portalUrl: "https://portal.dev.serversherpa.com"))
     }
 
     /// The builder exists from the start but builds nothing until `launch()` starts it; the
@@ -45,7 +73,7 @@ struct AppContainerTests {
     /// and Reset app delete it and forget the list on screen.
     @Test func theRolodexListGoesOnSignOutSessionEndAndReset() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
                              modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
                              labelEngine: FakeLabelEngine())
@@ -77,7 +105,7 @@ struct AppContainerTests {
     /// the moment the heartbeat applies the clear (Android `setupCleared` → `stationKeys.clear()`).
     @Test func clearSetupDropsTheStationKey() throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = TEST_API_URL
+        KioskPrefs(defaults: defaults).useApi(TEST_API_URL)
         let secrets = MemorySecretStore()
         let c = AppContainer(defaults: defaults, secrets: secrets, modelContainer: try KioskSchema.inMemoryContainer(),
                              backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
@@ -111,7 +139,7 @@ struct AppContainerTests {
     /// underneath the kiosk, and a change of the saved move or site each clear it.
     @Test func thePrintJobsResetOnSignOutSessionEndAndMoveChange() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
                              modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
                              labelEngine: FakeLabelEngine())
@@ -165,7 +193,7 @@ struct AppContainerTests {
     /// `saved` saved before it starts (saving one later is a change the container acts on).
     private func bluetoothContainer(saved: (FakePeripheral) -> SavedPrinter) throws -> (AppContainer, FakeBluetoothClient, FakePeripheral) {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens
         let client = FakeBluetoothClient()
         let p = FakePeripheral(serial: serial)
         client.central.known.append(p)
@@ -277,13 +305,13 @@ struct AppContainerTests {
     /// remembered; unsent scans, the sign-in, the URLs and the preferences stay.
     @Test func resetAppStartsAFreshSetupAndKeepsScansAndTheSignIn() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens
         let engine = FakeLabelEngine()
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
                              modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
                              labelEngine: engine)
         await c.auth.completePair(fakeSession())
-        c.prefs.portalUrl = "https://portal.example"
+        c.environments.save(.custom(apiUrl: "http://127.0.0.1:9", portalUrl: "https://portal.example"))
         c.prefs.devMode = true
         c.prefs.setupState = .complete
         c.prefs.setupSelection = testSelection(initiativeId: "i1")
@@ -335,8 +363,7 @@ struct AppContainerTests {
         // Kept.
         #expect(try await c.store.outboxAll() == outboxBefore)
         guard case .authed = c.auth.state else { Issue.record("signed out by the reset"); return }
-        #expect(c.prefs.apiUrl == "http://127.0.0.1:9")
-        #expect(c.prefs.portalUrl == "https://portal.example")
+        #expect(c.environments.saved == .custom(apiUrl: "http://127.0.0.1:9", portalUrl: "https://portal.example"))
         #expect(c.prefs.devMode)
     }
 
@@ -345,7 +372,7 @@ struct AppContainerTests {
     /// A container with a software key store and nothing listening on the API.
     private func biometricContainer(_ keys: FakeBiometricKeys) throws -> AppContainer {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens
         return AppContainer(defaults: defaults, secrets: MemorySecretStore(),
                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
                             labelEngine: FakeLabelEngine(), biometricKeys: keys)
@@ -417,7 +444,7 @@ struct AppContainerTests {
     /// sign-out forgets it.
     @Test func theUpdateCheckRunsAfterSignInAndForgetsOnSignOut() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://api.localhost:9"   // nothing listens
+        KioskPrefs(defaults: defaults).useApi("http://api.localhost:9")   // nothing listens
         let devices = FakeDevicesApi()
         let installed = InstalledApp(bundleId: "b", versionName: "1.0", build: "1", profile: .adhoc)
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
@@ -437,7 +464,7 @@ struct AppContainerTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(devices.callCount == 1)
 
-        c.prefs.apiUrl = "https://api.example.test"
+        c.prefs.useApi("https://api.example.test")
         #expect(c.updates.devicesHost == "devices.example.test")   // read live
 
         c.auth.endSession()

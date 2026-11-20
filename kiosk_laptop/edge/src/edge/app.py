@@ -19,11 +19,13 @@ from urllib.parse import unquote
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from edge import outbox, static
+from edge import environment_switch, outbox, static
 from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
+from edge.environment_store import load_current
+from edge.environments import ListSource
 from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host, read_host_os
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
@@ -93,6 +95,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
                     await app.state.discovery.aclose()
                     await app.state.printers.aclose()
                     await app.state.upstream.aclose()
+                    await app.state.env_list.aclose()
                 finally:
                     app.state.store.close()
 
@@ -104,7 +107,11 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.identity = load_or_create(settings.data_dir)
     app.state.store = Store(settings.data_dir / "edge.db")
     app.state.keys = load_or_create_keys(settings.data_dir)
-    app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport)
+    # the saved environment wins over the installer's URLs (settings keeps those)
+    app.state.environment = load_current(settings.data_dir, settings)
+    app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport,
+                                  base_url=app.state.environment.api_url)
+    app.state.env_list = ListSource(settings.data_dir, transport=transport)
     app.state.outbox = OutboxWorker(app.state.store, app.state.upstream,
                                     lambda: app.state.identity.serial)
     app.state.outbox_wake = asyncio.Event()
@@ -133,6 +140,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
 
     app.include_router(auth_routes.router)
     app.include_router(edge_routes.router)
+    app.include_router(environment_switch.router)
     app.include_router(kiosk_routes.router)
     app.include_router(rfid_routes.router)
     app.include_router(dock_routes.router)
@@ -147,7 +155,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
         lan = name not in ("localhost", "127.0.0.1", "[::1]")
         body = (
             "window.__KIOSK_CONFIG__ = { apiUrl: window.location.origin, "
-            f"portalUrl: {json.dumps(settings.portal_url)}, "
+            f"portalUrl: {json.dumps(request.app.state.environment.portal_url)}, "
             '"mode": "laptop", '
             f'"lanAccess": {json.dumps(lan)}, '
             f'"hostOs": {json.dumps(read_host_os(settings.data_dir))}, '

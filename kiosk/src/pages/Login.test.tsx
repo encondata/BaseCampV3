@@ -6,11 +6,11 @@
  *  The page renders the SHARED sign-in scene the portal and wiki use;
  *  it is real here (static markup, no effects) so this file also proves
  *  the kiosk can mount a portal React module. PairPanel is mocked. */
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { gsap } from 'gsap';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => ({ login: vi.fn(), loginWithMovePassword: vi.fn(), completePair: vi.fn() }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
@@ -24,7 +24,7 @@ vi.mock('../components/PairPanel', () => ({
     return <div>PAIR PANEL</div>;
   },
 }));
-const api = vi.hoisted(() => ({ getSystemStatus: vi.fn() }));
+const api = vi.hoisted(() => ({ getSystemStatus: vi.fn(), getEdgeEnvironment: vi.fn() }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()),
   ...api,
@@ -62,6 +62,12 @@ beforeEach(() => {
   localStorage.clear();
   seenOnApproved.length = 0;
   api.getSystemStatus.mockResolvedValue({ read_only: false, read_only_message: '', workers_paused: false, banner: null });
+  // a laptop on Prod unless a test says otherwise (no badge)
+  api.getEdgeEnvironment.mockResolvedValue({
+    kind: 'named', id: 'prod', name: 'Prod', domain: 'serversherpa.com',
+    api_url: 'https://api.serversherpa.com', portal_url: 'https://portal.serversherpa.com',
+    is_prod: true, ever_registered: true,
+  });
   auth.login.mockResolvedValue({});
   auth.loginWithMovePassword.mockResolvedValue({});
 });
@@ -313,4 +319,39 @@ it('a blocked address shows the blocked message on the move password form', asyn
   await userEvent.type(screen.getByLabelText('Move password'), 'nope');
   await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
   expect(await screen.findByText('This network is blocked from signing in. Contact your administrator.')).toBeTruthy();
+});
+
+describe('the non-Prod badge', () => {
+  const UAT = {
+    kind: 'named', id: 'uat', name: 'UAT', domain: 'uat.serversherpa.com',
+    api_url: 'https://api.uat.serversherpa.com', portal_url: 'https://portal.uat.serversherpa.com',
+    is_prod: false, ever_registered: true,
+  };
+  const badge = () => document.querySelector('.eyebrow-row .chip');
+  afterEach(() => { delete window.__KIOSK_CONFIG__; });
+
+  it('a laptop off Prod shows its environment as an amber chip beside the eyebrow', async () => {
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+    api.getEdgeEnvironment.mockResolvedValue(UAT);
+    renderLogin();
+    await waitFor(() => expect(badge()?.textContent).toBe('UAT'));
+    expect(badge()?.classList.contains('c-amber')).toBe(true);
+  });
+
+  it('a laptop on Prod shows none', async () => {
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+    api.getEdgeEnvironment.mockResolvedValue({ ...UAT, id: 'prod', name: 'Prod', is_prod: true });
+    renderLogin();
+    await waitFor(() => expect(api.getEdgeEnvironment).toHaveBeenCalled());
+    await act(async () => {});
+    expect(badge()).toBeNull();
+  });
+
+  it('the plain web kiosk shows none and asks nothing', async () => {
+    api.getEdgeEnvironment.mockResolvedValue(UAT);
+    renderLogin();
+    await act(async () => {});
+    expect(badge()).toBeNull();
+    expect(api.getEdgeEnvironment).not.toHaveBeenCalled();
+  });
 });

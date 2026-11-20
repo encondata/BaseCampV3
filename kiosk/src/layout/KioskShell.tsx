@@ -29,6 +29,7 @@ import { startLaptopConfigSync } from '../lib/laptopConfig';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import { isLaptop, platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
+import { environmentBadge, useEdgeEnvironment } from '../lib/environment';
 import { useSyncStatus } from '../lib/sync';
 import { useWebLabelPrinting, useWebLabelSettings } from '../lib/webLabelSettings';
 
@@ -78,6 +79,9 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const webPrinter = useWebLabelSettings();
   const webPrintsLabels = useWebLabelPrinting();
   const laptop = isLaptop();
+  // A laptop off Prod names its environment in the footer (none on Prod
+  // or on the plain web kiosk, whose address already names it).
+  const envBadge = environmentBadge(useEdgeEnvironment());
 
   const onSetup = location.pathname === '/setup' || location.pathname.startsWith('/setup/');
   // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup,
@@ -205,6 +209,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       </header>
       <main className="kiosk-main">{children}</main>
       <footer className="kiosk-foot">
+        {envBadge && <span className="chip c-amber"><span className="dot" />{envBadge}</span>}
         {footItems.map((item, i) => (
           <Fragment key={item.label}>
             {i > 0 && <span className="kiosk-foot-sep" aria-hidden="true">·</span>}

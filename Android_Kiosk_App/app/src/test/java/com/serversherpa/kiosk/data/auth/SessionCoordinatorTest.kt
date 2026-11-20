@@ -1,9 +1,11 @@
 package com.serversherpa.kiosk.data.auth
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.FakeRefresher
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
@@ -31,9 +33,10 @@ class SessionCoordinatorTest {
         val api = FakeKioskApi()
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "c.preferences_pb") })
         val identity = Identity(prefs)
-        val config = KioskConfig(prefs, "https://api", "https://portal", "0.1.0")
+        val environments = EnvironmentStore(prefs)
+        val config = KioskConfig(environments, SavedEnvironment.Named("dev", "Dev", "dev.serversherpa.com"), "0.1.0")
         val auth = KioskAuth(api, FakeRefresher(), identity, backgroundScope)
-        val hb = Heartbeat(api, identity, config, prefs, { emptyMap() }, 60_000)
+        val hb = Heartbeat(api, identity, config, prefs, environments, { emptyMap() }, 60_000)
         val foreground = MutableStateFlow(true)
         SessionCoordinator(auth, hb, foreground, backgroundScope).start()
         runCurrent()

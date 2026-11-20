@@ -151,6 +151,9 @@ class Sync(
         var moveChanged = false
         try {
             db.withTransaction {
+                // Checked again inside: a clear that started meanwhile runs its own transaction
+                // either before this one (this run then stops here) or after (and empties it).
+                if (myRun != currentRun) return@withTransaction
                 moveChanged = readMeta(db)?.initiativeId != initiativeId
                 db.assets().deleteAll(); db.assets().insertAll(fetched.assets.rows)
                 db.people().deleteAll(); db.people().insertAll(fetched.people.people.map { it.toEntity() })
@@ -242,7 +245,11 @@ class Sync(
                 LabelFontEntity(f.id, f.name, f.size, false, fileName)
             }
             if (myRun != currentRun) return null
-            db.withTransaction { db.labelFonts().deleteAll(); db.labelFonts().insertAll(rows) }
+            db.withTransaction {
+                if (myRun != currentRun) return@withTransaction
+                db.labelFonts().deleteAll(); db.labelFonts().insertAll(rows)
+            }
+            if (myRun != currentRun) return null
             fontsDir?.let { dir -> deleteUnused(dir, rows.mapNotNull { it.fileName }.toSet()) }
             setPart(myRun, "fonts", PartState.DONE, rows.size)
             null
@@ -264,8 +271,10 @@ class Sync(
         }
     }
 
-    /** "Clear local data": the move tables, label data and the meta rows — never the outbox. */
+    /** "Clear local data": the move tables, label data and the meta rows — never the outbox. A sync
+     *  still waiting on the server (the old one, in an environment switch) stores nothing after. */
     suspend fun clearLocalData() {
+        currentRun++
         db.withTransaction {
             db.assets().deleteAll(); db.people().deleteAll(); db.containers().deleteAll(); db.trucks().deleteAll()
             db.labelTemplates().deleteAll(); db.labelFonts().deleteAll(); db.generatedLabels().deleteAll()

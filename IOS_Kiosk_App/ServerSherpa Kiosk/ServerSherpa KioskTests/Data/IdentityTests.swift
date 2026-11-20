@@ -13,6 +13,8 @@ final class SilentFailSecretStore: SecretStore, @unchecked Sendable {
     func set(_ key: String, _ value: String?) {
         // Silently do nothing — writes fail
     }
+
+    func keys() -> [String] { Array(map.keys) }
 }
 
 @MainActor

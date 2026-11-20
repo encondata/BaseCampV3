@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,7 +11,16 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
-const api = vi.hoisted(() => ({ renameLaptopKiosk: vi.fn() }));
+const UAT = vi.hoisted(() => ({
+  kind: 'named' as const, id: 'uat', name: 'UAT', domain: 'uat.serversherpa.com',
+  api_url: 'https://api.uat.serversherpa.com', portal_url: 'https://portal.uat.serversherpa.com',
+  is_prod: false, ever_registered: true,
+}));
+const api = vi.hoisted(() => ({
+  renameLaptopKiosk: vi.fn(),
+  getEdgeEnvironment: vi.fn(() => Promise.resolve(UAT)),
+  getEdgeEnvironments: vi.fn(() => Promise.resolve({ source: 'built_in', environments: [] })),
+}));
 vi.mock('../lib/api', async (orig) => ({ ...(await orig<object>()), ...api }));
 
 import { ApiError } from '../lib/api';
@@ -60,6 +69,15 @@ it('web mode shows no station type', () => {
   expect(screen.queryByLabelText('Station type')).toBeNull();
 });
 
+it('web mode keeps the read-only API and Portal URLs, with no environment picker', () => {
+  render(<ThisKioskPanel />);
+  expect((screen.getByLabelText('API URL') as HTMLInputElement).readOnly).toBe(true);
+  expect((screen.getByLabelText('Portal URL') as HTMLInputElement).readOnly).toBe(true);
+  expect(screen.queryByLabelText('Environment')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Change…' })).toBeNull();
+  expect(api.getEdgeEnvironment).not.toHaveBeenCalled();
+});
+
 it('renders no Back button — the Settings tabs replace it', () => {
   render(<ThisKioskPanel />);
   expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
@@ -69,7 +87,39 @@ describe('laptop mode', () => {
   beforeEach(() => {
     window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
   });
-  afterEach(() => { delete window.__KIOSK_CONFIG__; auth.isAdmin = false; });
+  afterEach(() => { delete window.__KIOSK_CONFIG__; auth.isAdmin = false; auth.status = 'authed'; });
+
+  it('shows the environment and its server in place of the URLs, with Change…', async () => {
+    render(<ThisKioskPanel />);
+    const env = screen.getByLabelText('Environment') as HTMLInputElement;
+    await waitFor(() => expect(env.value).toBe('UAT'));
+    expect(env.readOnly).toBe(true);
+    expect((screen.getByLabelText('Server') as HTMLInputElement).value).toBe('api.uat.serversherpa.com');
+    expect(screen.queryByLabelText('API URL')).toBeNull();
+    expect(screen.queryByLabelText('Portal URL')).toBeNull();
+  });
+
+  it('Change… opens the chooser, signed out too', async () => {
+    auth.status = 'anon';
+    render(<ThisKioskPanel />);
+    const change = screen.getByRole('button', { name: 'Change…' });
+    await waitFor(() => expect((change as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(change);
+    expect(screen.getByRole('dialog', { name: 'Change environment' })).toBeTruthy();
+    expect(screen.getByLabelText('Environment password')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog', { name: 'Change environment' })).toBeNull();
+  });
+
+  it('a custom environment reads Custom, with its whole API URL', async () => {
+    api.getEdgeEnvironment.mockResolvedValueOnce({
+      ...UAT, kind: 'custom', id: null, name: 'Custom', domain: null,
+      api_url: 'http://10.10.48.103:8000', portal_url: 'http://10.10.48.103:5173',
+    } as never);
+    render(<ThisKioskPanel />);
+    await waitFor(() => expect((screen.getByLabelText('Environment') as HTMLInputElement).value).toBe('Custom'));
+    expect((screen.getByLabelText('Server') as HTMLInputElement).value).toBe('http://10.10.48.103:8000');
+  });
 
   it('a non-admin sees a read-only name and a hint', () => {
     render(<ThisKioskPanel />);

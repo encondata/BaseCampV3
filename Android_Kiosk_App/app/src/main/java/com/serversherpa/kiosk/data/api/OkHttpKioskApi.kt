@@ -30,6 +30,7 @@ import com.serversherpa.kiosk.core.model.KioskStationKeyOut
 import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
 import com.serversherpa.kiosk.core.model.KioskTrucksSync
 import com.serversherpa.kiosk.core.model.LoginIn
+import com.serversherpa.kiosk.core.model.MeInfo
 import com.serversherpa.kiosk.core.model.MoveLoginIn
 import com.serversherpa.kiosk.core.model.PairCreateIn
 import com.serversherpa.kiosk.core.model.PairCreated
@@ -217,6 +218,8 @@ class OkHttpKioskApi(
         try { plain { url(apiUrl("/auth/logout")).post(emptyBody) }.close() } catch (e: ApiError) { /* offline logout still clears */ }
         finally { session.clear() }
     }
+
+    override suspend fun me(): MeInfo = parse(authed { url(apiUrl("/auth/me")).get() }, MeInfo.serializer())
 
     override suspend fun systemStatus(): SystemStatus =
         parse(plain { url(apiUrl("/system/status")).get() }, SystemStatus.serializer())

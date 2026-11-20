@@ -8,9 +8,17 @@ Any other HTTP answer — 401, 500, anything — is the cloud's answer and is
 returned to the caller. Each person who signed in online has their own
 cloud session here (encrypted); the edge always acts on the cloud AS that
 person, so attribution is never forged. A per-person lock keeps two
-concurrent requests from both spending one rotating refresh token."""
+concurrent requests from both spending one rotating refresh token.
+
+An environment switch re-points the edge at another server while it runs
+(`repoint`). Every call made before it belongs to the old server: an answer
+that lands after the switch is dropped (`ServerChanged`, a CloudOffline, so
+callers take their offline path and write nothing from it), and a call
+under way (a refresh, a retry after a 401) never carries its old-server
+token on to the new server."""
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import DefaultCookiePolicy
 
@@ -27,6 +35,10 @@ UNHEALTHY = {502, 503, 504}
 
 class CloudOffline(Exception):
     pass
+
+
+class ServerChanged(CloudOffline):
+    """The laptop switched servers while this call was under way."""
 
 
 def refresh_cookie_from(resp: httpx.Response) -> str | None:
@@ -46,28 +58,65 @@ def _detail_code(resp: httpx.Response) -> str | None:
 
 
 class Upstream:
-    def __init__(self, settings: Settings, store: Store, keys: Keys, *, transport=None) -> None:
+    def __init__(self, settings: Settings, store: Store, keys: Keys, *, transport=None,
+                 base_url: str | None = None) -> None:
+        """`base_url` is the server the laptop's saved environment names
+        (environment_store); without one, the installer's URL."""
         self.store = store
         self.keys = keys
-        self.client = httpx.AsyncClient(base_url=settings.cloud_api_url,
-                                        timeout=httpx.Timeout(15.0, connect=5.0),
-                                        transport=transport)
-        # Cloud cookies belong to one person: make the jar structurally unable
-        # to store or return any. Callers pass explicit Cookie headers.
-        self.client.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+        self._transport = transport
+        self.client = self._client(base_url or settings.cloud_api_url)
+        self.generation = 0  # counts re-points: which server a call was made for
         self.online = False
         self.last_contact: str | None = None
         self._locks: dict[str, asyncio.Lock] = {}
 
+    def _client(self, base_url: str) -> httpx.AsyncClient:
+        client = httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(15.0, connect=5.0),
+                                   transport=self._transport)
+        # Cloud cookies belong to one person: make the jar structurally unable
+        # to store or return any. Callers pass explicit Cookie headers.
+        client.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+        return client
+
     async def aclose(self) -> None:
         await self.client.aclose()
 
-    async def request(self, method: str, path: str, **kw) -> httpx.Response:
+    async def repoint(self, base_url: str) -> None:
+        """Talk to another server from now on. The client is swapped in place:
+        the outbox worker and the syncer hold this same Upstream. Nothing is
+        known about the new server yet, so the edge counts as offline until
+        it answers. The swap happens before the first await, so a caller that
+        wipes and then re-points leaves no gap where an old-server answer
+        could still be taken."""
+        old, self.client = self.client, self._client(base_url)
+        self.generation += 1
+        self.online = False
+        self.last_contact = None
+        await old.aclose()
+
+    async def request(self, method: str, path: str, *, generation: int | None = None,
+                      **kw) -> httpx.Response:
+        """One call to the current server. `generation` pins a multi-step call
+        (as_person) to the server it started on: once that server is gone,
+        nothing more is sent. An answer from a server switched away from
+        meanwhile is ServerChanged, whatever it was."""
+        gen = self.generation if generation is None else generation
+        if gen != self.generation:
+            raise ServerChanged("the server changed")
         try:
             resp = await self.client.request(method, path, **kw)
-        except httpx.TransportError as exc:
-            self.online = False
-            raise CloudOffline(str(exc)) from exc
+        except Exception as exc:
+            if gen != self.generation:  # the old client was closed under it
+                raise ServerChanged("the server changed") from exc
+            if isinstance(exc, httpx.TransportError):
+                self.online = False
+                raise CloudOffline(str(exc)) from exc
+            raise
+        if gen != self.generation:
+            with contextlib.suppress(Exception):  # its client may be closed already
+                await resp.aclose()
+            raise ServerChanged("the server changed")
         if resp.status_code in UNHEALTHY:
             await resp.aclose()
             self.online = False
@@ -147,7 +196,7 @@ class Upstream:
             return self._decrypt(person_id, row["access_enc"])
         return None
 
-    async def _refresh(self, person_id: str, stale: str | None) -> str | None:
+    async def _refresh(self, person_id: str, stale: str | None, gen: int) -> str | None:
         lock = self._locks.setdefault(person_id, asyncio.Lock())
         async with lock:
             current = self._fresh_access(person_id)
@@ -156,7 +205,7 @@ class Upstream:
             refresh_token = self._refresh_token(person_id)
             if refresh_token is None:
                 return None
-            resp = await self.request("POST", "/auth/refresh",
+            resp = await self.request("POST", "/auth/refresh", generation=gen,
                                       headers={"Cookie": f"{REFRESH_COOKIE}={refresh_token}"})
             if resp.status_code in (401, 403):
                 self.drop_session(person_id)
@@ -173,20 +222,32 @@ class Upstream:
 
     async def as_person(self, person_id: str, method: str, path: str,
                         **kw) -> httpx.Response | None:
+        """The call as the person; None when they have no usable cloud
+        session. ServerChanged when the server was switched while it ran,
+        even if it would have answered None (their session was wiped with
+        the switch), so a caller never mistakes it for "no session"."""
+        gen = self.generation
+        resp = await self._as_person(gen, person_id, method, path, **kw)
+        if gen != self.generation:
+            raise ServerChanged("the server changed")
+        return resp
+
+    async def _as_person(self, gen: int, person_id: str, method: str, path: str,
+                         **kw) -> httpx.Response | None:
         if not self.has_session(person_id):
             return None
-        token = self._fresh_access(person_id) or await self._refresh(person_id, None)
+        token = self._fresh_access(person_id) or await self._refresh(person_id, None, gen)
         if token is None:
             return None
         headers = dict(kw.pop("headers", None) or {})
         headers["Authorization"] = f"Bearer {token}"
-        resp = await self.request(method, path, headers=headers, **kw)
+        resp = await self.request(method, path, generation=gen, headers=headers, **kw)
         if resp.status_code == 401:
-            token = await self._refresh(person_id, token)
+            token = await self._refresh(person_id, token, gen)
             if token is None:
                 return None
             headers["Authorization"] = f"Bearer {token}"
-            resp = await self.request(method, path, headers=headers, **kw)
+            resp = await self.request(method, path, generation=gen, headers=headers, **kw)
         return resp
 
     async def end_session(self, person_id: str) -> bool:

@@ -7,10 +7,16 @@ import UIKit
 @MainActor
 final class AppContainer {
     let prefs: KioskPrefs
+    /// The saved environment, the last good environment list and the has-been-registered flag.
+    let environments: EnvironmentStore
+    /// The chooser's environment list: a fresh download, else the last good one, else built in.
+    let environmentList: EnvironmentListFetcher
     let config: KioskConfig
     let secrets: SecretStore
     let identity: Identity
     let sessionStore: SessionStore
+    /// The refresh cookie for each API host, in `secrets`.
+    let cookies: RefreshCookie
     let api: KioskApi
     /// A Time Clock station's calls under its station key (no session).
     let stationApi: StationApi
@@ -63,6 +69,12 @@ final class AppContainer {
     /// True when the on-disk store could not be used this launch and the kiosk
     /// runs in memory: nothing written (queued scans included) survives a relaunch.
     let storeIsTemporary: Bool
+    /// Settings › This Kiosk's environment switch: its gates, then sign-out and a clear of
+    /// everything that belonged to the old server.
+    private(set) lazy var environmentSwitcher = EnvironmentSwitcher(
+        store: environments, config: config, api: api, auth: auth, outbox: outbox, biometric: biometric,
+        heartbeat: heartbeat, cookies: cookies, prefs: prefs,
+        resetApp: { [unowned self] in try await self.resetApp() })
 
     private var active = false
     private var launched = false
@@ -73,13 +85,22 @@ final class AppContainer {
     /// passes a fake (nothing makes its central until a Bluetooth printer is used).
     /// `biometricKeys` is the Secure Enclave key store unless a test passes a fake. `devicesApi` is
     /// the Devices site on the shared session and `installed` this app's bundle unless a test (or a
-    /// DEBUG launch argument) passes others.
+    /// DEBUG launch argument) passes others. `api` is the API on the shared session unless a test
+    /// passes a fake, and `environmentListSession` the environment list's own session unless a
+    /// test passes a stubbed one (no test reaches status.serversherpa.com). `environmentListUrl` is
+    /// the status site's list unless a DEBUG launch argument (UI tests) points it nowhere.
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
          backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine(),
          bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil,
-         devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil) {
+         devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil, api: (any KioskApi)? = nil,
+         environmentListSession: URLSession? = nil, environmentListUrl: String = Environments.statusListURL) {
         let prefs = KioskPrefs(defaults: defaults)
-        let config = KioskConfig(prefs: prefs)
+        let environments = EnvironmentStore(prefs: prefs)
+        let defaultEnvironment = KioskBuildConfig.defaultEnvironment
+        // URLs typed before the environment picker become the saved environment, before anything
+        // reads the config (one main-actor step; `current` reads them the same way meanwhile).
+        environments.migrateIfNeeded(defaultPortal: defaultEnvironment.portalUrl)
+        let config = KioskConfig(store: environments, defaultEnvironment: defaultEnvironment)
         let identity = Identity(prefs: prefs, secrets: secrets)
         let cookies = RefreshCookie(secrets: secrets)
         let apiUrl: @Sendable () async -> String = { await MainActor.run { config.apiUrl } }
@@ -87,19 +108,24 @@ final class AppContainer {
         // cross-origin redirect guard.
         let session = URLSessionKioskApi.makeSession()
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
-        let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
+        let api = api ?? URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
         let stationApi = URLSessionStationApi(session: session)
         let stationKeys = StationKeyStore(secrets: secrets)
         let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
         let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs, station: station)
-        let heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: config.kioskVersion)
+        let heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: config.kioskVersion,
+                                  environments: environments)
         let store = KioskStore(modelContainer: modelContainer)
 
         self.prefs = prefs
+        self.environments = environments
+        self.environmentList = environmentListSession.map { EnvironmentListFetcher(store: environments, session: $0, url: environmentListUrl) }
+            ?? EnvironmentListFetcher(store: environments, url: environmentListUrl)
         self.config = config
         self.secrets = secrets
         self.identity = identity
         self.sessionStore = sessionStore
+        self.cookies = cookies
         self.api = api
         self.stationApi = stationApi
         self.stationKeys = stationKeys
@@ -164,8 +190,11 @@ final class AppContainer {
         // sheet (and a Turn on running under it) belongs to the person signed in. The biometric
         // key stays: the next sign-in screen shows its card.
         let printJobs = self.printJobs
+        // The outbox stops at sign-out itself (no token to send with), not when a screen next
+        // reacts to it: an environment switch clears and re-points the kiosk right after.
         auth.onLogout = {
             heartbeat.stop()
+            outbox.stop()
             bluetooth.close()
             Task { await printJobs.reset() }
             rolodex.clear()
@@ -266,7 +295,18 @@ final class AppContainer {
         let sample = sampleUpdateCheck()
         return AppContainer(defaults: .standard, secrets: KeychainSecretStore(), modelContainer: opened.container,
                             storeIsTemporary: opened.isTemporary, backgroundTask: UIKitBackgroundTasking(),
-                            fontsDir: Sync.defaultFontsDir, devicesApi: sample.api, installed: sample.installed)
+                            fontsDir: Sync.defaultFontsDir, devicesApi: sample.api, installed: sample.installed,
+                            environmentListUrl: environmentListUrl())
+    }
+
+    /// DEBUG only: UI tests pass `-uiTestNoEnvironmentDownload`, and the environment chooser's
+    /// download goes to a closed local port (it fails at once, so the built-in or saved list
+    /// shows), never to the status site. Otherwise (and in Release) the status site's list.
+    private static func environmentListUrl() -> String {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiTestNoEnvironmentDownload") { return "https://127.0.0.1:9/environments.json" }
+        #endif
+        return Environments.statusListURL
     }
 
     /// DEBUG only: UI tests and simulator checks pass `-uiTestUpdate <status>`, and the update check
@@ -315,7 +355,7 @@ final class AppContainer {
         coordinator.start()
         async let restored: Void = restoreSession()
         async let hydrated: Void = hydrateAndBuildLabels()
-        async let loaded: Void = outbox.load()
+        async let loaded = outbox.load()
         _ = await (restored, hydrated, loaded)
         authChanged()
         #if DEBUG

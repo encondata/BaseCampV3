@@ -28,7 +28,10 @@ A Time Clock Station pulls the people list only (it looks up whoever
 badges in), even with no move: under its station key when it holds one
 (`/kiosk/station/sync/people?serial=[&initiative_id=]`), else as the actor
 person, else `needs_sign_in`. It lands under the same `/kiosk/sync/people`
-cache key."""
+cache key.
+
+A sync under way when the laptop switches servers writes nothing: the old
+server's answers arrive as ServerChanged (edge/upstream.py)."""
 
 import json
 import logging
@@ -38,7 +41,7 @@ from urllib.parse import quote
 from edge.db import Store, now_iso
 from edge.rfid import processing, station_key
 from edge.rfid.tagreads import note_cache_write
-from edge.upstream import CloudOffline, Upstream
+from edge.upstream import CloudOffline, ServerChanged, Upstream
 
 log = logging.getLogger("edge.sync")
 
@@ -159,6 +162,8 @@ class Syncer:
                     return self._error(f"http_{resp.status_code}:{path}")
                 pulled.append((path, resp.text))
             moves = await self.upstream.as_person(actor, "GET", self._moves_path(initiative))
+        except ServerChanged:  # the laptop switched servers meanwhile: keep nothing
+            return self.meta()
         except CloudOffline:
             return self._error("offline")
         rows: list[tuple] | None = None
@@ -213,6 +218,8 @@ class Syncer:
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path.split('?', 1)[0]}")
                 pulled.append((key, resp.text))
+        except ServerChanged:  # the laptop switched servers meanwhile: keep nothing
+            return self.meta()
         except CloudOffline:
             return self._error("offline")
         with self.store.tx() as c:
@@ -245,6 +252,8 @@ class Syncer:
                 path = PEOPLE
             if resp is None:
                 return self._error("needs_sign_in")
+        except ServerChanged:  # the laptop switched servers meanwhile: keep nothing
+            return self.meta()
         except CloudOffline:
             return self._error("offline")
         if resp.status_code != 200:

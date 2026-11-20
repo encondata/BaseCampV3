@@ -12,8 +12,11 @@ struct KioskPrefsTests {
         #expect(prefs.sound == DEFAULT_SOUND_SETTINGS)
         #expect(prefs.checkpoint(.enroll) == "pre_stage")
         #expect(prefs.devMode == false)
-        #expect(prefs.apiUrl == nil)
-        #expect(prefs.portalUrl == nil)
+        #expect(prefs.environment == nil)
+        #expect(prefs.environmentList == nil)
+        #expect(!prefs.everRegistered)
+        #expect(prefs.legacyApiUrl == nil)
+        #expect(prefs.legacyPortalUrl == nil)
         #expect(prefs.kioskName == nil)
         #expect(prefs.cameraPosition == .back)
         #expect(prefs.signInMethod == nil)
@@ -66,8 +69,9 @@ struct KioskPrefsTests {
         prefs.sound = snd
         prefs.setCheckpoint(.enroll, "received")
         prefs.devMode = true
-        prefs.apiUrl = "http://10.0.2.2:8000"
-        prefs.portalUrl = "https://p.example"
+        prefs.environment = #"{"kind":"named"}"#
+        prefs.environmentList = #"{"version":1}"#
+        prefs.markEverRegistered()
         prefs.kioskName = "Dock 4"
         prefs.cameraPosition = .front
 
@@ -78,18 +82,48 @@ struct KioskPrefsTests {
             #expect(p.sound.good == SoundChoice.none)
             #expect(p.checkpoint(.enroll) == "received")
             #expect(p.devMode == true)
-            #expect(p.apiUrl == "http://10.0.2.2:8000")
-            #expect(p.portalUrl == "https://p.example")
+            #expect(p.environment == #"{"kind":"named"}"#)
+            #expect(p.environmentList == #"{"version":1}"#)
+            #expect(p.everRegistered)
             #expect(p.kioskName == "Dock 4")
             #expect(p.cameraPosition == .front)
         }
 
         prefs.setupSelection = nil
-        prefs.apiUrl = nil
+        prefs.environment = nil
         let reloaded = KioskPrefs(defaults: defaults)
         #expect(reloaded.setupSelection == nil)
-        #expect(reloaded.apiUrl == nil)
+        #expect(reloaded.environment == nil)
+        #expect(defaults.object(forKey: "ss.kiosk.environment") == nil)
         #expect(defaults.object(forKey: "ss.kiosk.setup") == nil)
+    }
+
+    /// The URLs typed before the environment picker are read under their old keys and go in one
+    /// step: the converted environment is saved only when none is, and both old keys are removed.
+    @Test func theLegacyUrlsMigrateInOneStep() {
+        let defaults = freshDefaults()
+        defaults.set("http://10.0.2.2:8000", forKey: "ss.kiosk.apiUrl")
+        defaults.set("https://p.example", forKey: "ss.kiosk.portalUrl")
+        let prefs = KioskPrefs(defaults: defaults)
+        #expect(prefs.legacyApiUrl == "http://10.0.2.2:8000")
+        #expect(prefs.legacyPortalUrl == "https://p.example")
+        var seen: [String?] = []
+        prefs.migrateLegacyUrls { api, portal in seen = [api, portal]; return "converted" }
+        #expect(seen == ["http://10.0.2.2:8000", "https://p.example"])
+        #expect(prefs.environment == "converted")
+        #expect(prefs.legacyApiUrl == nil && prefs.legacyPortalUrl == nil)
+        #expect(defaults.object(forKey: "ss.kiosk.apiUrl") == nil)
+        #expect(defaults.object(forKey: "ss.kiosk.portalUrl") == nil)
+
+        defaults.set("http://other:1", forKey: "ss.kiosk.apiUrl")       // beside a saved environment
+        let again = KioskPrefs(defaults: defaults)
+        again.migrateLegacyUrls { _, _ in "replaced" }
+        #expect(again.environment == "converted")
+        #expect(defaults.object(forKey: "ss.kiosk.apiUrl") == nil)
+
+        var called = false                                               // nothing typed: nothing to do
+        KioskPrefs(defaults: freshDefaults()).migrateLegacyUrls { _, _ in called = true; return "x" }
+        #expect(!called)
     }
 
     @Test func corruptStoredValuesFallBack() {

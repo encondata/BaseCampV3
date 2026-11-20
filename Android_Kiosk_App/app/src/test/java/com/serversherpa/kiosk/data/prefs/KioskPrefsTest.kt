@@ -50,7 +50,8 @@ class KioskPrefsTest {
         assertEquals(DEFAULT_SOUND_SETTINGS, prefs.sound.first())
         assertEquals("pre_stage", prefs.checkpoint(CheckpointId.ENROLL).first())
         assertEquals(false, prefs.devMode.first())
-        assertNull(prefs.apiUrl.first())
+        assertEquals(EnvironmentPrefs(null, null, null), prefs.environment.first())
+        assertEquals(false, prefs.everRegistered.first())
         assertNull(prefs.serial.first())
     }
 
@@ -62,7 +63,7 @@ class KioskPrefsTest {
         prefs.setSound(DEFAULT_SOUND_SETTINGS.copy(good = SoundChoice.None))
         prefs.setCheckpoint(CheckpointId.ENROLL, "received")
         prefs.setDevMode(true)
-        prefs.setApiUrl("http://10.0.2.2:8000")
+        prefs.setEnvironment("""{"kind":"custom","api_url":"http://10.0.2.2:8000","portal_url":"http://10.0.2.2:5173"}""")
         prefs.setSerial("kiosk-android-x"); prefs.setName("Dock 4")
         assertEquals(SetupState.COMPLETE, prefs.setupState.first())
         assertEquals(sel, prefs.setupSelection.first())
@@ -70,7 +71,7 @@ class KioskPrefsTest {
         assertEquals(SoundChoice.None, prefs.sound.first().good)
         assertEquals("received", prefs.checkpoint(CheckpointId.ENROLL).first())
         assertEquals(true, prefs.devMode.first())
-        assertEquals("http://10.0.2.2:8000", prefs.apiUrl.first())
+        assertEquals("""{"kind":"custom","api_url":"http://10.0.2.2:8000","portal_url":"http://10.0.2.2:5173"}""", prefs.environment.first().environment)
         assertEquals("kiosk-android-x", prefs.serial.first()); assertEquals("Dock 4", prefs.name.first())
         prefs.setSetupSelection(null); assertNull(prefs.setupSelection.first())
     }

@@ -56,6 +56,7 @@ import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.guards.StationIdleReturn
+import com.serversherpa.kiosk.ui.screens.settings.EnvironmentBadge
 import com.serversherpa.kiosk.ui.components.LocalSledScanGuard
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.initialsOf
@@ -97,6 +98,7 @@ fun LoginScreen(nav: NavHostController) {
         ui = ui,
         backToTimeclock = if (station) goHome else null,
         kioskName = identity.name,
+        environmentBadge = { EnvironmentBadge() },
         actions = LoginActions(
             setEmail = vm::setEmail, setPassword = vm::setPassword, togglePassword = vm::togglePassword,
             submitPassword = { vm.submitPassword(goHome) },
@@ -179,6 +181,8 @@ internal fun LoginContent(
     ui: LoginUi, kioskName: String, actions: LoginActions, canScan: Boolean = false,
     /** Set on a Time Clock station: the "Back to the time clock" button. */
     backToTimeclock: (() -> Unit)? = null,
+    /** Beside the kiosk's name under the brand: the non-Prod environment badge (EnvironmentBadge). */
+    environmentBadge: @Composable () -> Unit = {},
     pairPanel: @Composable () -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize().background(LoginPalette.Canvas)) {
@@ -192,7 +196,7 @@ internal fun LoginContent(
         // sky, so at the end of the scroll (or on a tall screen) the last button sits above the peaks.
         Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(Modifier.widthIn(max = 440.dp).fillMaxWidth().padding(horizontal = 20.dp).padding(top = 16.dp)) {
-                LoginBrand(kioskName)
+                LoginBrand(kioskName, badge = environmentBadge)
 
                 if (ui.status.read_only) LoginNotice(
                     if (ui.status.read_only_message.isNotBlank()) "Read-only maintenance mode — ${ui.status.read_only_message}" else "Read-only maintenance mode",

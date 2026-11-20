@@ -121,6 +121,27 @@ struct URLSessionKioskApiAuthTests {
         #expect(first.bodyString == #"{"poll_token":"pt"}"#)
     }
 
+    /// `GET /auth/me` under the session, read for the switch's gates. An answer missing any of
+    /// the three fields doesn't decode: `unknown_error` with its 200, never a pass.
+    @Test func meReadsRolesRankAndGlobalScope() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        h.server.enqueue(.json(200, #"{"person":{"id":"p1"},"roles":["developer"],"max_rank":100,"scope":{"global":true,"client_ids":[]},"perms":{}}"#))
+        #expect(try await h.api.me() == MeInfo(roles: ["developer"], maxRank: 100, isGlobal: true))
+        _ = h.server.takeRequest()
+        let req = try #require(h.server.takeRequest())
+        #expect(req.path == "/auth/me")
+        #expect(req.header("Authorization") == "Bearer tok1")
+
+        for body in [#"{"roles":[],"max_rank":100}"#, #"{"roles":[],"scope":{"global":true}}"#,
+                     #"{"max_rank":100,"scope":{"global":true}}"#, #"{"roles":[],"max_rank":100,"scope":{}}"#] {
+            h.server.enqueue(.json(200, body))
+            let e = await expectApiError { _ = try await h.api.me() }
+            #expect(e?.status == 200)
+            #expect(e?.code == "unknown_error")
+        }
+    }
+
     @Test func signOutNeverThrows() async throws {
         let h = ApiHarness()
         h.server.shutdown()

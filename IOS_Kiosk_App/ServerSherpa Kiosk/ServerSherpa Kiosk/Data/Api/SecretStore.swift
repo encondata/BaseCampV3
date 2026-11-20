@@ -5,6 +5,8 @@ import Security
 protocol SecretStore: AnyObject, Sendable {
     func get(_ key: String) -> String?
     func set(_ key: String, _ value: String?)
+    /// Every key stored (Android `SecretStore.keys`), so a caller can clear a whole family.
+    func keys() -> [String]
 }
 
 final class MemorySecretStore: SecretStore, @unchecked Sendable {
@@ -19,6 +21,11 @@ final class MemorySecretStore: SecretStore, @unchecked Sendable {
     func set(_ key: String, _ value: String?) {
         lock.lock(); defer { lock.unlock() }
         map[key] = value
+    }
+
+    func keys() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return Array(map.keys)
     }
 }
 
@@ -50,5 +57,19 @@ final class KeychainSecretStore: SecretStore {
         q[kSecValueData as String] = Data(value.utf8)
         q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(q as CFDictionary, nil)
+    }
+
+    /// The account of every item under the service.
+    func keys() -> [String] {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let items = out as? [[String: Any]] else { return [] }
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 }

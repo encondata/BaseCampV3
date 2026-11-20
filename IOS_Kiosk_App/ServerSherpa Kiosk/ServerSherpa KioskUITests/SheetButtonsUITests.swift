@@ -4,7 +4,8 @@ import XCTest
 /// screen when it opens, on every device, in both orientations and at any text size, with no
 /// scroll. `-uiTestEnrollOffer` (honored by Debug builds only) opens the real Face ID sign-in
 /// sheet, with sample words, over the signed-out app; nothing here scrolls or swipes before the
-/// checks. The sign-in screen's support card and Settings sheet are checked the same way. With
+/// checks. The sign-in screen's support card and Settings sheet, and This Kiosk's environment
+/// chooser, are checked the same way. With
 /// TEST_RUNNER_SCREENSHOT_DIR set, each case keeps a screenshot in SCREENSHOT_DIR:
 /// <surface>-<device>-<os>-<orientation>-<text size>.png.
 final class SheetButtonsUITests: XCTestCase {
@@ -67,24 +68,8 @@ final class SheetButtonsUITests: XCTestCase {
     @MainActor func testLoginSettingsDoneShows() throws {
         for (orientation, text) in Self.cases {
             let app = launchSignedOut(orientation, text: text)
-            let gear = app.buttons["Kiosk settings"].firstMatch
-            XCTAssertTrue(gear.waitForExistence(timeout: 20), "No Kiosk settings button")
-            if !app.windows.firstMatch.frame.contains(gear.frame) {
-                // A separate bug in the sign-in screen, not in this sheet (reported, not fixed here):
-                // at the accessibility text sizes an iPhone's top bar is wider than the screen and
-                // pushes the gear off its right edge, so the sheet can't be opened to check. Only
-                // there: anywhere else an off-screen gear fails the test.
-                XCTAssertTrue(UIDevice.current.userInterfaceIdiom == .phone && text != nil,
-                              "\(describe(orientation, text)): the sign-in screen's gear \(gear.frame) is off screen")
-                let note = XCTAttachment(string: "\(describe(orientation, text)): gear off screen at \(gear.frame); Settings not checked")
-                note.lifetime = .keepAlways
-                add(note)
-                app.terminate()
-                continue
-            }
-            gear.tap()
+            guard openLoginSettings(app, orientation: orientation, text: text) else { continue }
             let done = app.buttons["Done"].firstMatch
-            XCTAssertTrue(done.waitForExistence(timeout: 5), "The Settings sheet never opened")
             settle(done)
             try keepScreenshot("login-settings", orientation: orientation, text: text)
             assertOnScreen([("Done", done)], in: nil, app: app, context: describe(orientation, text))
@@ -92,6 +77,101 @@ final class SheetButtonsUITests: XCTestCase {
             XCTAssertTrue(done.waitForNonExistence(timeout: 5), "Done did not close the Settings sheet")
             app.terminate()
         }
+    }
+
+    /// This Kiosk's environment chooser (Change…, in the sign-in screen's Settings sheet): the
+    /// buttons of every step it reaches without switching, in every orientation and text size
+    /// (env-chooser-<step>-*.png). The password step is checked again with the keyboard up. Its
+    /// download goes nowhere (`-uiTestNoEnvironmentDownload`), so the list is the saved or built-in
+    /// one. Nothing here presses Switch: the simulator's kiosk stays on its environment.
+    @MainActor func testEnvironmentChooserButtonsShow() throws {
+        for (orientation, text) in Self.cases {
+            let app = launchSignedOut(orientation, text: text, extra: ["-uiTestNoEnvironmentDownload"])
+            guard openLoginSettings(app, orientation: orientation, text: text) else { continue }
+            let context = describe(orientation, text)
+            // This Kiosk's rows can run past the Settings sheet's fold: reaching Change… may scroll
+            // (the chooser's own buttons may not).
+            let change = app.buttons["env-change"]
+            XCTAssertTrue(change.waitForExistence(timeout: 5), "\(context): no Change… button")
+            for _ in 0..<8 where !change.isHittable { app.swipeUp(velocity: .slow) }
+            change.tap()
+
+            let sheet = app.descendants(matching: .any)["env-chooser"].firstMatch
+            let close = app.buttons["env-close"]
+            let password = app.secureTextFields["env-password"]
+            XCTAssertTrue(sheet.waitForExistence(timeout: 5), "\(context): the chooser never opened")
+            XCTAssertTrue(password.waitForExistence(timeout: 5), "\(context): no password field")
+            settle(sheet)
+            try keepScreenshot("env-chooser-password", orientation: orientation, text: text)
+            let continueButton = app.buttons["env-continue"]
+            assertOnScreen([("Continue", continueButton), ("Cancel", app.buttons["env-password-cancel"]), ("Close", close)],
+                           in: sheet, app: app, context: "\(context), password")
+
+            password.tap()
+            password.typeText("cumulus")
+            settle(sheet)
+            try keepScreenshot("env-chooser-password-keyboard", orientation: orientation, text: text)
+            assertOnScreen([("Continue", continueButton), ("Cancel", app.buttons["env-password-cancel"])],
+                           in: sheet, app: app, context: "\(context), password with the keyboard up")
+            continueButton.tap()
+
+            let listCancel = app.buttons["env-list-cancel"]
+            XCTAssertTrue(listCancel.waitForExistence(timeout: 5), "\(context): the list never showed")
+            if app.keyboards.firstMatch.exists { XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5)) }
+            settle(sheet)
+            try keepScreenshot("env-chooser-list", orientation: orientation, text: text)
+            assertOnScreen([("Cancel", listCancel), ("Close", close)], in: sheet, app: app, context: "\(context), list")
+
+            // Any environment but the current one (it can't be picked).
+            let row = ["rc1", "uat", "beta"].map { app.buttons["env-row-\($0)"] }.first { $0.exists && $0.isEnabled }
+            let pick = try XCTUnwrap(row, "\(context): no environment to pick")
+            pick.tap()
+            let switchButton = app.buttons["env-confirm"]
+            let cancel = app.buttons["env-cancel"]
+            XCTAssertTrue(switchButton.waitForExistence(timeout: 5), "\(context): the confirm never showed")
+            settle(sheet)
+            try keepScreenshot("env-chooser-confirm", orientation: orientation, text: text)
+            assertOnScreen([("Switch", switchButton), ("Cancel", cancel), ("Close", close)], in: sheet, app: app,
+                           context: "\(context), confirm")
+            cancel.tap()
+
+            let custom = app.buttons["env-custom"]
+            XCTAssertTrue(custom.waitForExistence(timeout: 5), "\(context): Cancel didn't go back to the list")
+            custom.tap()
+            XCTAssertTrue(app.textFields["env-api-url"].waitForExistence(timeout: 5), "\(context): the custom URLs never showed")
+            settle(sheet)
+            try keepScreenshot("env-chooser-custom", orientation: orientation, text: text)
+            assertOnScreen([("Switch", switchButton), ("Cancel", cancel), ("Close", close)], in: sheet, app: app,
+                           context: "\(context), custom")
+
+            close.tap()
+            XCTAssertTrue(sheet.waitForNonExistence(timeout: 5), "\(context): Close did not close the chooser")
+            app.terminate()
+        }
+    }
+
+    /// Taps the sign-in screen's gear and waits for its Settings sheet (its Done). False, with a
+    /// note and the app quit, where the gear can't be reached.
+    @MainActor
+    private func openLoginSettings(_ app: XCUIApplication, orientation: UIDeviceOrientation, text: String?) -> Bool {
+        let gear = app.buttons["Kiosk settings"].firstMatch
+        XCTAssertTrue(gear.waitForExistence(timeout: 20), "No Kiosk settings button")
+        if !app.windows.firstMatch.frame.contains(gear.frame) {
+            // A separate bug in the sign-in screen, not in these sheets (reported, not fixed here):
+            // at the accessibility text sizes an iPhone's top bar is wider than the screen and
+            // pushes the gear off its right edge, so the sheet can't be opened to check. Only
+            // there: anywhere else an off-screen gear fails the test.
+            XCTAssertTrue(UIDevice.current.userInterfaceIdiom == .phone && text != nil,
+                          "\(describe(orientation, text)): the sign-in screen's gear \(gear.frame) is off screen")
+            let note = XCTAttachment(string: "\(describe(orientation, text)): gear off screen at \(gear.frame); Settings not checked")
+            note.lifetime = .keepAlways
+            add(note)
+            app.terminate()
+            return false
+        }
+        gear.tap()
+        XCTAssertTrue(app.buttons["Done"].firstMatch.waitForExistence(timeout: 5), "The Settings sheet never opened")
+        return true
     }
 
     /// A Turn on that didn't work adds its line after the sheet has opened (the sample's Turn on
@@ -194,9 +274,14 @@ final class SheetButtonsUITests: XCTestCase {
             visible = container.frame.intersection(window)
             XCTAssertFalse(visible.isEmpty, "\(context): the sheet \(container.frame) is outside the window \(window)")
         }
+        // The on-screen keyboard (when up) covers what lies under it.
+        let keyboard = app.keyboards.firstMatch
+        let keyboardFrame = keyboard.exists ? keyboard.frame : CGRect.null
         for (name, button) in items {
             XCTAssertTrue(button.exists, "\(context): no \(name)")
             let frame = button.frame
+            XCTAssertFalse(frame.insetBy(dx: 0.5, dy: 0.5).intersects(keyboardFrame),
+                           "\(context): \(name) \(frame) is under the keyboard \(keyboardFrame)")
             // The frames first: XCUITest can't even ask an element off screen whether it's hittable.
             // Half a point of slack for rounding between frames.
             XCTAssertTrue(window.insetBy(dx: -0.5, dy: -0.5).contains(frame),

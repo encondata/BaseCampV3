@@ -86,6 +86,8 @@ struct OutboxSnapshot: Equatable {
     @ObservationIgnored private var nextSeq: Int64 = 1
     @ObservationIgnored private var loaded = false
     @ObservationIgnored private var loading: Task<Void, Never>?
+    /// Bumped by `discardAll()`: a batch sent before it keeps no outcome.
+    @ObservationIgnored private var epoch = 0
 
     /// Started and not stopped (the container runs it while active and signed in).
     @ObservationIgnored private(set) var isRunning = false
@@ -129,9 +131,13 @@ struct OutboxSnapshot: Equatable {
         mirror(rows)
     }
 
-    func load() async {
-        if loaded { return }
-        if let loading { await loading.value; return }
+    /// Reads the store once. False when it couldn't be read: the snapshot is then empty without
+    /// meaning nothing is queued, so a caller that counts on it (an environment switch) must not
+    /// go on.
+    @discardableResult
+    func load() async -> Bool {
+        if loaded { return true }
+        if let loading { await loading.value; return loaded }
         let task = Task { @MainActor in
             // A failed read leaves `loaded` false so the next start() reads the store again.
             guard let rows = try? await store.all() else { return }
@@ -143,6 +149,7 @@ struct OutboxSnapshot: Equatable {
         loading = task
         await task.value
         loading = nil
+        return loaded
     }
 
     /// Rows left `sending` by a sender that died mid-POST go back to queued. Runs on
@@ -246,6 +253,7 @@ struct OutboxSnapshot: Equatable {
         let due = OutboxMachine.dueRows(Array(all.values), nowMs: clock())
         if due.isEmpty { return true }
         let batch = OutboxMachine.markSending(due)
+        let sentIn = epoch
         inFlight = Set(batch.map(\.clientScanId))
         do { try await save(batch) } catch {
             // Storage failed while marking the batch `sending`: nothing goes out this
@@ -270,6 +278,12 @@ struct OutboxSnapshot: Equatable {
             } catch {
                 let code = (error as? ApiError).flatMap { $0.code.isEmpty ? nil : $0.code } ?? "timeout"
                 updated = OutboxMachine.applyFailure(batch, code: code, nowMs: clock())
+            }
+            // Discarded meanwhile (an environment switch): the rows are gone and stay gone.
+            guard sentIn == epoch else {
+                inFlight = []
+                backgroundTask.end(bgId)
+                return true
             }
             let saved = await writeBack(updated)
             backgroundTask.end(bgId)
@@ -324,4 +338,20 @@ struct OutboxSnapshot: Equatable {
 
     /// The operator confirmed these scans are being abandoned.
     func discardFailed() async { await dropRows { $0.status == .failed } }
+
+    /// An environment switch an admin let discard the unsent scans: every row goes, whatever its
+    /// state, from the store too (rows a failed `load()` never read included). A batch already on
+    /// its way to the old server keeps no outcome: its answer is dropped, not saved back (even
+    /// when the store then fails, so such a batch is sent again by the next start). Throws when
+    /// the store can't be read or cleared, leaving the rows in place.
+    func discardAll() async throws {
+        // Before any await: a write-back that hasn't started yet sees it and saves nothing, and
+        // one already started is saved ahead of the delete below.
+        epoch += 1
+        let ids = Set(try await store.all().map(\.clientScanId)).union(all.keys)
+        try await store.delete(Array(ids))
+        // Only what was deleted: a scan enqueued while this waited stays, in the store and here.
+        for id in ids { all.removeValue(forKey: id) }
+        rebuild()
+    }
 }

@@ -38,6 +38,14 @@ data class SessionData(
     val kiosk_move: KioskMove? = null,
 )
 
+/** What the environment switch reads of `MeOut` (GET /auth/me): the signed-in person's roles,
+ *  rank and whether their scope is global, live from the server; the rest is ignored on decode. */
+@Serializable
+data class MeInfo(val roles: List<String> = emptyList(), val max_rank: Int, val scope: Scope) {
+    @Serializable
+    data class Scope(val global: Boolean = false)
+}
+
 @Serializable
 data class LoginIn(val email: String, val password: String, val client: String = "kiosk")
 

@@ -41,7 +41,6 @@ import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.PersonalState
 import com.serversherpa.kiosk.data.auth.AuthState
-import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.identity.KioskIdentity
 import com.serversherpa.kiosk.data.push.PushSetupFailed
 import com.serversherpa.kiosk.data.push.PushUnavailable
@@ -305,26 +304,20 @@ private fun PersonalPhoneRow(signedIn: AuthState.Authed) {
     }
 }
 
-/** Name, serial, mode, API/portal URLs, version — usable signed out. */
+/** Name, serial, mode, environment and server, version — usable signed out. [onSwitched] runs
+ *  after an environment switch (the kiosk is signed out and cleared). */
 @Composable
-fun ThisKioskPanel() {
+fun ThisKioskPanel(onSwitched: () -> Unit = {}) {
     val container = LocalAppContainer.current
     val scope = rememberCoroutineScope()
     val identity by container.identity.identity.collectAsStateWithLifecycle(initialValue = KioskIdentity("", ""))
-    val apiUrl by container.config.apiUrl.collectAsStateWithLifecycle(initialValue = "")
-    val portalUrl by container.config.portalUrl.collectAsStateWithLifecycle(initialValue = "")
     val auth by container.auth.state.collectAsStateWithLifecycle()
     var name by remember { mutableStateOf("") }
-    var api by remember { mutableStateOf("") }
-    var portal by remember { mutableStateOf("") }
     var nameError by remember { mutableStateOf<String?>(null) }
     // Signed out at a Time Clock station, typing keeps the page from returning to Welcome.
     val activity = LocalStationActivity.current
-    var urlError by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(identity.name) { name = identity.name }
-    LaunchedEffect(apiUrl) { api = apiUrl }
-    LaunchedEffect(portalUrl) { portal = portalUrl }
 
     Column {
         SettingsRow("Kiosk name", "What people see on their phone when they link with this kiosk. 1–80 characters.") {
@@ -341,18 +334,7 @@ fun ThisKioskPanel() {
         SettingsRow("Mode") { Text("Android", fontFamily = FragmentMono) }
         (auth as? AuthState.Authed)?.takeIf { personalBlockVisible(it.isAdmin, container.isZebraHost) }?.let { PersonalPhoneRow(it) }
         FingerprintRow()
-        SettingsRow("API URL", "Where this kiosk talks to the portal. Must start with http:// or https://.") {
-            OutlinedTextField(api, { api = it; urlError = null; activity() }, singleLine = true, isError = urlError != null, modifier = Modifier.fillMaxWidth().testTag("api-url"))
-            OutlinedTextField(portal, { portal = it; urlError = null; activity() }, singleLine = true, label = { Text("Portal URL") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-            KioskToast(urlError, error = true)
-            Row(Modifier.padding(top = 8.dp)) {
-                MiniButton("Save URLs", onClick = {
-                    val a = KioskConfig.normalizeUrl(api); val p = KioskConfig.normalizeUrl(portal)
-                    if (a == null || p == null) { urlError = "Enter full http:// or https:// origins." }
-                    else scope.launch { container.saveApiUrl(a); container.prefs.setPortalUrl(p); saved = "URLs saved. Sign in again if the API changed." }
-                })
-            }
-        }
+        EnvironmentRow(onSwitched)
         SettingsRow("Version") { Text(container.config.kioskVersion, fontFamily = FragmentMono) }
         if (container.updates.supported) AppUpdatesRow(container.updates, signedIn = auth is AuthState.Authed)
         KioskToast(saved)

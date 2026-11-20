@@ -33,4 +33,19 @@ class RefreshCookieJarTest {
         jar.clearRefreshCookie()
         assertTrue(jar.loadForRequest("https://api.dev.serversherpa.com/auth/refresh".toHttpUrl()).isEmpty())
     }
+
+    /** An environment switch: every stored refresh cookie goes, including one from a host this
+     *  process never talked to (an earlier launch's server). Other secrets stay. */
+    @Test fun clearAllForgetsEveryHostsRefreshCookie() {
+        val secrets = MemorySecretStore()
+        secrets.put("cookie|api.old.serversherpa.com|ss_refresh", "{}")
+        secrets.put("station_key", "kept")
+        val jar = RefreshCookieJar(secrets)
+        jar.saveFromResponse(api, listOf(Cookie.parse(api, "ss_refresh=abc; Path=/auth")!!, Cookie.parse(api, "csrftoken=zzz; Path=/")!!))
+
+        jar.clearAllRefreshCookies()
+
+        assertEquals(setOf("station_key"), secrets.keys())
+        assertTrue(jar.loadForRequest("https://api.dev.serversherpa.com/auth/refresh".toHttpUrl()).isEmpty())
+    }
 }

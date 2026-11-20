@@ -44,8 +44,11 @@ final class KioskPrefs {
         static let appearance = "ss.kiosk.appearance"
         static let sound = "ss.kiosk.sound"
         static let devMode = "ss.kiosk.devMode"
-        static let apiUrl = "ss.kiosk.apiUrl"
-        static let portalUrl = "ss.kiosk.portalUrl"
+        static let legacyApiUrl = "ss.kiosk.apiUrl"
+        static let legacyPortalUrl = "ss.kiosk.portalUrl"
+        static let environment = "ss.kiosk.environment"
+        static let environmentList = "ss.kiosk.environmentList"
+        static let everRegistered = "ss.kiosk.everRegistered"
         static let name = "ss.kiosk.name"
         static let cameraPosition = "ss.kiosk.cameraPosition"
         static let labels = "ss.kiosk.labels"
@@ -79,8 +82,17 @@ final class KioskPrefs {
     var appearance: Appearance { didSet { defaults.set(appearance.toJSON(), forKey: Key.appearance) } }
     var sound: SoundSettings { didSet { defaults.set(sound.toJSON(), forKey: Key.sound) } }
     var devMode: Bool { didSet { defaults.set(devMode, forKey: Key.devMode) } }
-    var apiUrl: String? { didSet { Self.store(apiUrl, Key.apiUrl, defaults) } }
-    var portalUrl: String? { didSet { Self.store(portalUrl, Key.portalUrl, defaults) } }
+    /// The saved environment's JSON, as stored; `EnvironmentStore` reads and checks it. Nil removes it.
+    var environment: String? { didSet { Self.store(environment, Key.environment, defaults) } }
+    /// The last good download of the environment list, as stored; `EnvironmentStore` checks it again.
+    var environmentList: String? { didSet { Self.store(environmentList, Key.environmentList, defaults) } }
+    /// Some server has registered this kiosk (a heartbeat reply with a registration). Never cleared:
+    /// only a fresh install resets it.
+    private(set) var everRegistered: Bool { didSet { defaults.set(everRegistered, forKey: Key.everRegistered) } }
+    /// The API and portal URLs typed before the environment picker, read until
+    /// `migrateLegacyUrls` turns them into the saved environment and removes them.
+    private(set) var legacyApiUrl: String? { didSet { Self.store(legacyApiUrl, Key.legacyApiUrl, defaults) } }
+    private(set) var legacyPortalUrl: String? { didSet { Self.store(legacyPortalUrl, Key.legacyPortalUrl, defaults) } }
     var kioskName: String? { didSet { Self.store(kioskName, Key.name, defaults) } }
     var cameraPosition: CameraPosition { didSet { defaults.set(cameraPosition.rawValue, forKey: Key.cameraPosition) } }
     /// How the person signed in here last (Android `ss.kiosk.signInMethod`: password, link or
@@ -127,8 +139,11 @@ final class KioskPrefs {
         appearance = parseAppearance(defaults.string(forKey: Key.appearance))
         sound = parseSoundSettings(defaults.string(forKey: Key.sound))
         devMode = defaults.bool(forKey: Key.devMode)
-        apiUrl = defaults.string(forKey: Key.apiUrl)
-        portalUrl = defaults.string(forKey: Key.portalUrl)
+        environment = defaults.string(forKey: Key.environment)
+        environmentList = defaults.string(forKey: Key.environmentList)
+        everRegistered = defaults.bool(forKey: Key.everRegistered)
+        legacyApiUrl = defaults.string(forKey: Key.legacyApiUrl)
+        legacyPortalUrl = defaults.string(forKey: Key.legacyPortalUrl)
         kioskName = defaults.string(forKey: Key.name)
         cameraPosition = defaults.string(forKey: Key.cameraPosition).flatMap(CameraPosition.init(rawValue:)) ?? .back
         signInMethod = defaults.string(forKey: Key.signInMethod).flatMap(LoginMethod.init(rawValue:))
@@ -140,6 +155,23 @@ final class KioskPrefs {
             if let v = defaults.string(forKey: id.storageKey) { cps[id.storageKey] = v }
         }
         checkpoints = cps
+    }
+
+    // MARK: Environment
+
+    /// Sets the has-been-registered flag (written once; nothing clears it).
+    func markEverRegistered() {
+        if !everRegistered { everRegistered = true }
+    }
+
+    /// The typed URLs become the saved environment in one main-actor step: `convert`'s JSON is
+    /// saved only when no environment is, and both old keys are removed either way. Nothing
+    /// happens when neither old key is set.
+    func migrateLegacyUrls(_ convert: (_ api: String?, _ portal: String?) -> String?) {
+        guard legacyApiUrl != nil || legacyPortalUrl != nil else { return }
+        if environment == nil, let converted = convert(legacyApiUrl, legacyPortalUrl) { environment = converted }
+        legacyApiUrl = nil
+        legacyPortalUrl = nil
     }
 
     // MARK: Clear Setup
@@ -168,6 +200,13 @@ final class KioskPrefs {
         guard var r = setupClear, !r.acked, sentAck == r.id, replyId != r.id else { return }
         r.acked = true
         setupClear = r
+    }
+
+    /// An environment switch: what the old server left here, the last sign-in method and the
+    /// Clear Setup record (its id belongs to that server), in one main-actor step.
+    func clearServerRecords() {
+        signInMethod = nil
+        setupClear = nil
     }
 
     /// Kiosk Setup completed: the "An administrator cleared…" banner goes away.

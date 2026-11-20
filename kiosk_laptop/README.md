@@ -155,6 +155,29 @@ Windows notes:
 Open it at `http://localhost:8090`, or from the ServerSherpa Kiosk shortcut or
 menu entry.
 
+## Changing environment
+
+Settings › This Kiosk shows the environment the kiosk is on (for example
+UAT). To move it, choose **Change…**, type the environment password, pick a
+name from the list and confirm. A Custom URL option is there too. For a
+kiosk that has been registered it needs a developer, founder or super admin
+to be signed in.
+
+- The choice is saved in the data folder as `environment.json`. It wins over
+  `EDGE_CLOUD_API_URL` and `EDGE_PORTAL_URL`, the addresses the installer
+  set. If `environment.json` can't be read or isn't valid, the kiosk uses the
+  installer's addresses instead.
+- To go back to the installer's addresses, stop the kiosk, delete
+  `environment.json` from the data folder and start it again.
+- A switch wipes the laptop's move data, the same as Wipe, and signs the
+  kiosk out of the old server. It keeps the laptop's name and serial. If
+  scans are waiting to upload, the kiosk says how many and asks you to
+  confirm; throwing them away needs an admin sign-in.
+- The list of names comes from the status site. The data folder keeps the
+  last good copy as `environments-cache.json`, and the kiosk has a built-in
+  list for when there is none. `registered.json` records that a server has
+  registered this kiosk. Leave it alone.
+
 ## Using the kiosk from other devices
 
 The kiosk also answers on the laptop's network address, so a phone, tablet or
@@ -418,6 +441,11 @@ on the laptop, not a Docker volume. It holds:
 - `identity.json` — the kiosk's permanent serial and name.
 - `edge.key` — the key that protects cached sign-in data.
 - `edge.db` — settings, cached data and scans waiting to upload.
+- `environment.json` — the environment chosen in Settings › This Kiosk (see
+  [Changing environment](#changing-environment)); absent until someone
+  switches.
+- `environments-cache.json` and `registered.json` — the last good environment
+  list and the "a server has registered this kiosk" flag.
 - `host-network.json` — the laptop's network addresses, rewritten every minute
   (see [RFID station](#rfid-station)); nothing to back up.
 

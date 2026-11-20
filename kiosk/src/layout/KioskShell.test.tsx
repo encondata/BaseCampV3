@@ -3,10 +3,10 @@
  *  Printing › Printing Station"): every level but the last is a link, the
  *  last is where you are. lib/breadcrumbs.test.ts covers the route table;
  *  these cover what the bar renders and that the links navigate. */
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // applyPreferences reads prefers-reduced-motion; jsdom has no matchMedia.
 beforeEach(() => {
@@ -71,8 +71,16 @@ const alarmApi = vi.hoisted(() => ({
     mode: 'until_dismissed', timed_seconds: 30, alarms: [], latest_id: null, expires_at: null,
   })),
 }));
+// The laptop's current environment (the non-Prod badge reads it).
+const envApi = vi.hoisted(() => ({
+  getEdgeEnvironment: vi.fn(() => Promise.resolve({
+    kind: 'named', id: 'prod', name: 'Prod', domain: 'serversherpa.com',
+    api_url: 'https://api.serversherpa.com', portal_url: 'https://portal.serversherpa.com',
+    is_prod: true, ever_registered: true,
+  })),
+}));
 vi.mock('../lib/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/api')>()), ...labelApi, ...alarmApi,
+  ...(await importOriginal<typeof import('../lib/api')>()), ...labelApi, ...alarmApi, ...envApi,
 }));
 
 import { clearFlash, flash } from '../lib/flash';
@@ -499,6 +507,52 @@ it('laptop mode: the footer mode names the station type once setup saved one', (
   }
 });
 
+
+describe('the non-Prod badge', () => {
+  const UAT = {
+    kind: 'named' as const, id: 'uat', name: 'UAT', domain: 'uat.serversherpa.com',
+    api_url: 'https://api.uat.serversherpa.com', portal_url: 'https://portal.uat.serversherpa.com',
+    is_prod: false, ever_registered: true,
+  };
+  const badge = () => document.querySelector('.kiosk-foot .chip');
+  afterEach(() => { delete window.__KIOSK_CONFIG__; });
+
+  it('a laptop off Prod shows its environment as an amber chip in the footer, signed in or out', async () => {
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+    envApi.getEdgeEnvironment.mockResolvedValue(UAT as never);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    await waitFor(() => expect(badge()?.textContent).toBe('UAT'));
+    expect(badge()?.className).toBe('chip c-amber');
+    cleanup();
+    auth.status = 'anon';
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    await waitFor(() => expect(badge()?.textContent).toBe('UAT'));
+  });
+
+  it('a laptop on Custom URLs reads Custom', async () => {
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+    envApi.getEdgeEnvironment.mockResolvedValue({ ...UAT, kind: 'custom', id: null, name: 'Custom', domain: null } as never);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    await waitFor(() => expect(badge()?.textContent).toBe('Custom'));
+  });
+
+  it('a laptop on Prod shows none', async () => {
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+    envApi.getEdgeEnvironment.mockResolvedValue({ ...UAT, id: 'prod', name: 'Prod', is_prod: true } as never);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    await waitFor(() => expect(envApi.getEdgeEnvironment).toHaveBeenCalled());
+    await act(async () => {});
+    expect(badge()).toBeNull();
+  });
+
+  it('the plain web kiosk shows none and asks nothing', async () => {
+    envApi.getEdgeEnvironment.mockResolvedValue(UAT as never);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    await act(async () => {});
+    expect(badge()).toBeNull();
+    expect(envApi.getEdgeEnvironment).not.toHaveBeenCalled();
+  });
+});
 
 it('signed in, the shell loads the laptop\'s shared setup; signed out it does not', () => {
   render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);

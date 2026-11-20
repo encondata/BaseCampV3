@@ -23,6 +23,7 @@ import com.serversherpa.kiosk.core.model.PairPoll
 import com.serversherpa.kiosk.core.model.AssetScanRow
 import com.serversherpa.kiosk.core.model.KioskAssetDetail
 import com.serversherpa.kiosk.core.model.KioskLookupResult
+import com.serversherpa.kiosk.core.model.MeInfo
 import com.serversherpa.kiosk.core.model.RolodexCreateIn
 import com.serversherpa.kiosk.core.model.RolodexDetail
 import com.serversherpa.kiosk.core.model.RolodexDuplicatesIn
@@ -48,6 +49,9 @@ interface KioskApi {
     /** Sign in with a move's kiosk password (no person account involved); stores the session like [login]. */
     suspend fun moveLogin(password: String): SessionData
     suspend fun logout()
+    /** GET /auth/me under the session: the signed-in person's roles, rank and scope, live (the
+     *  environment switch's access check). 401 when there is no usable session. */
+    suspend fun me(): MeInfo
     suspend fun systemStatus(): SystemStatus
     suspend fun createPairRequest(serial: String, name: String): PairCreated
     /** 404 reads as EXPIRED; an approved answer stores the session. */

@@ -282,6 +282,14 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .login-shell.login-light .eyebrow-row {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
 }
+/* A laptop off Prod names its environment beside the kiosk name. The
+   sign-in page sits outside .portal-shell, which defines the chip's tokens,
+   so it gets the light ones here (the sign-in page is always light). */
+.login-shell.login-light .eyebrow-env {
+  --c-amber: #a36207; --c-amber-bg: rgba(255, 161, 46, 0.14); --c-amber-bd: rgba(255, 161, 46, 0.38);
+  --list-chip-h: 22px; --list-fs-chip: 12px;
+  align-self: center; margin-left: auto;
+}
 .login-shell.login-light .eyebrow-kiosk {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -1453,6 +1461,36 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 }
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-body { overflow: auto; min-height: 0; }
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-head { flex: none; }
+
+/* ── Change environment (Settings › This Kiosk, laptop) ─────────────
+   Clear Setup's modal shell. The card itself scrolls (its scrollbar is
+   chrome.css's rounded one); the header and the buttons stick to its top
+   and bottom, so the buttons never sit below the fold. */
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.env-card { width: min(560px, calc(100vw - 32px)); }
+.env-card > .modal-head { position: sticky; top: 0; z-index: 1; }
+.env-card > .modal-foot { position: sticky; bottom: 0; z-index: 1; background: var(--surface, #fff); }
+.env-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.env-row {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 48px; padding: 10px 14px;
+  border: 1px solid var(--paper-line); border-radius: 10px;
+  background: var(--surface-2, #f5f7fa); color: var(--text-dark);
+  font: inherit; font-size: 15px; text-align: left; cursor: pointer;
+  transition: border-color .15s;
+}
+.env-row:hover:not(:disabled) { border-color: var(--accent); }
+.env-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.env-row:disabled { cursor: default; }
+.env-row-name { font-weight: 500; }
+.env-card .pf-form.env-form { grid-template-columns: minmax(0, 1fr); }
+.env-confirm { margin: 14px 0 0; color: var(--text-dark); }
+.env-confirm:first-child { margin-top: 0; }
+.env-card .zp-notice { margin-top: 12px; }
+.env-card .form-error { margin: 12px 0 0; }
+/* This Kiosk's Environment row: the name with Change… beside it */
+.ks-environment { display: flex; align-items: center; gap: 8px; }
+.ks-environment input { flex: 1 1 auto; min-width: 0; }
+.ks-environment .mini-btn { flex: none; }
 
 /* ── Clear Setup (Settings › Developer) ─────────────────────────────
    The confirm card reuses the printer factory reset's modal shell; only

@@ -51,6 +51,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.cancel
+import com.serversherpa.kiosk.core.environment.Environments
+import com.serversherpa.kiosk.core.environment.asSaved
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
@@ -377,6 +379,24 @@ class InternetTestUiTest {
         assertEquals(1.15f, compose.density.fontScale)
 
         assertChipFits("Kiosk 8CE2", nameFitsWhileOff = true)
+    }
+
+    /** The environment badge shares the brand line: off Prod (`Custom`, the test container's, is
+     *  the widest label) the bar is no taller with the chip on, nor than on Prod. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun theEnvironmentBadgeNeverMakesTheBarTaller() {
+        showSignedInShell("Kiosk 8CE2")
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("env-badge").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Custom").assertIsDisplayed()
+        val badgeOnly = pageTop()
+
+        assertChipFits("Kiosk 8CE2", nameFitsWhileOff = true)
+
+        runBlocking { c.environments.save(checkNotNull(Environments.byId("prod")).asSaved()) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("env-badge").fetchSemanticsNodes().isEmpty() }
+        assertEquals("the bar is another height on Prod", badgeOnly, pageTop())
     }
 
     @Test fun chipOpensDeveloperSettings() {

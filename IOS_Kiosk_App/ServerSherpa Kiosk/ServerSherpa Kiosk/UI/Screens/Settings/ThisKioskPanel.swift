@@ -1,9 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// Settings › This Kiosk: name, serial, mode, biometric sign-in, API/portal URLs, version, app updates — usable
-/// signed out.
+/// Settings › This Kiosk: name, serial, mode, biometric sign-in, environment and server, version, app
+/// updates — usable signed out. `onSwitched` runs after an environment switch (on to sign-in).
 struct ThisKioskPanel: View {
+    var onSwitched: () -> Void = {}
     @Environment(KioskConfig.self) private var config
     @Environment(Identity.self) private var identity
     @Environment(Heartbeat.self) private var heartbeat
@@ -11,21 +12,16 @@ struct ThisKioskPanel: View {
     @Environment(\.container) private var container
     @Environment(\.kioskPalette) private var palette
     @State private var name = ""
-    @State private var api = ""
-    @State private var portal = ""
     @State private var nameError: String?
-    @State private var urlError: String?
     @State private var saved: String?
     @State private var copied = false
 
     private var authed: Bool { if case .authed = auth.state { true } else { false } }
 
-    private func field(_ placeholder: String, _ text: Binding<String>, url: Bool = false) -> some View {
+    private func field(_ placeholder: String, _ text: Binding<String>) -> some View {
         TextField(placeholder, text: text)
             .font(KioskType.bodyLarge)
-            .textInputAutocapitalization(url ? .never : .sentences)
-            .autocorrectionDisabled(url)
-            .keyboardType(url ? .URL : .default)
+            .textInputAutocapitalization(.sentences)
             .padding(.horizontal, 12)
             .frame(minHeight: 48)
             .background(palette.paper, in: RoundedRectangle(cornerRadius: 10))
@@ -68,37 +64,13 @@ struct ThisKioskPanel: View {
             SettingsRow(title: "Mode") { Text("iOS").font(KioskType.mono(13)).foregroundStyle(palette.text) }
             SettingsRow(title: "Device model") { Text(DeviceInfo.rawInfo()["model"] ?? "—").font(KioskType.mono(13)).foregroundStyle(palette.text) }
             BiometricRow()
-            SettingsRow(title: "API URL", detail: "Where this kiosk talks to the portal. Must start with http:// or https://. Saving a new API address signs this kiosk out.") {
-                field("https://api.serversherpa.com", $api, url: true).accessibilityIdentifier("api-url")
-                    .onChange(of: api) { urlError = nil; typed() }
-                Text("Portal URL").font(KioskType.bodySmall).foregroundStyle(palette.textMute).padding(.top, 8)
-                field("https://portal.serversherpa.com", $portal, url: true).accessibilityIdentifier("portal-url")
-                    .onChange(of: portal) { urlError = nil; typed() }
-                KioskToast(text: urlError, error: true)
-                SecondaryButton("Save URLs") {
-                    Task {
-                        if let error = await SettingsModel.saveUrls(api: api, portal: portal, config: config,
-                                                                    session: container.sessionStore, auth: auth,
-                                                                    station: container.station) {
-                            urlError = error
-                        } else {
-                            urlError = nil
-                            api = config.apiUrl
-                            portal = config.portalUrl
-                            saved = "URLs saved."
-                        }
-                    }
-                }
-                .padding(.top, 8)
-            }
+            EnvironmentRow(onSwitched: onSwitched)
             SettingsRow(title: "Version") { Text(config.kioskVersion).font(KioskType.mono(13)).foregroundStyle(palette.text) }
             AppUpdatesRow()
             KioskToast(text: saved)
         }
         .onAppear {
             name = identity.current.name
-            api = config.apiUrl
-            portal = config.portalUrl
         }
     }
 }

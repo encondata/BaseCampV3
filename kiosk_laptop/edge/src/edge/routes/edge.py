@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from edge import config_sync, laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
 from edge.deps import json_object as _json_object
+from edge.environment_store import ever_registered
 from edge.identity import rename
 from edge.rfid import uploader
 from edge.rfid.tagreads import note_cache_write
@@ -55,6 +56,32 @@ async def set_identity(request: Request, _: EdgeSession = Depends(require_admin)
     except ValueError:
         raise err(422, "bad_name") from None
     return {"serial": st.identity.serial, "name": st.identity.name}
+
+
+@router.get("/environments")
+async def environments(request: Request) -> dict:
+    """The environments a kiosk can switch to, and where the list came from
+    (fresh download, last good download, or the built-in list). Anonymous: the
+    chooser runs before anyone signs in."""
+    envs, source = await request.app.state.env_list.current()
+    return {"source": source, "environments": [
+        {"id": e.id, "name": e.name, "domain": e.domain, "api_url": e.api_url,
+         "portal_url": e.portal_url, "is_prod": e.is_prod} for e in envs]}
+
+
+def environment_body(st) -> dict:
+    cur = st.environment
+    return {"kind": cur.kind, "id": cur.id, "name": cur.name, "domain": cur.domain,
+            "api_url": cur.api_url, "portal_url": cur.portal_url, "is_prod": cur.is_prod,
+            "ever_registered": ever_registered(st.settings.data_dir)}
+
+
+@router.get("/environment")
+async def environment(request: Request) -> dict:
+    """The server this laptop talks to now, and whether any server has ever
+    registered it. Anonymous, like the list. (The switch is POST
+    /edge/environment, edge/environment_switch.py.)"""
+    return environment_body(request.app.state)
 
 
 @router.get("/status")
@@ -108,17 +135,20 @@ async def retry(request: Request, _: EdgeSession = Depends(require_session)) -> 
     return {"requeued": n}
 
 
-@router.post("/wipe")
-async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSONResponse:
-    st = request.app.state
-    body = await _json_object(request, empty_ok=True)
-    # unsent data: queued kiosk writes, RFID scans not yet uploaded and Dock
-    # passes not yet sent
-    pending = outbox.pending_count(st.store) + st.store.one(
+def unsent_count(st) -> int:
+    """Unsent data: queued kiosk writes, RFID scans not yet uploaded and Dock
+    passes not yet sent."""
+    return outbox.pending_count(st.store) + st.store.one(
         "SELECT (SELECT COUNT(*) FROM pending_rfid_scans WHERE upload_state = 'pending') "
         "+ (SELECT COUNT(*) FROM dock_passes WHERE send_state = 'pending') AS n")["n"]
-    if pending and body.get("confirm") != "WIPE":
-        raise err(409, "outbox_not_empty", pending=pending)
+
+
+def wipe_move_data(st) -> None:
+    """Wipe's clearing: every sign-in and everything the laptop holds for a
+    move. Kept: the data folder's files (identity, edge.key, the saved
+    environment, the registered flag), the reader pairing, the kiosk config
+    and the alarm settings. No await: it runs in one go, which the
+    environment switch relies on."""
     with st.store.tx() as c:
         had_label_station = laptop_setup.label_station_in(c) is not None
         for table in AUTH_TABLES + MOVE_TABLES:
@@ -135,6 +165,16 @@ async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSO
             config_sync.note_label_station(c)
     note_cache_write()  # the cache table was emptied: drop memoized tag indexes
     st.label_runner.forget()
+
+
+@router.post("/wipe")
+async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSONResponse:
+    st = request.app.state
+    body = await _json_object(request, empty_ok=True)
+    pending = unsent_count(st)
+    if pending and body.get("confirm") != "WIPE":
+        raise err(409, "outbox_not_empty", pending=pending)
+    wipe_move_data(st)
     response = JSONResponse({"cleared_move_data": True})
     response.delete_cookie("ss_refresh", path="/auth")
     return response

@@ -7,11 +7,14 @@ import com.serversherpa.kiosk.core.model.HeartbeatResult
 import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.auth.LoginMethod
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
 import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.prefs.SetupClearRecord
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -34,8 +37,9 @@ class HeartbeatTest {
 
     private fun harness(scope: kotlinx.coroutines.CoroutineScope, api: FakeKioskApi): Pair<Heartbeat, KioskPrefs> {
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "hb.preferences_pb") })
-        val config = KioskConfig(prefs, "https://api", "https://portal", "0.1.0")
-        return Heartbeat(api, Identity(prefs), config, prefs, deviceInfo = { mapOf("model" to "MC2200") }, intervalMs = 60_000) to prefs
+        val environments = EnvironmentStore(prefs)
+        val config = KioskConfig(environments, SavedEnvironment.Named("dev", "Dev", "dev.serversherpa.com"), "0.1.0")
+        return Heartbeat(api, Identity(prefs), config, prefs, environments, deviceInfo = { mapOf("model" to "MC2200") }, intervalMs = 60_000) to prefs
     }
 
     @Test fun beatsImmediatelyThenEveryMinuteAndReportsRegistration() = runTest {
@@ -187,5 +191,57 @@ class HeartbeatTest {
         fail = false
         hb.signInNow()
         assertEquals("link", api.heartbeats.last().login_method)
+    }
+
+    /** Any registration but "none" marks the kiosk as registered for good; "none" doesn't. */
+    @Test fun aRegistrationSetsTheEverRegisteredFlagAndNoneDoesNot() = runTest {
+        val api = FakeKioskApi()
+        var registration = "none"
+        api.heartbeatResult = { HeartbeatResult("d1", it.name, registration, null) }
+        val (hb, prefs) = harness(backgroundScope, api)
+        val environments = EnvironmentStore(prefs)
+        hb.now()
+        assertEquals(false, environments.everRegistered.first())
+        registration = "ok"
+        hb.now()
+        assertEquals(true, environments.everRegistered.first())
+        registration = "none"
+        hb.now()
+        assertEquals(true, environments.everRegistered.first())   // never cleared
+    }
+
+    /** An environment switch: a beat still waiting on the old server when the heartbeat stops
+     *  writes nothing from its reply (no registration, no Clear Setup, no sign-in method), except
+     *  the has-been-registered flag: a registration from any server counts for good (as on iOS). */
+    @Test fun aReplyArrivingAfterStopAndDropRepliesWritesNothing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val api = object : FakeKioskApi() {
+            override suspend fun heartbeat(body: com.serversherpa.kiosk.core.model.HeartbeatIn): HeartbeatResult {
+                gate.await(); return super.heartbeat(body)
+            }
+        }
+        api.heartbeatResult = { HeartbeatResult("d", it.name, "ok", null, clear_setup = "x9") }
+        val (hb, prefs) = harness(backgroundScope, api)
+        prefs.setSetupState(SetupState.COMPLETE)
+        val events = mutableListOf<String>()
+        backgroundScope.launch { hb.setupCleared.collect { events += it } }
+        backgroundScope.launch { hb.signInNow() }                    // outside the beat loop: stop() can't cancel it
+        prefs.setSignInMethod("password")
+        settle()
+
+        hb.stopAndDropReplies()
+        prefs.setSignInMethod("link")
+        gate.complete(Unit); settle()
+
+        assertEquals(1, api.heartbeats.size)
+        assertNull(hb.registration.value)
+        assertNull(prefs.setupClear.first())
+        assertEquals(SetupState.COMPLETE, prefs.setupState.first())
+        assertEquals("link", prefs.signInMethod.first())
+        assertEquals(emptyList<String>(), events)
+        assertEquals(true, prefs.everRegistered.first())
+        // A beat that starts afterwards is the new server's: its reply counts.
+        hb.now()
+        assertEquals(RegistrationState.OK, hb.registration.value)
     }
 }

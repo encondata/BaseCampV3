@@ -32,3 +32,6 @@ val CameraIcon: ImageVector = lineIcon(
         "M12 10.6a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6z",
     ),
 )
+
+/** A modal's close cross (the web modals' `.modal-close` glyph). */
+val CloseIcon: ImageVector = lineIcon("close", listOf("M5 5l14 14", "M19 5L5 19"))

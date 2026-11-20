@@ -51,7 +51,8 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
         Text(active.label, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 16.dp))
         Text(active.blurb, style = MaterialTheme.typography.bodyMedium, color = LocalKioskColors.current.textMute, modifier = Modifier.padding(bottom = 8.dp))
         when (active.id) {
-            SettingsTabId.THIS_KIOSK -> ThisKioskPanel()
+            // An environment switch signs the kiosk out and clears its setup: on to sign-in, nothing behind it.
+            SettingsTabId.THIS_KIOSK -> ThisKioskPanel(onSwitched = { nav.navigate(Routes.LOGIN) { popUpTo(0) } })
             SettingsTabId.APPEARANCE -> AppearancePanel()
             SettingsTabId.SOUND -> SoundPanel()
             SettingsTabId.DEVICES -> DevicesPanel()

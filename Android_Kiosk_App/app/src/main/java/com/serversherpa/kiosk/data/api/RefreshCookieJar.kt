@@ -64,4 +64,12 @@ class RefreshCookieJar(private val secrets: SecretStore) : CookieJar {
         hosts.forEach { secrets.remove(refreshKey(it)) }
         memory.clear()
     }
+
+    /** Forgets every stored refresh cookie, whichever host it came from and whichever launch
+     *  stored it (an environment switch): none may reach the next server. */
+    @Synchronized
+    fun clearAllRefreshCookies() {
+        secrets.keys().filter { it.startsWith("cookie|") && it.endsWith("|$REFRESH_COOKIE") }.forEach(secrets::remove)
+        memory.clear()
+    }
 }

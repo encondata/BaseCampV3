@@ -134,6 +134,7 @@ class PushActionReceiverTest {
             override fun get(key: String): String? = throw GeneralSecurityException("keystore locked")
             override fun put(key: String, value: String) = throw GeneralSecurityException("keystore locked")
             override fun remove(key: String) = throw GeneralSecurityException("keystore locked")
+            override fun keys(): Set<String> = throw GeneralSecurityException("keystore locked")
         })
         val failing = PushActions(api, broken, apiBase = { base }, io = Dispatchers.Unconfined, timeoutMillis = 200)
         // the app's scope has no handler; this one only records what would have crashed the app
@@ -161,6 +162,7 @@ class PushActionReceiverTest {
             override fun get(key: String): String? = kept.get(key)
             override fun put(key: String, value: String) = kept.put(key, value)
             override fun remove(key: String) = throw GeneralSecurityException("keystore locked")
+            override fun keys(): Set<String> = kept.keys()
         }), apiBase = { base }, io = Dispatchers.Unconfined, timeoutMillis = 200)
         api.pushReadResult = { _, _ -> throw ApiError(401, "push_key_invalid") }
         assertFalse(runBlocking { clearFails.run(PushActionReceiver.ACTION_READ, id) })

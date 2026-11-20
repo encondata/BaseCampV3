@@ -267,6 +267,7 @@ class PushRegistrarTest {
             override fun get(key: String): String? = if (failGet) throw GeneralSecurityException("keystore") else inner.get(key)
             override fun put(key: String, value: String) = if (failPut) throw GeneralSecurityException("keystore") else inner.put(key, value)
             override fun remove(key: String) = if (failPut) throw GeneralSecurityException("keystore") else inner.remove(key)
+            override fun keys(): Set<String> = if (failGet) throw GeneralSecurityException("keystore") else inner.keys()
         }), fcm, apiBase = { apiBase }, personId = { me }, io = Dispatchers.Unconfined)
 
     @Test fun onNewToken_store_that_throws_does_not_crash() = runBlocking {

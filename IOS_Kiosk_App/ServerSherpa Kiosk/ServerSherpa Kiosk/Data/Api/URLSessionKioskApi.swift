@@ -209,6 +209,10 @@ final class URLSessionKioskApi: KioskApi {
         _ = try? await execute(request)   // best effort: local state is already gone
     }
 
+    func me() async throws -> MeInfo {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/auth/me")) })
+    }
+
     func systemStatus() async throws -> SystemStatus {
         try Self.parse(await plain { try Self.request(Self.url("\($0)/system/status")) })
     }

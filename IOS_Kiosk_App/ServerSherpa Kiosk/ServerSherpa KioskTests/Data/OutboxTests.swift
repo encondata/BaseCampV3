@@ -71,10 +71,15 @@ private actor FlakyOutboxStore: OutboxStore {
     private let inner = MemoryOutboxStore()
     private var failUpserts = 0
     private var failDeletes = 0
+    private var failReads = 0
     private(set) var upsertAttempts = 0
     func setFailUpserts(_ n: Int) { failUpserts = n }
     func setFailDeletes(_ n: Int) { failDeletes = n }
-    func all() async throws -> [OutboxRow] { await inner.all() }
+    func setFailReads(_ n: Int) { failReads = n }
+    func all() async throws -> [OutboxRow] {
+        if failReads > 0 { failReads -= 1; throw CocoaError(.fileReadUnknown) }
+        return await inner.all()
+    }
     func upsert(_ rows: [OutboxRow]) async throws {
         upsertAttempts += 1
         if failUpserts > 0 { failUpserts -= 1; throw CocoaError(.fileWriteUnknown) }
@@ -363,6 +368,53 @@ struct OutboxTests {
         let saved = await ob.enqueue(input())
         #expect(saved != nil)
         #expect(ob.storageError == nil)
+    }
+
+    /// An environment switch's discard: every row goes, from the store too (one the outbox never
+    /// read included), and a batch on its way to the old server keeps no outcome when it answers.
+    @Test func discardAllDropsEveryRowAndTheAnswerOfABatchInFlight() async throws {
+        let api = FakeKioskApi()
+        let gate = Gate()
+        api.postScansResult = { body in
+            await gate.wait()
+            return KioskScanBatchOut(accepted: body.scans.map(\.clientScanId))
+        }
+        let store = MemoryOutboxStore()
+        let ob = await started(outbox(api, store))
+        _ = await ob.enqueue(input())
+        _ = await ob.enqueue(input("zzz", matched: false))
+        await time.advance(by: 600)
+        #expect(api.scanBatches.count == 1)
+        #expect(ob.snapshot.counts.queued == 1)                          // the batch, in flight
+        await store.upsert([OutboxMachine.newRow(input("B-2"), clientScanId: "unread", seq: 99, nowMs: 0)])
+
+        try await ob.discardAll()
+        #expect(ob.snapshot.counts.total == 0)
+        #expect(await store.all().isEmpty)
+
+        await gate.release()
+        await waitUntil { bg.ended == [1] }
+        #expect(bg.ended == [1])
+        #expect(await store.all().isEmpty)                               // its answer wasn't saved back
+        #expect(ob.snapshot.rows.isEmpty)
+
+        _ = await ob.enqueue(input("A-1"))                               // the outbox goes on as usual
+        await time.advance(by: 600)
+        #expect(api.scanBatches.count == 2)
+        #expect(ob.snapshot.rows.map(\.status) == [.accepted])
+    }
+
+    /// The store not read is never an empty outbox to a caller that counts on it.
+    @Test func loadSaysWhetherTheStoreCouldBeRead() async throws {
+        let store = FlakyOutboxStore()
+        try await store.upsert([OutboxMachine.newRow(input(), clientScanId: "c1", seq: 1, nowMs: 0)])
+        await store.setFailReads(1)
+        let ob = outbox(FakeKioskApi(), store)
+        #expect(await ob.load() == false)
+        #expect(ob.snapshot.counts.total == 0)
+        #expect(await ob.load() == true)
+        #expect(ob.snapshot.counts.queued == 1)
+        #expect(await ob.load() == true)
     }
 
     @Test func kioskStoreIsAnOutboxStore() async throws {

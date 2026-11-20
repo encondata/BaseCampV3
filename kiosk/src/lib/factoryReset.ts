@@ -122,6 +122,33 @@ export async function countUnsent(): Promise<number> {
   return n;
 }
 
+/** Keys Clear Setup keeps that belong to the old server: its settings
+ *  document's sync bookkeeping and the portal Clear handshake. */
+const SERVER_KEYS: readonly string[] = [
+  'ss.kiosk.configSync',
+  'ss.kiosk.laptopConfigPending',
+  'ss.kiosk.setupClear',
+];
+
+/** This browser's half of a laptop environment switch, run after the edge
+ *  switched (it has already wiped its own data and dropped the refresh
+ *  cookie, so there is no `/edge/wipe` here). Everything Clear Setup
+ *  clears, plus the old server's sync bookkeeping: the new server keeps
+ *  its own settings document. Only the name and serial stay. The storage
+ *  is cleared even when the local database can't be; that failure still
+ *  rejects. The caller reloads after. */
+export async function clearForSwitch(): Promise<void> {
+  resetSettingsToDefaults();
+  try {
+    await clearEverything();
+  } finally {
+    clearKioskStorage();
+    for (const key of SERVER_KEYS) {
+      try { localStorage.removeItem(key); } catch { /* best effort */ }
+    }
+  }
+}
+
 /** Runs Clear Setup. Rejects only when the laptop wipe fails — and then
  *  nothing in the browser has been cleared. The caller reloads after. */
 export async function runClearSetup({ heartbeatNow, logout }: ClearSetupDeps): Promise<void> {

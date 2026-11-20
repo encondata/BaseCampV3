@@ -1,20 +1,24 @@
 package com.serversherpa.kiosk.data.config
 
-import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.core.environment.SavedEnvironment
+import com.serversherpa.kiosk.core.environment.apiUrl
+import com.serversherpa.kiosk.core.environment.portalUrl
+import com.serversherpa.kiosk.data.environment.EnvironmentStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-/** Runtime configuration: the stored URL wins, else the build default.
- *  Read per call — never cached at construction. */
+/** Runtime configuration: the saved environment's addresses, else the build's default
+ *  environment's. Read per call — never cached at construction. */
 class KioskConfig(
-    private val prefs: KioskPrefs,
-    private val defaultApiUrl: String,
-    private val defaultPortalUrl: String,
+    store: EnvironmentStore,
+    defaultEnvironment: SavedEnvironment,
     val kioskVersion: String,
 ) {
-    val apiUrl: Flow<String> = prefs.apiUrl.map { normalizeUrl(it ?: "") ?: defaultApiUrl }
-    val portalUrl: Flow<String> = prefs.portalUrl.map { normalizeUrl(it ?: "") ?: defaultPortalUrl }
+    /** The environment this kiosk connects to. A later environment list never changes it. */
+    val environment: Flow<SavedEnvironment> = store.current(defaultEnvironment)
+    val apiUrl: Flow<String> = environment.map { it.apiUrl }
+    val portalUrl: Flow<String> = environment.map { it.portalUrl }
 
     suspend fun apiUrlNow(): String = apiUrl.first()
     suspend fun portalUrlNow(): String = portalUrl.first()

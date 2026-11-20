@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from edge import config_sync, laptop_setup
+from edge import config_sync, environment_store, laptop_setup
 from edge.db import iso, now_iso
 from edge.rfid import pairing, station_key, ziotc
 from edge.rfid.ziotc import ReaderError
@@ -201,6 +201,7 @@ async def send_station_heartbeat(state, snap: dict | None) -> None:
             data = resp.json()
         except ValueError:
             return
+        environment_store.note_heartbeat_reply(state.settings.data_dir, data)
         try:
             config_sync.handle_reply(state.store, beat, data)
         except Exception as exc:  # noqa: BLE001 — never break the beat over the config

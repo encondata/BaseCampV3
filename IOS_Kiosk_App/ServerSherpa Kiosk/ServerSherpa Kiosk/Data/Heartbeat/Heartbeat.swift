@@ -10,7 +10,9 @@ import Observation
 /// banner raised), announced on `setupClearSignal` and `onSetupCleared`, and acknowledged on an
 /// immediate re-beat and every beat after until the reply stops asking for it. A reply that
 /// lands after `stop()` (sign-out, the app leaving the front, a session that ended) is dropped
-/// whole, so a beat sent for one session never changes the next one.
+/// whole, so a beat sent for one session never changes the next one. The one exception: any reply
+/// with a registration but "none" sets the kiosk's has-been-registered flag, a fact about this
+/// kiosk rather than the session's state.
 @MainActor @Observable
 final class Heartbeat {
     private(set) var registration: RegistrationState?
@@ -24,6 +26,7 @@ final class Heartbeat {
     @ObservationIgnored private let api: KioskApi
     @ObservationIgnored private let identity: Identity
     @ObservationIgnored private let prefs: KioskPrefs
+    @ObservationIgnored private let environments: EnvironmentStore
     @ObservationIgnored private let version: String
     @ObservationIgnored private let rawInfo: @MainActor () -> [String: String]
     @ObservationIgnored private let interval: Duration
@@ -47,6 +50,7 @@ final class Heartbeat {
         identity: Identity,
         prefs: KioskPrefs,
         version: String,
+        environments: EnvironmentStore? = nil,
         rawInfo: @escaping @MainActor () -> [String: String] = DeviceInfo.rawInfo,
         interval: Duration = .seconds(60),
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
@@ -54,6 +58,7 @@ final class Heartbeat {
         self.api = api
         self.identity = identity
         self.prefs = prefs
+        self.environments = environments ?? EnvironmentStore(prefs: prefs)
         self.version = version
         self.rawInfo = rawInfo
         self.interval = interval
@@ -80,6 +85,14 @@ final class Heartbeat {
         registration = nil
     }
 
+    /// An environment switch: stops (every beat already sent, the loop's or a `now()` /
+    /// `signInNow()` still waiting, drops the old server's reply) and forgets a pending sign-in,
+    /// which belonged to that server. The next sign-in starts it again as usual.
+    func stopAndDropReplies() {
+        stop()
+        pendingSignIn = nil
+    }
+
     /// Beat right now (after a rename). Resolves after the attempt.
     func now() async { await beat() }
 
@@ -104,6 +117,7 @@ final class Heartbeat {
                                signIn: signIn || asSignIn != nil, loginMethod: asSignIn?.rawValue, setupCleared: ack)
         do {
             let result = try await api.heartbeat(body)
+            if result.registration != RegistrationState.none.rawValue { environments.markRegistered() }
             // stop() ran meanwhile: the reply is dropped whole (no ack, no clear, no registration)
             guard started == generation, !Task.isCancelled else { return }
             if let asSignIn, pendingSignIn == asSignIn { pendingSignIn = nil }

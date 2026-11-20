@@ -27,6 +27,9 @@ protocol KioskApi: Sendable {
     /// `POST /kiosk/sign-out` with the token captured at sign-out. Never throws -
     /// the kiosk has dropped its own token either way.
     func signOut(serial: String, credentials: SignOutCredentials) async
+    /// `GET /auth/me` under the session: the signed-in person's roles, rank and scope, for an
+    /// environment switch's gates. A 2xx that doesn't decode is `unknown_error` with its status.
+    func me() async throws -> MeInfo
 
     // MARK: setup & sync
 

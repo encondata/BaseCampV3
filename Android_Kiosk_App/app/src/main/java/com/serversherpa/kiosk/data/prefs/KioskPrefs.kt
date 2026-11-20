@@ -30,6 +30,9 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class SetupClearRecord(val id: String, val acked: Boolean = false, val notice: Boolean = false)
 
+/** [KioskPrefs.environment]: the saved environment's JSON, and the pre-picker URLs not yet migrated. */
+data class EnvironmentPrefs(val environment: String?, val legacyApiUrl: String?, val legacyPortalUrl: String?)
+
 /** This phone's biometric sign-in, saved at enrollment: the server's key id, and whose key it is.
  *  [email] is the address typed at that password sign-in (the server never sends one), so the
  *  expired card can pre-fill it. The private key itself lives in Android Keystore. */
@@ -55,8 +58,12 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val offerSledBothToEveryone = booleanPreferencesKey("ss.kiosk.offerSledBothToEveryone")
         val sledFlash = booleanPreferencesKey("ss.kiosk.sledFlash")
         val notificationPermissionAsked = booleanPreferencesKey("ss.kiosk.notificationPermissionAsked")
-        val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
-        val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
+        /** The URLs typed before the environment picker; read only until [migrateLegacyUrls] removes them. */
+        val legacyApiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
+        val legacyPortalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
+        val environment = stringPreferencesKey("ss.kiosk.environment")
+        val environmentList = stringPreferencesKey("ss.kiosk.environmentList")
+        val everRegistered = booleanPreferencesKey("ss.kiosk.everRegistered")
         val serial = stringPreferencesKey("ss.kiosk.serial")
         val name = stringPreferencesKey("ss.kiosk.name")
         val setupClear = stringPreferencesKey("ss.kiosk.setupClear")
@@ -191,6 +198,10 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     val signInMethod: Flow<String?> = store.data.map { it[Keys.signInMethod] }
     suspend fun setSignInMethod(wire: String) { store.edit { it[Keys.signInMethod] = wire } }
 
+    /** An environment switch: what the old server's heartbeats left here, the last sign-in
+     *  method and the Clear Setup record (its id belongs to that server), in one write. */
+    suspend fun clearServerRecords() { store.edit { it.remove(Keys.signInMethod); it.remove(Keys.setupClear) } }
+
     /** This phone's biometric sign-in, or null (none, or nothing readable). One key, one write. */
     val biometric: Flow<BiometricEnrollment?> = store.data.map { p ->
         p[Keys.biometric]?.let { raw -> try { json.decodeFromString<BiometricEnrollment>(raw) } catch (e: Exception) { null } }
@@ -199,11 +210,37 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         store.edit { if (enrollment == null) it.remove(Keys.biometric) else it[Keys.biometric] = json.encodeToString(BiometricEnrollment.serializer(), enrollment) }
     }
 
-    val apiUrl: Flow<String?> = store.data.map { it[Keys.apiUrl] }
-    suspend fun setApiUrl(url: String?) { store.edit { if (url == null) it.remove(Keys.apiUrl) else it[Keys.apiUrl] = url } }
+    /** The saved environment as stored (JSON, checked by EnvironmentStore), with the URLs typed
+     *  before the picker while they are still there, from one snapshot. */
+    val environment: Flow<EnvironmentPrefs> = store.data.map { p ->
+        EnvironmentPrefs(p[Keys.environment], p[Keys.legacyApiUrl], p[Keys.legacyPortalUrl])
+    }
+    suspend fun setEnvironment(json: String) { store.edit { it[Keys.environment] = json } }
 
-    val portalUrl: Flow<String?> = store.data.map { it[Keys.portalUrl] }
-    suspend fun setPortalUrl(url: String?) { store.edit { if (url == null) it.remove(Keys.portalUrl) else it[Keys.portalUrl] = url } }
+    /**
+     * The URLs typed before the picker, in one write: with no environment saved, [convert]'s
+     * answer (when not null) is saved as the environment; the old keys are removed either way.
+     * Nothing happens when neither old key is there, so it runs once.
+     */
+    suspend fun migrateLegacyUrls(convert: (api: String?, portal: String?) -> String?) {
+        store.edit { p ->
+            val api = p[Keys.legacyApiUrl]
+            val portal = p[Keys.legacyPortalUrl]
+            if (api == null && portal == null) return@edit
+            if (p[Keys.environment] == null) convert(api, portal)?.let { p[Keys.environment] = it }
+            p.remove(Keys.legacyApiUrl)
+            p.remove(Keys.legacyPortalUrl)
+        }
+    }
+
+    /** The last good environment list download, as stored (checked again when read). */
+    val environmentList: Flow<String?> = store.data.map { it[Keys.environmentList] }
+    suspend fun setEnvironmentList(json: String) { store.edit { it[Keys.environmentList] = json } }
+
+    /** Whether any server has ever registered this kiosk. Nothing clears it: only a fresh
+     *  install or clearing the app's data does. */
+    val everRegistered: Flow<Boolean> = store.data.map { it[Keys.everRegistered] ?: false }
+    suspend fun setEverRegistered() { store.edit { if (it[Keys.everRegistered] != true) it[Keys.everRegistered] = true } }
 
     val serial: Flow<String?> = store.data.map { it[Keys.serial] }
     suspend fun setSerial(serial: String) { store.edit { it[Keys.serial] = serial } }

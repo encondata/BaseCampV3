@@ -47,6 +47,8 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var imageResult: @Sendable (String) throws -> Data = { _ in throw unset }
     var stationKeyResult: @Sendable (String) async throws -> String = { _ in throw unset }
+    /// `GET /auth/me`. Unset, the server refuses to say (401), as Android's fake does.
+    var meResult: @Sendable () async throws -> MeInfo = { throw ApiError(status: 401, code: "not_authenticated") }
 
     // Asset Lookup. Unset, each throws Android's fake answer (404 not_found). Their calls are
     // recorded as "lookupAssets:<value>", "assetDetail:<id>" and "assetScans:<id>" (as Android's).
@@ -134,6 +136,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
         return try answer.get()
     }
     func signOut(serial: String, credentials: SignOutCredentials) async { record("signOut"); await signOutGate?() }
+    func me() async throws -> MeInfo { record("me"); return try await meResult() }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
     func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult {
         lock.lock(); _submitSetupBodies.append(body); lock.unlock()
