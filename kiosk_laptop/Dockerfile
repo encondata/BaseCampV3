@@ -10,7 +10,7 @@
 # The bundle is plain JS, so build it on the build machine's own platform: a
 # multi-arch build then emulates (QEMU) only the Python stage's pip install.
 FROM --platform=$BUILDPLATFORM node:20-alpine AS web
-ARG KIOSK_VERSION=0.0.0
+ARG KIOSK_VERSION=0.3.1
 WORKDIR /app
 COPY kiosk/package.json kiosk/package-lock.json ./kiosk/
 RUN npm ci --prefix kiosk --ignore-scripts
@@ -21,7 +21,7 @@ RUN npm --prefix kiosk run build:bundle
 
 FROM python:3.13-slim
 LABEL org.opencontainers.image.source=https://github.com/encondata/BaseCampV3
-ARG KIOSK_VERSION=0.0.0
+ARG KIOSK_VERSION=0.3.1
 ENV EDGE_VERSION=$KIOSK_VERSION
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     EDGE_DATA_DIR=/data EDGE_WEB_DIR=/app/web
