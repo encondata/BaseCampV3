@@ -31,6 +31,7 @@ import KioskBanners from '../components/KioskBanners';
 import PairPanel from '../components/PairPanel';
 import { ApiError, CLOUD_SIGN_IN_TEXT, type SessionData } from '../lib/api';
 import { useEdgeStatus } from '../lib/edgeStatus';
+import { environmentBadge, useEdgeEnvironment } from '../lib/environment';
 import { getIdentity } from '../lib/identity';
 import { useStationInfo } from '../timeclock/stationApi';
 import { useIdle } from '../timeclock/useIdle';
@@ -198,6 +199,8 @@ export default function Login() {
   useIdle(timeclockStation, TIMECLOCK_RETURN_MS, backToTimeclock);
 
   const identity = getIdentity();
+  // A laptop off Prod names its environment beside the eyebrow.
+  const envBadge = environmentBadge(useEdgeEnvironment());
   // The laptop edge serves the UI on the LAN over plain HTTP too.
   const lanAccess = typeof window !== 'undefined' && window.__KIOSK_CONFIG__?.lanAccess === true;
 
@@ -223,6 +226,7 @@ export default function Login() {
         <div className="form-wrap" ref={formWrapRef}>
           <div className="eyebrow-row">
             <div className="eyebrow">ServerSherpa Kiosk</div>
+            {envBadge && <span className="chip c-amber eyebrow-env"><span className="dot" />{envBadge}</span>}
             <div className="eyebrow-kiosk">{identity.name}</div>
           </div>
           <div className="login-banners">

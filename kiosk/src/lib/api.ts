@@ -1059,6 +1059,85 @@ export async function edgeWipe(confirm?: string): Promise<{ cleared_move_data: b
   return jsonFrom<{ cleared_move_data: boolean }>(resp);
 }
 
+// ── laptop environment (kiosk_laptop/edge environment_switch.py) ─────
+
+/** One environment the laptop can switch to (`GET /edge/environments`). */
+export interface EdgeEnvironmentEntry {
+  id: string;
+  name: string;
+  domain: string;
+  api_url: string;
+  portal_url: string;
+  is_prod: boolean;
+}
+
+/** The list, and where it came from: a fresh download, the last good
+ *  download, or the list built into the edge. */
+export interface EdgeEnvironmentList {
+  source: 'fresh' | 'saved' | 'built_in';
+  environments: EdgeEnvironmentEntry[];
+}
+
+/** The server the laptop talks to now (`GET /edge/environment`). A custom
+ *  one has no id or domain and is named `Custom`. */
+export interface EdgeEnvironment {
+  kind: 'named' | 'custom';
+  id: string | null;
+  name: string;
+  domain: string | null;
+  api_url: string;
+  portal_url: string;
+  is_prod: boolean;
+  ever_registered: boolean;
+}
+
+export type EnvironmentTarget = { id: string } | { custom: { api_url: string; portal_url: string } };
+
+export interface SwitchEnvironmentBody {
+  password: string;
+  target: EnvironmentTarget;
+  /** Switch even with unsent work (needs an admin signed in). */
+  discard?: boolean;
+}
+
+/** Anonymous, like `getEdgeStatus`: the chooser runs signed out too. */
+export async function getEdgeEnvironment(): Promise<EdgeEnvironment> {
+  return jsonFrom<EdgeEnvironment>(await request(`${apiUrl()}/edge/environment`));
+}
+
+export async function getEdgeEnvironments(): Promise<EdgeEnvironmentList> {
+  return jsonFrom<EdgeEnvironmentList>(await request(`${apiUrl()}/edge/environments`));
+}
+
+/** 204 when the environment password is right; 403 `wrong_password`. */
+export async function unlockEnvironment(password: string): Promise<void> {
+  const resp = await request(`${apiUrl()}/edge/environment/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** The switch. Signed in, it carries the bearer, because the edge checks
+ *  the signed-in person's access live for Custom URL and for discarding.
+ *  Signed out it goes without one, and is never treated as a session that
+ *  ended. Errors: `wrong_password`, `unknown_environment`, `bad_url`,
+ *  `custom_needs_super_admin`, `discard_needs_admin`, `outbox_not_empty`
+ *  (detail.pending), `access_check_offline`. */
+export async function switchEnvironment(body: SwitchEnvironmentBody): Promise<EdgeEnvironment> {
+  if (sessionExpiresAt && tokenIsStale()) await refreshSession();
+  const resp = await request(`${apiUrl()}/edge/environment`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<EdgeEnvironment>(resp);
+}
+
 export async function renameLaptopKiosk(name: string): Promise<{ serial: string; name: string }> {
   const resp = await apiFetch('/edge/identity', {
     method: 'POST',

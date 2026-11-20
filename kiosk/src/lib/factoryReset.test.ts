@@ -4,7 +4,7 @@
  *  real localStorage, with the network calls stubbed. */
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const platform = vi.hoisted(() => ({ laptop: false }));
 vi.mock('./platform', async (importActual) => ({
@@ -29,7 +29,7 @@ vi.mock('./laptopConfig', async (importActual) => ({
 import { DEFAULT_APPEARANCE, readAppearance, writeAppearance } from './appearance';
 import { CHECKPOINT_IDS, defaultCheckpoint, readCheckpoint, writeCheckpoint } from './checkpointSettings';
 import { readDevMode, writeDevMode } from './devMode';
-import { countUnsent, runClearSetup } from './factoryReset';
+import { clearForSwitch, countUnsent, runClearSetup } from './factoryReset';
 import { getIdentity, setKioskName } from './identity';
 import { installConfigTracking, readConfigState } from './kioskConfig';
 import { readKioskSetup, writeKioskSetup } from './kioskSetup';
@@ -194,4 +194,53 @@ it('Clear Setup empties label_bundles and the kiosk list settings', async () => 
   await runClearSetup(deps());
   expect(await count('label_bundles')).toBe(0);
   expect(localStorage.getItem('ss.kiosk.listPrefs')).toBeNull();
+});
+
+describe('clearForSwitch (after the laptop switched environment)', () => {
+  beforeEach(() => { platform.laptop = true; });
+
+  it('clears the setup, the settings and local data, keeping only who this kiosk is', async () => {
+    setKioskName('Dock 3');
+    const before = getIdentity();
+    await usedKiosk();
+    await clearForSwitch();
+    expect(readKioskSetup()).toBeNull();
+    expect(readAppearance()).toEqual(DEFAULT_APPEARANCE);
+    expect(readDevMode()).toBe(false);
+    expect(localStorage.getItem('labels.print.settings')).toBeNull();
+    expect(await getAll('assets')).toEqual([]);
+    expect(await getAll('outbox')).toEqual([]);
+    expect(getIdentity()).toEqual(before);
+    expect(localStorage.getItem('ss.kiosk.serial')).not.toBeNull();
+    expect(localStorage.getItem('ss.kiosk.name')).not.toBeNull();
+  });
+
+  it("drops the old server's settings-sync bookkeeping and Clear handshake too", async () => {
+    localStorage.setItem('ss.kiosk.configSync', JSON.stringify({ dirty: false, applied_version: 7 }));
+    localStorage.setItem('ss.kiosk.laptopConfigPending', '{"doc":{}}');
+    localStorage.setItem('ss.kiosk.setupClear', '{"id":"c-1"}');
+    await clearForSwitch();
+    expect(localStorage.getItem('ss.kiosk.configSync')).toBeNull();
+    expect(localStorage.getItem('ss.kiosk.laptopConfigPending')).toBeNull();
+    expect(localStorage.getItem('ss.kiosk.setupClear')).toBeNull();
+  });
+
+  it('never calls the edge: it already wiped itself', async () => {
+    await usedKiosk();
+    await clearForSwitch();
+    expect(remote.edgeWipe).not.toHaveBeenCalled();
+    expect(laptopCfg.flushLaptopConfig).not.toHaveBeenCalled();
+  });
+
+  it('clears this browser\'s storage even when the local database cannot be cleared', async () => {
+    await usedKiosk();
+    localStorage.setItem('ss.kiosk.configSync', '{}');
+    (globalThis as unknown as { indexedDB: unknown }).indexedDB = {
+      open: () => { throw new Error('blocked'); },
+    };
+    closeDb();
+    await expect(clearForSwitch()).rejects.toThrow();
+    expect(readKioskSetup()).toBeNull();
+    expect(localStorage.getItem('ss.kiosk.configSync')).toBeNull();
+  });
 });

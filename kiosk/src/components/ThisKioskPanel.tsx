@@ -1,6 +1,8 @@
 /** This Kiosk — the friendly name (what phones see when linking with this
- *  kiosk), plus read-only identity and config facts. Rendered as the
- *  Settings page's "This Kiosk" tab body (no page chrome of its own — the
+ *  kiosk), plus read-only identity and config facts. On a laptop the
+ *  server is shown as its environment, with Change… opening the chooser
+ *  (EnvironmentModal); the plain web kiosk keeps the read-only URLs.
+ *  Rendered as the Settings page's "This Kiosk" tab body (no page chrome of its own — the
  *  Settings page supplies the eyebrow, title, and tabs). Works signed in
  *  or out. */
 
@@ -11,7 +13,9 @@ import { apiUrl, kioskVersion, portalUrl } from '../lib/config';
 import { ApiError, renameLaptopKiosk } from '../lib/api';
 import { getIdentity, setKioskName, setLaptopName } from '../lib/identity';
 import { isReaderStation, readerLabel, stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { environmentName, serverLabel, useEdgeEnvironment } from '../lib/environment';
 import { isLaptop, platform } from '../lib/platform';
+import EnvironmentModal from './EnvironmentModal';
 
 /** What a refused laptop rename says. */
 function renameErrorText(err: unknown): string {
@@ -36,6 +40,8 @@ export default function ThisKioskPanel() {
   const [name, setName] = useState(identity.name);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const environment = useEdgeEnvironment();
+  const [choosing, setChoosing] = useState(false);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -102,14 +108,35 @@ export default function ThisKioskPanel() {
             <input id="ks-reader" value={readerLabel(setup.reader)} readOnly />
           </div>
         )}
-        <div>
-          <label htmlFor="ks-api">API URL</label>
-          <input id="ks-api" value={apiUrl()} readOnly />
-        </div>
-        <div>
-          <label htmlFor="ks-portal">Portal URL</label>
-          <input id="ks-portal" value={portalUrl()} readOnly />
-        </div>
+        {laptop ? (
+          <>
+            <div>
+              <label htmlFor="ks-environment">Environment</label>
+              <div className="ks-environment">
+                <input id="ks-environment" value={environment ? environmentName(environment) : ''} readOnly />
+                <button type="button" className="mini-btn" disabled={!environment}
+                        onClick={() => setChoosing(true)}>
+                  Change…
+                </button>
+              </div>
+            </div>
+            <div>
+              <label htmlFor="ks-server">Server</label>
+              <input id="ks-server" className="mono" value={environment ? serverLabel(environment) : ''} readOnly />
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <label htmlFor="ks-api">API URL</label>
+              <input id="ks-api" value={apiUrl()} readOnly />
+            </div>
+            <div>
+              <label htmlFor="ks-portal">Portal URL</label>
+              <input id="ks-portal" value={portalUrl()} readOnly />
+            </div>
+          </>
+        )}
         <div>
           <label htmlFor="ks-version">Version</label>
           <input id="ks-version" value={kioskVersion()} readOnly />
@@ -120,6 +147,9 @@ export default function ThisKioskPanel() {
           {canRename && <button type="submit" className="btn-solid">Save</button>}
         </div>
       </form>
+      {choosing && environment && (
+        <EnvironmentModal current={environment} onClose={() => setChoosing(false)} />
+      )}
     </>
   );
 }
