@@ -46,7 +46,9 @@ function pendingOf(err: ApiError): number {
   return typeof pending === 'number' ? pending : 0;
 }
 
+/** How many scans a switch would leave unsent (never "0"), as Android and iOS say it. */
 function unsentText(n: number): string {
+  if (!(n > 0)) return "Unsent scans haven't been sent yet.";
   return n === 1 ? "1 unsent scan hasn't been sent yet." : `${n} unsent scans haven't been sent yet.`;
 }
 
@@ -170,7 +172,7 @@ export default function EnvironmentModal({ current, onClose, onDone = reloadToLo
                 <label htmlFor="env-password">Environment password</label>
                 {/* "new-password": no "Save password?" offer on a shared station */}
                 <input id="env-password" type="password" autoFocus autoComplete="new-password"
-                       spellCheck={false} maxLength={64} value={password} readOnly={busy}
+                       spellCheck={false} value={password} readOnly={busy}
                        onChange={(e) => { setPassword(e.target.value); setError(''); }} />
               </div>
             </form>

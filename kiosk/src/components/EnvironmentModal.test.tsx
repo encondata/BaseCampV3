@@ -188,6 +188,29 @@ describe('unsent work', () => {
   });
 });
 
+it.each([
+  ['missing', { code: 'outbox_not_empty' }],
+  ['zero', { code: 'outbox_not_empty', pending: 0 }],
+  ['negative', { code: 'outbox_not_empty', pending: -2 }],
+])('unsent work with a %s count says so without a number', async (_label, detail) => {
+  api.switchEnvironment.mockRejectedValueOnce(new ApiError(409, 'outbox_not_empty', detail));
+  open();
+  await unlock();
+  await userEvent.click(screen.getByRole('button', { name: /^UAT/ }));
+  await userEvent.click(within(foot()).getByRole('button', { name: 'Switch' }));
+  expect(await screen.findByText("Unsent scans haven't been sent yet.")).toBeTruthy();
+  expect(screen.queryByText(/\d+ unsent scans?/)).toBeNull();
+  const buttons = within(foot()).getAllByRole('button').map((b) => b.textContent);
+  expect(buttons).toEqual(['Wait for them to send', 'Discard and switch']);
+});
+
+it('the environment password field sets no length limit', () => {
+  open();
+  const field = screen.getByLabelText('Environment password') as HTMLInputElement;
+  expect(field.hasAttribute('maxlength')).toBe(false);
+  expect(field.maxLength).toBe(-1);
+});
+
 describe('Custom URL', () => {
   async function toCustom() {
     open();
