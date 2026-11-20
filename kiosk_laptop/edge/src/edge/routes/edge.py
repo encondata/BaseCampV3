@@ -57,6 +57,17 @@ async def set_identity(request: Request, _: EdgeSession = Depends(require_admin)
     return {"serial": st.identity.serial, "name": st.identity.name}
 
 
+@router.get("/environments")
+async def environments(request: Request) -> dict:
+    """The environments a kiosk can switch to, and where the list came from
+    (fresh download, last good download, or the built-in list). Anonymous: the
+    chooser runs before anyone signs in."""
+    envs, source = await request.app.state.env_list.current()
+    return {"source": source, "environments": [
+        {"id": e.id, "name": e.name, "domain": e.domain, "api_url": e.api_url,
+         "portal_url": e.portal_url, "is_prod": e.is_prod} for e in envs]}
+
+
 @router.get("/status")
 async def status(request: Request) -> dict:
     return _status(request, current_session(request))

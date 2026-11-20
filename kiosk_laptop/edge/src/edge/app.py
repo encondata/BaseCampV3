@@ -24,6 +24,7 @@ from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
+from edge.environments import ListSource
 from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host, read_host_os
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
@@ -93,6 +94,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
                     await app.state.discovery.aclose()
                     await app.state.printers.aclose()
                     await app.state.upstream.aclose()
+                    await app.state.env_list.aclose()
                 finally:
                     app.state.store.close()
 
@@ -105,6 +107,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.store = Store(settings.data_dir / "edge.db")
     app.state.keys = load_or_create_keys(settings.data_dir)
     app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport)
+    app.state.env_list = ListSource(settings.data_dir, transport=transport)
     app.state.outbox = OutboxWorker(app.state.store, app.state.upstream,
                                     lambda: app.state.identity.serial)
     app.state.outbox_wake = asyncio.Event()
