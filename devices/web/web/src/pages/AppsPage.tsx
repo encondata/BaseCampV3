@@ -1,6 +1,6 @@
 /** Apps (home): one card per app and platform, with the install control
- *  for the device viewing it. Coming back from adding an iPhone
- *  (`?added=<device ref>`), the page remembers which iPhone this is and
+ *  for the device viewing it. Coming back from adding an iPhone or iPad
+ *  (`?added=<device ref>`), the page remembers which device this is and
  *  polls while Apple registration or re-signing runs. Admins get the
  *  Upload button and a warning when Apple signing is about to expire. */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -13,6 +13,7 @@ import UploadModal from '../components/UploadModal';
 import { errorText, getApple, listApps, type AppleOut, type AppOut } from '../lib/appsApi';
 import { day } from '../lib/dates';
 import { readDeviceRef, storeDeviceRef } from '../lib/deviceRef';
+import { viewerDevice, viewerPlatform } from '../lib/platform';
 
 const POLL_MS = 5_000;
 const POLL_FOR_MS = 10 * 60_000;
@@ -52,7 +53,7 @@ export default function AppsPage() {
   const latest = useRef(0);   // only the newest answer lands
   const canChange = can('app_distribution', 'change');
 
-  // back from adding an iPhone: remember it, and drop ?added from the address
+  // back from adding an iPhone or iPad: remember it, and drop ?added from the address
   useEffect(() => {
     if (!added) return;
     storeDeviceRef(added);
@@ -66,7 +67,7 @@ export default function AppsPage() {
   const load = useCallback(async () => {
     const seq = ++latest.current;
     try {
-      const list = await listApps(deviceRef);
+      const list = await listApps(deviceRef, viewerPlatform() === 'ios' ? viewerDevice() : null);
       if (seq !== latest.current) return;
       setApps(list);
       setError(null);
@@ -86,7 +87,7 @@ export default function AppsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // poll while an iPhone registers or an app is re-signed, for 10 minutes
+  // poll while a device registers or an app is re-signed, for 10 minutes
   // (after each answer, so a failed look doesn't end it)
   useEffect(() => {
     if (!apps?.some(waiting) || Date.now() >= pollUntil.current) return;

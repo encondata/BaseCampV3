@@ -117,7 +117,7 @@ async def test_updates_ios_development_profile_register_first(api, main_fake, bu
         r = await api.get("/api/updates", params=ios_query("1", profile_kind=kind))
         assert r.status_code == 200
         assert r.json() == {"status": "register_first",
-                            "message": "Add this iPhone on https://devices.test first."}
+                            "message": "Add this device on https://devices.test first."}
     # Up to date wins over registration.
     r = await api.get("/api/updates", params=ios_query("2", profile_kind="development"))
     assert r.json() == {"status": "up_to_date"}
@@ -153,7 +153,7 @@ async def test_updates_ios_not_owner(api, main_fake, bucket, db, ios_owner_url):
     ios_owner_url("https://devices.example.test")
     r = await api.get("/api/updates", params=ios_query("1"))
     assert r.json() == {"status": "not_set_up",
-                        "message": "iPhone installs are set up on https://devices.example.test."}
+                        "message": "iOS installs are set up on https://devices.example.test."}
 
 
 async def test_updates_requires_session(api, main_fake, devices_app, bucket, db):

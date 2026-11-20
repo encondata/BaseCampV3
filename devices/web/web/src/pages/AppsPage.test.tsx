@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => ({ can: (() => true) as (resource: string, action?: string) => boolean }));
 vi.mock('@portal/auth/AuthContext', () => ({ useAuth: () => ({ can: auth.can }) }));
-const viewer = vi.hoisted(() => ({ platform: 'ios' as 'android' | 'ios' | 'desktop' }));
-vi.mock('../lib/platform', () => ({ viewerPlatform: () => viewer.platform }));
+const viewer = vi.hoisted(() => ({
+  platform: 'ios' as 'android' | 'ios' | 'desktop',
+  device: 'iPhone' as 'iPad' | 'iPhone',
+}));
+vi.mock('../lib/platform', () => ({ viewerPlatform: () => viewer.platform, viewerDevice: () => viewer.device }));
 vi.mock('../lib/goTo', () => ({ goTo: vi.fn() }));
 vi.mock('@portal/lib/qr', () => ({ qrDataUrl: () => 'data:image/png;qr' }));
 vi.mock('@portal/lib/api', async (importOriginal) => ({
@@ -39,6 +42,7 @@ const daysFromNow = (n: number) => new Date(Date.now() + n * 86_400_000).toISOSt
 beforeEach(() => {
   auth.can = grants('view');
   viewer.platform = 'ios';
+  viewer.device = 'iPhone';
   localStorage.clear();
 });
 afterEach(() => {
@@ -65,7 +69,7 @@ describe('AppsPage', () => {
     expect(await screen.findByText('Registering this iPhone with Apple…')).toBeTruthy();
     expect(localStorage.getItem('devices.iosDeviceRef')).toBe('dev-9');
     expect(screen.getByTestId('where').textContent).toBe('/');
-    expect(appsCalls(calls)[0].search).toBe('?device_ref=dev-9');
+    expect(appsCalls(calls)[0].search).toBe('?device_ref=dev-9&device=iphone');
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(await screen.findByText('Preparing the app for this iPhone…')).toBeTruthy();
@@ -80,7 +84,7 @@ describe('AppsPage', () => {
   });
 
   it.each([
-    ['failed', 'Apple refused this iPhone: try later'],
+    ['failed', 'Apple refused this device: try later'],
     ['build_failed', "This app couldn't be prepared for this iPhone. It will try again in a few minutes."],
   ])('keeps polling while a %s card will be retried, and stops once it won\'t', async (state, message) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -110,7 +114,7 @@ describe('AppsPage', () => {
     });
     renderAt('/');
     await screen.findByText('Registering this iPhone with Apple…');
-    expect(appsCalls(calls)[0].search).toBe('?device_ref=dev-9');
+    expect(appsCalls(calls)[0].search).toBe('?device_ref=dev-9&device=iphone');
     // step by step: each poll is scheduled only once the last answer lands
     const advance = async (ms: number) => {
       for (let t = 0; t < ms; t += 1000) await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
@@ -121,6 +125,20 @@ describe('AppsPage', () => {
     expect(count).toBeLessThanOrEqual(121);
     await advance(2 * 60_000);
     expect(appsCalls(calls)).toHaveLength(count);
+  });
+
+  it('tells the API whether an iOS viewer is an iPad or an iPhone, and nothing elsewhere', async () => {
+    const calls = stubApi({ 'GET /api/apps': [androidApp()] });
+    viewer.device = 'iPad';
+    renderAt('/');
+    await waitFor(() => expect(appsCalls(calls)).toHaveLength(1));
+    expect(appsCalls(calls)[0].search).toBe('?device=ipad');
+    cleanup();
+
+    viewer.platform = 'desktop';
+    renderAt('/');
+    await waitFor(() => expect(appsCalls(calls)).toHaveLength(2));
+    expect(appsCalls(calls)[1].search).toBe('');
   });
 
   it('staff see no Upload button', async () => {

@@ -146,7 +146,7 @@ async def test_register_conflict_marks_failed_with_reason(db, apple):
     assert await run_once(get_sessionmaker())
     saved = await fresh(IosDevice, device.id)
     assert saved.status == "failed"
-    assert saved.error == f"Apple refused this iPhone: {detail}"
+    assert saved.error == f"Apple refused this device: {detail}"
     (job,) = await jobs_of()
     assert (job.status, job.attempts) == ("failed", 1)   # a 409 is never retried
     assert not await run_once(get_sessionmaker())
@@ -164,8 +164,8 @@ async def test_device_failed_error_has_no_udid(db, apple):
     assert await run_once(get_sessionmaker())
     saved = await fresh(IosDevice, device.id)
     assert saved.status == "failed"
-    assert saved.error == ("Apple refused this iPhone: A device with number 'this iPhone' "
-                           "already exists on this team (also listed as this iPhone).")
+    assert saved.error == ("Apple refused this device: A device with number 'this device' "
+                           "already exists on this team (also listed as this device).")
     (job,) = await jobs_of()
     for text in (saved.error, job.error):
         assert UDID_A.lower() not in text.lower() and bare not in text.lower()
@@ -183,7 +183,7 @@ async def test_register_retried_error_has_no_udid(db, apple):
     assert (saved.status, saved.error) == ("pending", None)
     (job,) = await jobs_of()
     assert job.status == "queued"
-    assert "Something broke for this iPhone." in job.error
+    assert "Something broke for this device." in job.error
     assert UDID_A.lower() not in job.error.lower()
 
 
@@ -217,7 +217,7 @@ async def test_device_failure_never_overwrites_a_disable(db, apple):
 
     device = await seed_device(db, UDID_A, status="disabled")
     async with get_sessionmaker()() as session:
-        await jobs._device_failed(session, device.id, "Apple refused this iPhone: no")
+        await jobs._device_failed(session, device.id, "Apple refused this device: no")
     saved = await fresh(IosDevice, device.id)
     assert (saved.status, saved.error) == ("disabled", None)
 
@@ -229,7 +229,7 @@ async def test_register_other_apple_error_is_retried(db, apple):
 
     assert await run_once(get_sessionmaker())
     saved = await fresh(IosDevice, device.id)
-    assert saved.error == "Apple refused this iPhone: This key can't use this API."
+    assert saved.error == "Apple refused this device: This key can't use this API."
     (job,) = await jobs_of()
     assert (job.status, job.attempts) == ("queued", 1)
 

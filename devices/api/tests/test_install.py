@@ -125,7 +125,7 @@ async def test_ios_states_walk(api, bucket, db):
     assert _ios_state(listed, android) is None
     await seed_apple(db)
 
-    unregistered = {"state": "register_first", "message": "This iPhone isn't registered."}
+    unregistered = {"state": "register_first", "message": "This device isn't registered."}
     for ref in (None, str(uuid.uuid4()), "junk"):
         params = {} if ref is None else {"device_ref": ref}
         r = await api.get("/api/apps", params=params)
@@ -146,26 +146,26 @@ async def test_ios_states_walk(api, bucket, db):
         await db.commit()
 
     assert await state() == {"state": "registering",
-                             "message": "Registering this iPhone with Apple…"}
-    await set_device(status="failed", error="Apple refused this iPhone: bad UDID")
+                             "message": "Registering this device with Apple…"}
+    await set_device(status="failed", error="Apple refused this device: bad UDID")
     assert await state() == {"state": "failed",
-                             "message": "Apple refused this iPhone: bad UDID",
+                             "message": "Apple refused this device: bad UDID",
                              "retrying": False}
     # The worker still has a try queued for it: the page keeps looking.
     retry = Job(kind="register_device", payload={"device_id": str(device.id)})
     db.add(retry)
     await db.commit()
     assert await state() == {"state": "failed",
-                             "message": "Apple refused this iPhone: bad UDID",
+                             "message": "Apple refused this device: bad UDID",
                              "retrying": True}
     await db.execute(update(Job).where(Job.id == retry.id).values(status="failed"))
     await db.commit()
     assert (await state())["retrying"] is False
     await set_device(status="disabled", error=None)
     assert await state() == {"state": "disabled",
-                             "message": "This iPhone was removed from Devices."}
+                             "message": "This device was removed from Devices."}
 
-    preparing = {"state": "preparing", "message": "Preparing the app for this iPhone…"}
+    preparing = {"state": "preparing", "message": "Preparing the app for this device…"}
     await set_device(status="registered", asc_device_id="ASCDEV1")
     # Registered, but the app has no profile yet: the rebuild will sign it.
     assert await state() == preparing
@@ -271,7 +271,7 @@ async def test_older_version_install_enqueues_sign(api, bucket, db):
 
     r = await api.post(f"/api/apps/{app.id}/install", json=body)
     assert r.status_code == 202, r.text
-    assert r.json() == {"state": "preparing", "message": "Preparing the app for this iPhone…"}
+    assert r.json() == {"state": "preparing", "message": "Preparing the app for this device…"}
     assert [j.payload for j in await sign_jobs(db)] == [{"version_id": str(older.id)}]
     assert (await api.post(f"/api/apps/{app.id}/install", json=body)).status_code == 202
     assert len(await sign_jobs(db)) == 1
@@ -288,7 +288,7 @@ async def test_older_version_install_enqueues_sign(api, bucket, db):
     r = await api.post(f"/api/apps/{app.id}/install", json={"device_ref": str(uuid.uuid4())})
     assert r.status_code == 409
     assert r.json()["detail"] == {"code": "register_first",
-                                  "message": "This iPhone isn't registered."}
+                                  "message": "This device isn't registered."}
 
 
 async def test_install_link_allowed_in_read_only_mode(api, main_fake, bucket, db):
@@ -316,7 +316,7 @@ async def test_failed_build_retry_is_paced(api, main_fake, bucket, db):
                               failed_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=2))
     ref = {"device_ref": str(device.id)}
     failed = {"state": "build_failed",
-              "message": "This app couldn't be prepared for this iPhone. "
+              "message": "This app couldn't be prepared for this device. "
                          "It will try again in a few minutes.",
               "retrying": True}
 
@@ -337,7 +337,7 @@ async def test_failed_build_retry_is_paced(api, main_fake, bucket, db):
     await db.execute(update(SignedBuild).where(SignedBuild.id == signed.id).values(
         failed_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10, seconds=5)))
     await db.commit()
-    preparing = {"state": "preparing", "message": "Preparing the app for this iPhone…"}
+    preparing = {"state": "preparing", "message": "Preparing the app for this device…"}
     for _ in range(3):
         assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == preparing
     assert [j.payload for j in await sign_jobs(db)] == [{"version_id": str(version.id)}]
@@ -389,7 +389,7 @@ async def test_sign_failure_before_its_build_row_is_paced(api, bucket, db):
     for _ in range(3):
         assert _ios_state((await api.get("/api/apps", params=ref)).json(), app) == {
             "state": "build_failed",
-            "message": "This app couldn't be prepared for this iPhone. "
+            "message": "This app couldn't be prepared for this device. "
                        "It will try again in a few minutes.",
             "retrying": True}
     assert [j.id for j in await sign_jobs(db)] == [early.id]
@@ -454,3 +454,57 @@ async def test_ipa_and_apk_answer_head_with_their_size(api, main_fake, devices_a
                          .values(status="running"))
         await db.commit()
         assert (await anon.head(f"/ota/{ipa}/app.ipa")).status_code == 404
+
+
+async def test_ios_state_names_the_device(api, bucket, db):
+    """The messages say iPad or iPhone: the registered device's class first,
+    else the page's `device` hint, else "device". Any other hint is ignored."""
+    app, _ = await _ios_app(db, bucket)
+
+    async def listed(**params) -> str:
+        r = await api.get("/api/apps", params=params)
+        assert r.status_code == 200
+        return _ios_state(r.json(), app)["message"]
+
+    async def installed(**body) -> str:
+        r = await api.post(f"/api/apps/{app.id}/install", json=body)
+        assert r.status_code in (202, 409), r.text
+        return (r.json() if r.status_code == 202 else r.json()["detail"])["message"]
+
+    # No device row: the hint, else "device".
+    assert await listed() == "This device isn't registered."
+    assert await listed(device="ipad") == "This iPad isn't registered."
+    assert await listed(device="iphone") == "This iPhone isn't registered."
+    for junk in ("IPAD", "watch", "<b>x</b>", ""):
+        assert await listed(device=junk) == "This device isn't registered."
+    assert await installed(device="ipad") == "This iPad isn't registered."
+    assert await installed(device="iphone") == "This iPhone isn't registered."
+    assert await installed(device="tv") == "This device isn't registered."
+    assert await installed() == "This device isn't registered."
+
+    # A device row with no class yet (still registering): the hint.
+    device = await seed_device(db, UDID_A)
+    ref = str(device.id)
+    assert await listed(device_ref=ref) == "Registering this device with Apple…"
+    assert await listed(device_ref=ref, device="ipad") == "Registering this iPad with Apple…"
+    assert await installed(device_ref=ref, device="iphone") \
+        == "Registering this iPhone with Apple…"
+
+    # Its class beats the hint.
+    await db.execute(update(IosDevice).where(IosDevice.id == device.id)
+                     .values(device_class="IPAD", status="registered", asc_device_id="ASCDEV1"))
+    await db.commit()
+    preparing = "Preparing the app for this iPad…"
+    assert await listed(device_ref=ref) == preparing
+    assert await listed(device_ref=ref, device="iphone") == preparing
+    assert await installed(device_ref=ref, device="iphone") == preparing
+    await db.execute(update(IosDevice).where(IosDevice.id == device.id)
+                     .values(device_class="IPHONE", status="disabled"))
+    await db.commit()
+    assert await listed(device_ref=ref, device="ipad") == "This iPhone was removed from Devices."
+    # A class that's neither: the hint.
+    await db.execute(update(IosDevice).where(IosDevice.id == device.id)
+                     .values(device_class="IPOD"))
+    await db.commit()
+    assert await listed(device_ref=ref, device="ipad") == "This iPad was removed from Devices."
+    assert await listed(device_ref=ref) == "This device was removed from Devices."

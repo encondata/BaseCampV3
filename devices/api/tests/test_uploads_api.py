@@ -233,7 +233,7 @@ async def test_ios_upload_refused_when_not_owner(api, bucket, db, tmp_path, ios_
     await db.commit()
     ios_owner_url("https://devices.example.test")
     review = await inspect(api, upload_id)
-    assert review["problems"] == ["iPhone installs are set up on https://devices.example.test."]
+    assert review["problems"] == ["iOS installs are set up on https://devices.example.test."]
     r = await commit(api, upload_id)
     assert r.status_code == 409
     assert r.json()["detail"]["problems"] == review["problems"]

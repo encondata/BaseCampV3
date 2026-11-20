@@ -11,7 +11,7 @@ import StandardModal from '@portal/components/StandardModal';
 import { clearApple, errorText, getApple, saveApple, type AppleOut } from '../lib/appsApi';
 import { day } from '../lib/dates';
 
-const NOTICE = 'Only one environment may hold these settings. iPhone installs on every other environment point here.';
+const NOTICE = 'Only one environment may hold these settings. iOS installs on every other environment point here.';
 
 /** The API's labels (routes/apple.py), in its order. */
 const LABELS = {
@@ -73,7 +73,7 @@ function AppleSettings() {
       <p className="devices-banner">{NOTICE}</p>
       {apple?.ios_owner_url && (
         <p className="page-hint">
-          iPhone installs are set up on <a href={apple.ios_owner_url}>{apple.ios_owner_url}</a>.
+          iOS installs are set up on <a href={apple.ios_owner_url}>{apple.ios_owner_url}</a>.
         </p>
       )}
       {loadError && <p className="pf-error">{loadError}</p>}
@@ -217,7 +217,7 @@ function ClearDialog({ onClose, onDone }: { onClose: () => void; onDone: () => v
   return (
     <StandardModal
       eyebrow="Devices" title="Clear Apple settings?"
-      description="The API key, the certificate and its password are removed from this environment. iPhones can't install or update apps from here until the settings are saved again."
+      description="The API key, the certificate and its password are removed from this environment. iPhones and iPads can't install or update apps from here until the settings are saved again."
       onClose={onClose} busy={busy} cardClass="devices-modal devices-modal-narrow"
       footer={(
         <>

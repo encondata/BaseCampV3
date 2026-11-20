@@ -1,5 +1,6 @@
-"""Add this iPhone: one-time enroll tokens, the Profile Service .mobileconfig
-that asks iOS for the device's attributes, reading iOS's signed answer, and
+"""Add this iPhone or iPad: one-time enroll tokens, the Profile Service .mobileconfig
+that asks iOS for the device's attributes (signed with the team's Apple
+Distribution certificate when it's saved), reading iOS's signed answer, and
 recording the device.
 
 A token is 32 random URL-safe bytes; only its SHA-256 is stored. A UDID is
@@ -7,6 +8,7 @@ never put in a URL, a log line or an audit row."""
 
 import datetime as dt
 import hashlib
+import logging
 import plistlib
 import re
 import secrets
@@ -18,7 +20,13 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa_devices.apple.settings import load_certificate
 from serversherpa_devices.db.models import EnrollToken, IosDevice
+from serversherpa_devices.services.secrets import SecretError
+from serversherpa_devices.signing import SignError
+from serversherpa_devices.signing.profile import sign_profile
+
+log = logging.getLogger(__name__)
 
 TOKEN_LIFETIME = dt.timedelta(minutes=15)
 DEVICE_ATTRIBUTES = ["UDID", "PRODUCT", "VERSION", "SERIAL", "DEVICE_NAME"]
@@ -43,7 +51,7 @@ def has_control_characters(value: str) -> bool:
 def make_token(*, person_id: uuid.UUID, person_name: str, device_name: str,
                can_reenable: bool, can_update_existing: bool) -> tuple[str, EnrollToken]:
     """A new token and its (unsaved) row. The flags are what the creator may
-    do to an iPhone that's already listed (see record_device)."""
+    do to a device that's already listed (see record_device)."""
     token = secrets.token_urlsafe(32)
     row = EnrollToken(token_hash=hash_token(token), person_id=person_id,
                       person_name=person_name, device_name=device_name,
@@ -61,17 +69,18 @@ async def live_token(db: AsyncSession, token: str, *, lock: bool = False) -> Enr
     return row
 
 
-def mobileconfig(*, public_url: str, token: str) -> bytes:
+def mobileconfig(*, public_url: str, token: str, noun: str = "device") -> bytes:
     """The Profile Service payload: iOS sends the device's attributes to the
-    callback URL, signed, with `Challenge` echoed back."""
+    callback URL, signed, with `Challenge` echoed back. `noun` ("iPad",
+    "iPhone" or "device") is only what the profile calls the device."""
     return plistlib.dumps({
         "PayloadType": "Profile Service",
         "PayloadVersion": 1,
         "PayloadUUID": str(uuid.uuid4()).upper(),
         "PayloadIdentifier": "com.serversherpa.devices.enroll",
-        "PayloadDisplayName": "ServerSherpa Devices — add this iPhone",
+        "PayloadDisplayName": f"ServerSherpa Devices — add this {noun}",
         "PayloadOrganization": "ServerSherpa",
-        "PayloadDescription": "Sends this iPhone's identifier to ServerSherpa Devices "
+        "PayloadDescription": f"Sends this {noun}'s identifier to ServerSherpa Devices "
                               "so it can install ServerSherpa apps.",
         "PayloadContent": {
             "URL": f"{public_url.rstrip('/')}/enroll/{token}/callback",
@@ -79,6 +88,29 @@ def mobileconfig(*, public_url: str, token: str) -> bytes:
             "Challenge": token,
         },
     })
+
+
+async def signed_mobileconfig(db: AsyncSession, profile: bytes) -> bytes:
+    """`profile` signed with the saved Apple Distribution certificate, so
+    iOS shows it as Verified. When there's no certificate, or it can't be
+    opened or used, `profile` itself (iOS shows it as Not Signed, and the
+    device can still be added) and one warning line naming why, never a
+    secret. The .p12 and its password live only in this call."""
+    try:
+        stored = await load_certificate(db)
+        if stored is None:
+            reason = "the Apple settings aren't saved"
+        else:
+            return sign_profile(profile, p12=stored.p12, password=stored.password)
+    except SecretError:
+        reason = "the saved certificate can't be unsealed"
+    except SignError as exc:
+        reason = str(exc)
+    # cryptography can't sign with the key, or the password isn't text.
+    except Exception as exc:  # noqa: BLE001
+        reason = f"signing failed ({type(exc).__name__})"
+    log.warning("enroll: serving the add-device profile unsigned: %s", reason)
+    return profile
 
 
 @dataclass(frozen=True)

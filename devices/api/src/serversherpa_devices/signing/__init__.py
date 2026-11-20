@@ -1,4 +1,5 @@
-"""Re-signing IPAs on Linux with rcodesign (apple-codesign)."""
+"""Re-signing IPAs on Linux with rcodesign (apple-codesign), and signing the
+add-device profile with the distribution certificate (profile.py)."""
 
 
 class SignError(Exception):

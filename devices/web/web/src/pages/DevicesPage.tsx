@@ -1,4 +1,4 @@
-/** Devices: the iPhones added for installs, as a list, under the Apple
+/** Devices: the iPhones and iPads added for installs, as a list, under the Apple
  *  team's device count for each class this membership year. Loading the
  *  page asks the API to check the counts with Apple when they're over a
  *  minute old. Roles that may delete get Disable (with a review first). */
@@ -107,7 +107,7 @@ export default function DevicesPage() {
         </div>
       )}
       {error && <p className="pf-error">{error}</p>}
-      {data && <DataTable columns={COLUMNS} rows={rows} ariaLabel="iPhones" emptyText="No iPhones added yet." />}
+      {data && <DataTable columns={COLUMNS} rows={rows} ariaLabel="iPhones and iPads" emptyText="No iPhones or iPads added yet." />}
 
       {disabling && (
         <DisableDialog device={disabling} onClose={() => setDisabling(null)}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { viewerPlatform } from './platform';
+import { viewerDevice, viewerPlatform } from './platform';
 
 const UA = {
   android: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
@@ -32,5 +32,25 @@ describe('viewerPlatform', () => {
     // a touch-screen Mac doesn't exist, but a single touch point (some trackpads report one) stays desktop
     expect(viewerPlatform(nav(UA.mac, 1))).toBe('desktop');
     expect(viewerPlatform(nav(UA.windows, 10))).toBe('desktop');
+  });
+});
+
+describe('viewerDevice', () => {
+  it('an iPhone is an iPhone', () => {
+    expect(viewerDevice(nav(UA.iphone, 5))).toBe('iPhone');
+  });
+
+  it('an iPod touch is called an iPhone', () => {
+    expect(viewerDevice(nav(UA.iphone.replace(/iPhone;/, 'iPod touch;'), 5))).toBe('iPhone');
+  });
+
+  it('an iPad is an iPad, in mobile mode and in desktop mode', () => {
+    expect(viewerDevice(nav(UA.ipad, 5))).toBe('iPad');
+    expect(viewerDevice(nav(UA.mac, 5))).toBe('iPad');
+  });
+
+  it('a Mac without multi-touch is no iPad', () => {
+    expect(viewerDevice(nav(UA.mac, 0))).toBe('iPhone');
+    expect(viewerDevice(nav(UA.mac, 1))).toBe('iPhone');
   });
 });

@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => ({ can: (() => true) as (resource: string, action?: string) => boolean }));
 vi.mock('@portal/auth/AuthContext', () => ({ useAuth: () => ({ can: auth.can }) }));
-const viewer = vi.hoisted(() => ({ platform: 'desktop' as 'android' | 'ios' | 'desktop' }));
-vi.mock('../lib/platform', () => ({ viewerPlatform: () => viewer.platform }));
+const viewer = vi.hoisted(() => ({
+  platform: 'desktop' as 'android' | 'ios' | 'desktop',
+  device: 'iPhone' as 'iPad' | 'iPhone',
+}));
+vi.mock('../lib/platform', () => ({ viewerPlatform: () => viewer.platform, viewerDevice: () => viewer.device }));
 vi.mock('../lib/goTo', () => ({ goTo: vi.fn() }));
 vi.mock('@portal/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@portal/lib/api')>()),

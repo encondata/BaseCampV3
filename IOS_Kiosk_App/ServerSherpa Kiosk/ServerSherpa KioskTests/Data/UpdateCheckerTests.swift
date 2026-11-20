@@ -21,10 +21,10 @@ struct UpdateCheckerTests {
         let signedIn = MutableBox(true)
         let checker: UpdateChecker
 
-        @MainActor init(profile: ProfileKind = .adhoc) {
+        @MainActor init(profile: ProfileKind = .adhoc, device: String = "iPhone") {
             let installed = InstalledApp(bundleId: "Server-Sherpas.ServerSherpa-Kiosk", versionName: "1.0", build: "1", profile: profile)
             let clock = clock, devicesUrl = devicesUrl, signedIn = signedIn
-            checker = UpdateChecker(api: api, installed: installed, devicesUrl: { devicesUrl.value },
+            checker = UpdateChecker(api: api, installed: installed, device: device, devicesUrl: { devicesUrl.value },
                                     signedIn: { signedIn.value }, now: { clock.value })
         }
     }
@@ -243,6 +243,11 @@ struct UpdateCheckerTests {
         h.api.enqueue(UpdateAnswer(status: "register_first", message: "Add it on the site."))
         await h.checker.checkNow()
         #expect(h.checker.homeOffer == .registerFirst(message: "Add it on the site."))
+
+        let pad = Harness(profile: .none, device: "iPad")
+        pad.api.enqueue(Self.available())
+        await pad.checker.checkNow()
+        #expect(pad.checker.homeOffer == .registerFirst(message: "Add this iPad on devices.dev.serversherpa.com first."))
     }
 
     @Test func waitingStaysOffHome() async {
@@ -372,7 +377,7 @@ struct UpdateCheckerTests {
         #expect(SampleDevicesApi.status(in: ["app"]) == nil)
         let q = UpdateQuery(bundleId: "b", build: "1", profile: .adhoc)
         let answer = try await SampleDevicesApi(status: "available").checkUpdates(q)
-        #expect(updateOffer(answer, profile: .adhoc, devicesUrl: Self.devices) == .available(
+        #expect(updateOffer(answer, profile: .adhoc, devicesUrl: Self.devices, device: "iPhone") == .available(
             version: "1.2.0", build: "7", notes: "Faster sync.\nFixes the scan box on iPhone.", size: 48_200_000,
             installUrl: URL(string: "itms-services://?action=download-manifest&url=https%3A%2F%2Fdevices.dev.serversherpa.com%2Fota%2Fsample%2Fmanifest.plist")!))
         #expect(try await SampleDevicesApi(status: "preparing").checkUpdates(q).status == "preparing")

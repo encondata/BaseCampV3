@@ -24,7 +24,7 @@ const SAVED = {
   cert_name: 'Apple Distribution: Test (TEAM123456)', cert_expires_at: '2027-06-01T12:00:00Z',
   profiles: [], ios_owner_url: null,
 };
-const NOTICE = 'Only one environment may hold these settings. iPhone installs on every other environment point here.';
+const NOTICE = 'Only one environment may hold these settings. iOS installs on every other environment point here.';
 
 function renderPage() {
   return render(<MemoryRouter><AppleSettingsPage /></MemoryRouter>);
@@ -155,11 +155,12 @@ describe('AppleSettingsPage', () => {
     expect(await screen.findByLabelText('API key (.p8)')).toBeTruthy();
   });
 
-  it('shows where iPhone installs are set up', async () => {
+  it('shows where iOS installs are set up', async () => {
     stubApi({ 'GET /api/apple': { ...EMPTY, ios_owner_url: 'https://devices.serversherpa.com' } });
     renderPage();
     const link = await screen.findByRole('link', { name: 'https://devices.serversherpa.com' });
     expect(link.getAttribute('href')).toBe('https://devices.serversherpa.com');
+    expect(link.parentElement?.textContent).toContain('iOS installs are set up on https://devices.serversherpa.com');
   });
 
   it('without change permission: the no-permission notice, and no request', async () => {
