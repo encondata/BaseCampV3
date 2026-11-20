@@ -417,3 +417,40 @@ async def test_ios_app_without_a_current_version_has_no_install_state(api, bucke
     (item,) = listed
     assert (item["current"], item["ios_state"]) == (None, None)
     assert await sign_jobs(db) == []
+
+
+async def test_ipa_and_apk_answer_head_with_their_size(api, main_fake, devices_app, bucket, db):
+    """iOS asks for the IPA's size with HEAD before downloading it, and
+    download managers do the same for an APK: both answer like their GET,
+    with no body and without streaming the file."""
+    app, version = await _ios_app(db, bucket)
+    device = await seed_device(db, UDID_A, status="registered", asc_device_id="ASCDEV1")
+    await add_profile(db, app, [device.id])
+    signed = await add_signed(db, bucket, version, data=b"re-signed for this team")
+    ipa = make_install_token(kind="ipa", ref=signed.id)
+
+    android, (apk_version,) = await seed_android(db, bucket)
+    main_fake.as_staff()
+    apk_url = local((await api.post(f"/api/apps/{android.id}/install", json={})).json()["url"])
+
+    async with anon_client(devices_app) as anon:
+        r = await anon.head(f"/ota/{ipa}/app.ipa")
+        assert r.status_code == 200
+        assert r.content == b""
+        assert r.headers["content-type"] == "application/octet-stream"
+        assert r.headers["content-length"] == str(len(b"re-signed for this team"))
+        assert r.headers["cache-control"] == "no-store"
+
+        r = await anon.head(apk_url)
+        assert r.status_code == 200
+        assert r.content == b""
+        assert r.headers["content-type"] == APK_TYPE
+        assert r.headers["content-length"] == str(len(HELLO_A.read_bytes()))
+        assert r.headers["content-disposition"] == 'attachment; filename="Hello_Fixture-1.0.apk"'
+
+        # The same refusals as GET.
+        assert (await anon.head("/ota/not-a-token/app.ipa")).status_code == 410
+        await db.execute(update(SignedBuild).where(SignedBuild.id == signed.id)
+                         .values(status="running"))
+        await db.commit()
+        assert (await anon.head(f"/ota/{ipa}/app.ipa")).status_code == 404
