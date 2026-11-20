@@ -41,60 +41,64 @@ struct UpdateOfferTests {
     }
 
     @Test func availableOnAdhocIsOffered() {
-        let offer = updateOffer(available(installUrl: itms), profile: .adhoc, devicesUrl: devices)
+        let offer = updateOffer(available(installUrl: itms), profile: .adhoc, devicesUrl: devices, device: "iPhone")
         #expect(offer == .available(version: "1.2.0", build: "7", notes: "Fixes", size: 1234,
                                     installUrl: URL(string: itms)!))
     }
 
     @Test func availableWithoutAdhocAsksToRegister() {
         for profile in [ProfileKind.development, .none] {
-            let offer = updateOffer(available(installUrl: itms), profile: profile, devicesUrl: devices)
+            let offer = updateOffer(available(installUrl: itms), profile: profile, devicesUrl: devices, device: "iPhone")
             #expect(offer == .registerFirst(message: "Add this iPhone on devices.dev.serversherpa.com first."))
+            let onPad = updateOffer(available(installUrl: itms), profile: profile, devicesUrl: devices, device: "iPad")
+            #expect(onPad == .registerFirst(message: "Add this iPad on devices.dev.serversherpa.com first."))
         }
     }
 
     @Test func availableWithoutItmsUrlIsNotOffered() {
         let expected = UpdateOffer.waiting(message: "This update's install link isn't valid. Check again later.")
-        #expect(updateOffer(available(installUrl: "https://evil.example/x.ipa"), profile: .adhoc, devicesUrl: devices) == expected)
-        #expect(updateOffer(available(installUrl: nil), profile: .adhoc, devicesUrl: devices) == expected)
+        #expect(updateOffer(available(installUrl: "https://evil.example/x.ipa"), profile: .adhoc, devicesUrl: devices, device: "iPhone") == expected)
+        #expect(updateOffer(available(installUrl: nil), profile: .adhoc, devicesUrl: devices, device: "iPhone") == expected)
     }
 
     @Test func versionFallsBack() {
         var a = available(installUrl: itms)
         a.versionName = nil
-        guard case .available(let v, _, _, _, _) = updateOffer(a, profile: .adhoc, devicesUrl: devices) else {
+        guard case .available(let v, _, _, _, _) = updateOffer(a, profile: .adhoc, devicesUrl: devices, device: "iPhone") else {
             Issue.record("not available"); return
         }
         #expect(v == "7")
         a.build = nil
-        guard case .available(let w, _, _, _, _) = updateOffer(a, profile: .adhoc, devicesUrl: devices) else {
+        guard case .available(let w, _, _, _, _) = updateOffer(a, profile: .adhoc, devicesUrl: devices, device: "iPhone") else {
             Issue.record("not available"); return
         }
         #expect(w == "a new version")
     }
 
     @Test func registerFirstUsesTheServersMessage() throws {
-        let said = try answer("{\"status\":\"register_first\",\"message\":\"Add this iPhone on https://devices.dev.serversherpa.com first.\"}")
-        #expect(updateOffer(said, profile: .none, devicesUrl: devices)
-                == .registerFirst(message: "Add this iPhone on https://devices.dev.serversherpa.com first."))
+        let said = try answer("{\"status\":\"register_first\",\"message\":\"Add this device on https://devices.dev.serversherpa.com first.\"}")
+        #expect(updateOffer(said, profile: .none, devicesUrl: devices, device: "iPhone")
+                == .registerFirst(message: "Add this device on https://devices.dev.serversherpa.com first."))
         let silent = try answer("{\"status\":\"register_first\"}")
-        #expect(updateOffer(silent, profile: .none, devicesUrl: devices)
+        #expect(updateOffer(silent, profile: .none, devicesUrl: devices, device: "iPhone")
                 == .registerFirst(message: "Add this iPhone on devices.dev.serversherpa.com first."))
+        #expect(updateOffer(silent, profile: .none, devicesUrl: devices, device: "iPad")
+                == .registerFirst(message: "Add this iPad on devices.dev.serversherpa.com first."))
     }
 
     @Test func preparingAndNotSetUpWait() throws {
         for status in ["preparing", "not_set_up"] {
             let a = try answer("{\"status\":\"\(status)\",\"message\":\"Hold on.\"}")
-            #expect(updateOffer(a, profile: .adhoc, devicesUrl: devices) == .waiting(message: "Hold on."))
+            #expect(updateOffer(a, profile: .adhoc, devicesUrl: devices, device: "iPhone") == .waiting(message: "Hold on."))
         }
         let unknown = try answer("{\"status\":\"later_thing\"}")
-        #expect(updateOffer(unknown, profile: .adhoc, devicesUrl: devices)
+        #expect(updateOffer(unknown, profile: .adhoc, devicesUrl: devices, device: "iPhone")
                 == .waiting(message: "The Devices site sent an answer this app doesn't know."))
     }
 
     @Test func upToDateAndShowsOnHome() throws {
         let a = try answer("{\"status\":\"up_to_date\"}")
-        #expect(updateOffer(a, profile: .adhoc, devicesUrl: devices) == .upToDate)
+        #expect(updateOffer(a, profile: .adhoc, devicesUrl: devices, device: "iPhone") == .upToDate)
         #expect(UpdateOffer.upToDate.showsOnHome == false)
         #expect(UpdateOffer.waiting(message: "x").showsOnHome == false)
         #expect(UpdateOffer.registerFirst(message: "x").showsOnHome)
