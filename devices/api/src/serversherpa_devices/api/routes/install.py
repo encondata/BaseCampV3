@@ -11,7 +11,7 @@ import uuid
 from typing import Annotated
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from PIL import Image
 from pydantic import BaseModel
@@ -89,17 +89,22 @@ def _not_found() -> PlainTextResponse:
                              headers=_NO_STORE)
 
 
-async def _stream(key: str, media_type: str, headers: dict[str, str] | None = None) -> Response:
+async def _stream(key: str, media_type: str, headers: dict[str, str] | None = None,
+                  *, head_only: bool = False) -> Response:
+    """The stored file, or for a HEAD request only its headers: iOS asks for
+    an IPA's size with HEAD before downloading it, and must not be refused."""
     head = await storage.head_object(key)
     if head is None:
         return _not_found()
+    all_headers = {"Content-Length": str(head["size"]), **_NO_STORE, **(headers or {})}
+    if head_only:
+        return Response(b"", media_type=media_type, headers=all_headers)
     return StreamingResponse(storage.open_stream(key), media_type=media_type,
-                             headers={"Content-Length": str(head["size"]), **_NO_STORE,
-                                      **(headers or {})})
+                             headers=all_headers)
 
 
-@public_router.get("/dl/{token}/{filename}")
-async def download_apk(token: str, filename: str, db: Db):
+@public_router.api_route("/dl/{token}/{filename}", methods=["GET", "HEAD"])
+async def download_apk(token: str, filename: str, db: Db, request: Request):
     try:
         version_id = read_install_token(token, kind="apk")
     except LinkError:
@@ -111,7 +116,8 @@ async def download_apk(token: str, filename: str, db: Db):
     # The name comes from the version, never from the path.
     name = install_state.apk_filename(app, version)
     return await _stream(version.file_key, APK_TYPE,
-                         {"Content-Disposition": f'attachment; filename="{name}"'})
+                         {"Content-Disposition": f'attachment; filename="{name}"'},
+                         head_only=request.method == "HEAD")
 
 
 async def _signed_target(db: AsyncSession, signed_id: uuid.UUID
@@ -186,12 +192,12 @@ async def icon_512(token: str, db: Db):
     return await _icon(token, db, 512)
 
 
-@public_router.get("/ota/{token}/app.ipa")
-async def download_ipa(token: str, db: Db):
+@public_router.api_route("/ota/{token}/app.ipa", methods=["GET", "HEAD"])
+async def download_ipa(token: str, db: Db, request: Request):
     try:
         found = await _signed_target(db, read_install_token(token, kind="ipa"))
     except LinkError:
         return _expired()
     if found is None:
         return _not_found()
-    return await _stream(found[0].file_key, IPA_TYPE)
+    return await _stream(found[0].file_key, IPA_TYPE, head_only=request.method == "HEAD")
