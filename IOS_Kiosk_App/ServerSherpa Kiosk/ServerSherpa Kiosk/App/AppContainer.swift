@@ -7,6 +7,10 @@ import UIKit
 @MainActor
 final class AppContainer {
     let prefs: KioskPrefs
+    /// The saved environment, the last good environment list and the has-been-registered flag.
+    let environments: EnvironmentStore
+    /// The chooser's environment list: a fresh download, else the last good one, else built in.
+    let environmentList: EnvironmentListFetcher
     let config: KioskConfig
     let secrets: SecretStore
     let identity: Identity
@@ -79,7 +83,12 @@ final class AppContainer {
          bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil,
          devicesApi: (any DevicesApi)? = nil, installed: InstalledApp? = nil) {
         let prefs = KioskPrefs(defaults: defaults)
-        let config = KioskConfig(prefs: prefs)
+        let environments = EnvironmentStore(prefs: prefs)
+        let defaultEnvironment = KioskBuildConfig.defaultEnvironment
+        // URLs typed before the environment picker become the saved environment, before anything
+        // reads the config (one main-actor step; `current` reads them the same way meanwhile).
+        environments.migrateIfNeeded(defaultPortal: defaultEnvironment.portalUrl)
+        let config = KioskConfig(store: environments, defaultEnvironment: defaultEnvironment)
         let identity = Identity(prefs: prefs, secrets: secrets)
         let cookies = RefreshCookie(secrets: secrets)
         let apiUrl: @Sendable () async -> String = { await MainActor.run { config.apiUrl } }
@@ -92,10 +101,13 @@ final class AppContainer {
         let stationKeys = StationKeyStore(secrets: secrets)
         let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
         let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs, station: station)
-        let heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: config.kioskVersion)
+        let heartbeat = Heartbeat(api: api, identity: identity, prefs: prefs, version: config.kioskVersion,
+                                  environments: environments)
         let store = KioskStore(modelContainer: modelContainer)
 
         self.prefs = prefs
+        self.environments = environments
+        self.environmentList = EnvironmentListFetcher(store: environments)
         self.config = config
         self.secrets = secrets
         self.identity = identity

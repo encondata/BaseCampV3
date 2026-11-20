@@ -131,6 +131,44 @@ struct HeartbeatTests {
         hb.stop()
     }
 
+    /// The has-been-registered flag: set by the first reply with any registration but "none",
+    /// never cleared by a later "none".
+    @Test func aRegisteredReplySetsTheEverRegisteredFlagForGood() async {
+        let api = FakeKioskApi(); let gate = TickGate()
+        let wire = MutableBox("none")
+        api.heartbeatResult = { [wire] in HeartbeatResult(deviceId: "d", name: $0.name, registration: wire.value) }
+        let defaults = freshDefaults()
+        let prefs = KioskPrefs(defaults: defaults)
+        let store = EnvironmentStore(prefs: prefs)
+        let hb = harness(api, gate: gate, prefs: prefs)
+        await hb.now()
+        #expect(hb.registration == RegistrationState.none)
+        #expect(!store.everRegistered)
+        wire.value = "soon"
+        await hb.now()
+        #expect(store.everRegistered)
+        wire.value = "none"
+        await hb.now()
+        #expect(store.everRegistered)
+        #expect(EnvironmentStore(prefs: KioskPrefs(defaults: defaults)).everRegistered)   // kept across launches
+    }
+
+    /// The flag is a fact about this kiosk, not the old session's state: a registered reply that
+    /// lands after `stop()` still sets it (the rest of the reply is dropped).
+    @Test func aRegisteredReplyAfterStopStillSetsTheFlag() async {
+        let api = FakeKioskApi(); let gate = TickGate(); let hold = HoldGate()
+        api.heartbeatGate = { await hold.wait() }
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        let hb = harness(api, gate: gate, prefs: prefs)
+        let beat = Task { await hb.now() }
+        await waitUntil { api.heartbeats.count == 1 }
+        hb.stop()
+        await hold.open()
+        await beat.value
+        #expect(hb.registration == nil)
+        #expect(EnvironmentStore(prefs: prefs).everRegistered)
+    }
+
     @Test func defaultRawInfoIsAppleDeviceInfo() async {
         let api = FakeKioskApi(); let gate = TickGate()
         let prefs = KioskPrefs(defaults: freshDefaults())

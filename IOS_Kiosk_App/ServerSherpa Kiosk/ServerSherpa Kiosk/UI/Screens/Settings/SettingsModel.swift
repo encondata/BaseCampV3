@@ -34,8 +34,7 @@ enum SettingsModel {
             await session.clear()
             auth.endSession()
         }
-        _ = config.setApiUrl(api)
-        _ = config.setPortalUrl(portal)
+        _ = config.saveCustom(apiUrl: api, portalUrl: portal)
         return nil
     }
 

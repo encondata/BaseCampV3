@@ -21,11 +21,11 @@ Or open `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk.xcodeproj` in Xcode
 
 Signing team `Y2QYBG96U4`. Select the iPad (or iPhone) in Xcode and press Run.
 
-Debug builds and the IPA builds for the Devices site (below) default to `https://api.dev.serversherpa.com`; other Release builds default to `https://api.serversherpa.com`; the portal URL is `https://portal.dev.serversherpa.com`. Change them under Settings › This Kiosk (reachable signed out via the gear on the login screen). For a local API the simulator can use `http://localhost:8000`.
+Until an environment is saved, debug builds and the IPA builds for the Devices site (below) connect to the Dev environment (`https://api.dev.serversherpa.com`, `https://portal.dev.serversherpa.com`); other Release builds connect to Prod (`https://api.serversherpa.com`, `https://portal.serversherpa.com`). Change them under Settings › This Kiosk (reachable signed out via the gear on the login screen). For a local API the simulator can use `http://localhost:8000`.
 
 ## Building an IPA for the Devices site
 
-Crews install the app from `devices.dev.serversherpa.com`. `tools/build_ipa.sh` archives an optimized Release build with the `DEV_API` Swift condition, which makes the app default to `https://api.dev.serversherpa.com` (`App/KioskBuildConfig.swift`), so its update check asks `devices.dev.serversherpa.com`. Nothing else in the app changes.
+Crews install the app from `devices.dev.serversherpa.com`. `tools/build_ipa.sh` archives an optimized Release build with the `DEV_API` Swift condition, which makes the app default to the Dev environment, `https://api.dev.serversherpa.com` (`App/KioskBuildConfig.swift`), so its update check asks `devices.dev.serversherpa.com`. Nothing else in the app changes.
 
 Raise the build number first (no argument adds 1; `bump_build.sh 7` sets 7):
 

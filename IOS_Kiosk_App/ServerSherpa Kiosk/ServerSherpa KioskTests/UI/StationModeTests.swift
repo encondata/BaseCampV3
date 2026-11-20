@@ -49,7 +49,7 @@ struct StationModeTests {
 
     @Test func aRelaunchedArmedStationRestsOnWelcome() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens: the restore fails at once
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")   // nothing listens: the restore fails at once
         do {
             let first = try container(defaults)
             first.prefs.setupSelection = timeclockSelection()
@@ -178,7 +178,7 @@ struct StationModeTests {
 
     @Test func signingInThroughTheContainerClearsTheGearRequest() async throws {
         let defaults = freshDefaults()
-        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"
+        KioskPrefs(defaults: defaults).useApi("http://127.0.0.1:9")
         let c = try container(defaults)
         c.prefs.setupSelection = timeclockSelection()
         c.station.requestLogin()
@@ -334,7 +334,7 @@ struct StationModeTests {
     @Test func savingADifferentApiUrlWhileSignedOutClearsTheKey() async throws {
         let defaults = freshDefaults()
         let c = try container(defaults)
-        _ = c.config.setApiUrl("https://api.example.com")
+        _ = c.config.saveCustom(apiUrl: "https://api.example.com", portalUrl: "https://portal.example.com")
         c.prefs.setupSelection = timeclockSelection()
         c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
         c.auth.endSession()
@@ -347,7 +347,7 @@ struct StationModeTests {
 
     @Test func savingTheSameApiOriginKeepsTheKey() async throws {
         let c = try container(freshDefaults())
-        _ = c.config.setApiUrl("https://api.example.com")
+        _ = c.config.saveCustom(apiUrl: "https://api.example.com", portalUrl: "https://portal.example.com")
         c.station.storeKey("k3y", issuedBy: c.config.apiUrl)
         c.auth.endSession()
         #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: c.config,

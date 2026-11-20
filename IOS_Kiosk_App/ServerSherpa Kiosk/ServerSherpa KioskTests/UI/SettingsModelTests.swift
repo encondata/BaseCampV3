@@ -66,7 +66,7 @@ struct SettingsModelTests {
     }
 
     @Test func urlSaveStoresBothNormalized() async {
-        let config = KioskConfig(prefs: prefs)
+        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
         let (refresher, auth) = signedOut()
         #expect(await SettingsModel.saveUrls(api: " https://api.example.com/ ", portal: "http://portal.example.com", config: config, session: refresher, auth: auth, station: station) == nil)
         #expect(config.apiUrl == "https://api.example.com")
@@ -75,7 +75,7 @@ struct SettingsModelTests {
     }
 
     @Test func urlValidationMessageAndNothingStoredWhenEitherIsBad() async {
-        let config = KioskConfig(prefs: prefs)
+        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
         let (refresher, auth) = signedOut()
         let api = config.apiUrl, portal = config.portalUrl
         #expect(await SettingsModel.saveUrls(api: "ftp://x", portal: "https://p.example.com", config: config, session: refresher, auth: auth, station: station) == "Enter an http:// or https:// address.")
@@ -86,8 +86,8 @@ struct SettingsModelTests {
     /// The live token must never go to a new API host: saving a new API origin
     /// while signed in clears the session and returns to the login screen.
     @Test func aNewApiOriginWhileSignedInSignsOut() async {
-        let config = KioskConfig(prefs: prefs)
-        _ = config.setApiUrl("https://api.old.example.com")
+        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
+        _ = config.saveCustom(apiUrl: "https://api.old.example.com", portalUrl: "https://portal.example.com")
         let refresher = FakeRefresher()
         let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
         await auth.completePair(fakeSession())
@@ -100,8 +100,8 @@ struct SettingsModelTests {
 
     /// The same origin (default port spelled out, a trailing slash) keeps the session.
     @Test func theSameApiOriginWhileSignedInKeepsTheSession() async {
-        let config = KioskConfig(prefs: prefs)
-        _ = config.setApiUrl("https://api.example.com")
+        let config = KioskConfig(store: EnvironmentStore(prefs: prefs))
+        _ = config.saveCustom(apiUrl: "https://api.example.com", portalUrl: "https://portal.example.com")
         let refresher = FakeRefresher()
         let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
         await auth.completePair(fakeSession())

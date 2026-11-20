@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the crew IPA for the Devices site (devices.dev.serversherpa.com): an
 # optimized Release archive of the kiosk app built with DEV_API, so it
-# defaults to https://api.dev.serversherpa.com. It packages the app as
+# defaults to the Dev environment (https://api.dev.serversherpa.com). It packages the app as
 # IOS_Kiosk_App/.derived/ipa/ServerSherpa-Kiosk-<version>-<build>.ipa and
 # checks it. It never uploads anything: upload the IPA on the Devices site,
 # which re-signs it with its own Ad Hoc profile.
@@ -31,7 +31,6 @@ project="$app_root/ServerSherpa Kiosk/ServerSherpa Kiosk.xcodeproj"
 pbxproj="$project/project.pbxproj"
 scheme="ServerSherpa Kiosk"
 bundle_id="Server-Sherpas.ServerSherpa-Kiosk"
-dev_api="https://api.dev.serversherpa.com"
 out="$app_root/.derived/ipa"
 archive="$out/ServerSherpa Kiosk.xcarchive"
 derived="$out/DerivedData"
@@ -131,15 +130,14 @@ got="$(plist_value "$info" CFBundleVersion)"
 got="$(plist_value "$info" DTPlatformName)"
 [[ "$got" == "iphoneos" ]] || fail "DTPlatformName is '$got', not iphoneos (not a device build)"
 
-# DEV_API reached the Swift compiler (only swiftc gets -D conditions)...
+# DEV_API reached the Swift compiler (only swiftc gets -D conditions), so the
+# default environment is Dev (KioskBuildConfig.swift). The binary can't show
+# it: every build carries the whole built-in environment list, and the id is
+# too short to find.
 grep -qE -- '(^|[[:space:]])-D ?DEV_API([[:space:]]|$)' "$log" \
     || fail "no Swift compile in $log was given -DDEV_API"
-# ...and the binary carries the dev API URL, which only a DEBUG or DEV_API
-# build does (KioskBuildConfig.swift; the literal appears nowhere else).
 executable="$(plist_value "$info" CFBundleExecutable)"
 [[ -n "$executable" && -f "$app/$executable" ]] || fail "the main executable '$executable' isn't in the app"
-LC_ALL=C grep -aqF "$dev_api" "$app/$executable" \
-    || fail "the executable doesn't contain $dev_api, so DEV_API didn't take effect"
 
 # The signed entitlements of the app and of each app extension: the Devices
 # site checks both against the app's one profile (frameworks carry none).
@@ -172,7 +170,7 @@ echo "Version:  $version"
 echo "Build:    $build"
 echo "Size:     $(awk -v b="$size" 'BEGIN { printf "%.1f MB (%d bytes)", b / 1048576, b }')"
 echo "Commit:   $commit"
-echo "API:      defaults to $dev_api (DEV_API)"
+echo "Default:  the Dev environment (DEV_API)"
 if [[ -n "$dirty" ]]; then
     echo "Warning:  IOS_Kiosk_App has uncommitted changes, so this build isn't exactly commit $commit."
 fi

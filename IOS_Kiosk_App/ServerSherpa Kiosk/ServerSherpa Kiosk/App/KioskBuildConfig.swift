@@ -1,16 +1,24 @@
 import Foundation
 
 enum KioskBuildConfig {
-    // DEV_API is set by tools/build_ipa.sh for the crew builds distributed
-    // from devices.dev: an optimized Release build that still defaults to dev.
-    // build_ipa.sh checks the app's binary for the dev URL below, so that
-    // literal must appear nowhere else in the app.
+    // The environment a kiosk connects to until one is saved: Dev in debug builds, Prod in
+    // release builds. DEV_API is set by tools/build_ipa.sh for the crew builds distributed from
+    // devices.dev: an optimized Release build that still defaults to Dev.
     #if DEBUG || DEV_API
-    static let defaultApiUrl = "https://api.dev.serversherpa.com"
+    static let defaultEnvironmentId = "dev"
     #else
-    static let defaultApiUrl = "https://api.serversherpa.com"
+    static let defaultEnvironmentId = "prod"
     #endif
-    static let defaultPortalUrl = "https://portal.dev.serversherpa.com"
+
+    /// The built-in environment `defaultEnvironmentId` names (a build with an id that isn't built
+    /// in stops at launch).
+    static var defaultEnvironment: SavedEnvironment {
+        guard let env = Environments.byId(defaultEnvironmentId) else {
+            preconditionFailure("defaultEnvironmentId \(defaultEnvironmentId) isn't a built-in environment")
+        }
+        return env.asSaved
+    }
+
     static var kioskVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
