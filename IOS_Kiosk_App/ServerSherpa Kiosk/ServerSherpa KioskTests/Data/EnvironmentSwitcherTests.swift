@@ -106,6 +106,26 @@ struct EnvironmentSwitcherTests {
         #expect(c.prefs.cameraPosition == .front)
     }
 
+    /// Every stored refresh cookie goes, not only the old host's (Android clears them all): a
+    /// stale cookie for the target host, kept from before the picker, would otherwise sign the
+    /// kiosk back in there at the next launch. Other secrets stay.
+    @Test func aSwitchClearsEveryStoredRefreshCookie() async throws {
+        let serial = c.identity.current.serial
+        secrets.set("unrelated", "kept")
+        c.cookies.set(host: "127.0.0.1", value: "refresh-old")                  // the host being left
+        c.cookies.set(host: "api.uat.serversherpa.com", value: "refresh-stale") // the target host
+        c.cookies.set(host: "10.10.48.103", value: "refresh-earlier")           // an earlier host
+        await signIn()
+
+        #expect(try await switcher.switchTo(uat, discard: false) == .done)
+
+        #expect(c.cookies.value(forHost: "127.0.0.1") == nil)
+        #expect(c.cookies.value(forHost: "api.uat.serversherpa.com") == nil)
+        #expect(c.cookies.value(forHost: "10.10.48.103") == nil)
+        #expect(secrets.get("unrelated") == "kept")
+        #expect(secrets.get("kiosk.serial") == serial)
+    }
+
     @Test func unsentWorkIsPendingAndChangesNothing() async throws {
         await signIn()
         try await unsent(2)

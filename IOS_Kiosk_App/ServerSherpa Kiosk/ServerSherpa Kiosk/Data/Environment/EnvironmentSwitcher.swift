@@ -41,7 +41,8 @@ enum EnvironmentSwitchError: Error, Equatable {
 /// out (server calls best effort, offline is fine; they go to the old server with the old
 /// credentials, captured before anything is cleared). The unsent count is taken again: work that
 /// appeared meanwhile, beyond what was approved for discard, is `pending`, nothing cleared. The
-/// heartbeat stops and drops any reply still on its way; the old API host's refresh cookie goes;
+/// heartbeat stops and drops any reply still on its way; every stored refresh cookie goes (any
+/// host's, the target's included, as on Android);
 /// Reset app runs (setup, move data, label settings, print jobs, the Rolodex list and its offline
 /// copy, the station key; a sync still on its way stores nothing); the outbox is discarded when
 /// asked (a batch in flight keeps no outcome); the last sign-in method and Clear Setup record go;
@@ -112,7 +113,6 @@ final class EnvironmentSwitcher {
         guard store.accepts(target) else { throw EnvironmentSwitchError.invalidEnvironment }
         // The recount below reads the same loaded snapshot, which every enqueue keeps current.
         guard await outbox.load() else { throw EnvironmentSwitchError.outboxUnreadable }
-        let oldHost = URL(string: config.apiUrl)?.host
         let pending = unsentCount
         let customGate: Bool
         if case .custom = target { customGate = store.everRegistered } else { customGate = false }
@@ -141,7 +141,7 @@ final class EnvironmentSwitcher {
         if unsent > (discard ? pending : 0) { return .pending(unsent) }
 
         heartbeat.stopAndDropReplies()
-        if let oldHost { cookies.clear(host: oldHost) }
+        cookies.clearAll()
         try await resetApp()
         if discard { try await outbox.discardAll() }
         prefs.clearServerRecords()

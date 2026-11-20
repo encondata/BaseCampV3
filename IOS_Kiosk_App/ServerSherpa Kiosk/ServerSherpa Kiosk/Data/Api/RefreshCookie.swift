@@ -12,7 +12,9 @@ final class RefreshCookie: Sendable {
         self.secrets = secrets
     }
 
-    private func key(_ host: String) -> String { "refresh.\(host)" }
+    private static let prefix = "refresh."
+
+    private func key(_ host: String) -> String { "\(Self.prefix)\(host)" }
 
     func value(forHost host: String) -> String? {
         secrets.get(key(host))
@@ -47,5 +49,12 @@ final class RefreshCookie: Sendable {
 
     func clear(host: String) {
         secrets.set(key(host), nil)
+    }
+
+    /// Forgets the refresh cookie of every host (Android `clearAllRefreshCookies`). An environment
+    /// switch uses it: a cookie kept for any host, the target included, could sign the kiosk back
+    /// in there without a sign-in.
+    func clearAll() {
+        for key in secrets.keys() where key.hasPrefix(Self.prefix) { secrets.set(key, nil) }
     }
 }
