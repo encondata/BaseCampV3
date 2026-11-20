@@ -181,7 +181,7 @@ final class AppContainer {
         self.updates = UpdateChecker(
             api: devicesApi ?? URLSessionDevicesApi(devicesUrl: { await MainActor.run { devicesBaseUrl(apiUrl: config.apiUrl) } },
                                                     session: session, sessionStore: sessionStore),
-            installed: installed ?? InstalledApp.current(), devicesUrl: devicesUrl,
+            installed: installed ?? InstalledApp.current(), device: currentDeviceNoun(), devicesUrl: devicesUrl,
             signedIn: { if case .authed = auth.state { return true } else { return false } })
 
         // Print Labels' list and its waiting jobs belong to one session on one move, and the

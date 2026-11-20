@@ -10,7 +10,7 @@ import UIKit
     case .touchID: bio = "Touch ID"
     case nil: bio = hasNoHomeButton(idiom) ? "Face ID" : "Touch ID"
     }
-    return BiometricWords(bio: bio, device: idiom == .pad ? "iPad" : "iPhone")
+    return BiometricWords(bio: bio, device: currentDeviceNoun())
 }
 
 /// A phone or iPad whose key window keeps a bottom inset for the home indicator has no Home button.

@@ -112,7 +112,7 @@ async def apple_settings_ready(db: AsyncSession) -> bool:
 
 def ios_not_set_up_message() -> str:
     owner = get_settings().ios_owner_url
-    return f"iPhone installs are set up on {owner}." if owner else "Apple settings aren't set up yet."
+    return f"iOS installs are set up on {owner}." if owner else "Apple settings aren't set up yet."
 
 
 # Review.

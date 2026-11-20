@@ -33,6 +33,8 @@ final class UpdateChecker {
     /// When the Devices site last answered: the 6-hour gate counts from here.
     @ObservationIgnored private var lastAnswered: Date?
     let installed: InstalledApp
+    /// "iPad" or "iPhone", for the offer's copy.
+    let device: String
 
     /// The last answer's offer, kept through a failed check that follows it (Home's card and
     /// Settings' detail under a failure).
@@ -49,10 +51,12 @@ final class UpdateChecker {
     /// Bumped by `reset()`, so a check out at sign-out drops its answer.
     @ObservationIgnored private var generation = 0
 
-    init(api: any DevicesApi, installed: InstalledApp, devicesUrl: @escaping @MainActor () -> String?,
+    init(api: any DevicesApi, installed: InstalledApp, device: String,
+         devicesUrl: @escaping @MainActor () -> String?,
          signedIn: @escaping @MainActor () -> Bool, now: @escaping () -> Date = Date.init) {
         self.api = api
         self.installed = installed
+        self.device = device
         self.devicesUrl = devicesUrl
         self.signedIn = signedIn
         self.now = now
@@ -128,7 +132,7 @@ final class UpdateChecker {
         do {
             let answer = try await api.checkUpdates(installed.query)
             guard generation == self.generation else { return }
-            let offer = updateOffer(answer, profile: installed.profile, devicesUrl: url)
+            let offer = updateOffer(answer, profile: installed.profile, devicesUrl: url, device: device)
             lastOffer = offer
             lastAnswered = now()
             result = .done(offer)

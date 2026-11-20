@@ -1,4 +1,4 @@
-"""Add this iPhone: POST /api/enroll, the Profile Service .mobileconfig, and
+"""Add this iPhone or iPad: POST /api/enroll, the Profile Service .mobileconfig, and
 iOS's signed callback. Callback bodies are a self-signed CMS SignedData
 around a plist, as iOS sends them."""
 
@@ -28,7 +28,7 @@ from .fake_main_api import PERSON_ID
 OTHER_ID = uuid.UUID("5d0c8a3e-2b71-4f6a-8e09-3c4b5a6d7e8f")
 
 UDID = "00008110-000A1B2C3D4E5F60"
-EXPIRED_COPY = "This link has expired. Go back to Devices and tap Add this iPhone again."
+EXPIRED_COPY = "This link has expired. Go back to Devices and add this device again."
 _KEY = ec.generate_private_key(ec.SECP256R1())
 _SUBJECT = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Device Identity")])
 _NOW = dt.datetime.now(dt.UTC)
@@ -121,15 +121,16 @@ async def test_mobileconfig_contents_and_headers(api, anonymous, db):
     r = await anonymous.get(f"/enroll/{token}.mobileconfig")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "application/x-apple-aspen-config"
-    assert r.headers["content-disposition"] == 'attachment; filename="add-this-iphone.mobileconfig"'
+    assert r.headers["content-disposition"] == 'attachment; filename="add-this-device.mobileconfig"'
     assert r.headers["cache-control"] == "no-store"
     profile = plistlib.loads(r.content)
     assert profile["PayloadType"] == "Profile Service"
     assert profile["PayloadVersion"] == 1
-    assert profile["PayloadDisplayName"] == "ServerSherpa Devices — add this iPhone"
+    assert profile["PayloadDisplayName"] == "ServerSherpa Devices — add this device"
     assert profile["PayloadOrganization"] == "ServerSherpa"
     assert profile["PayloadIdentifier"] == "com.serversherpa.devices.enroll"
-    assert profile["PayloadDescription"]
+    assert profile["PayloadDescription"] == ("Sends this device's identifier to ServerSherpa "
+                                             "Devices so it can install ServerSherpa apps.")
     uuid.UUID(profile["PayloadUUID"])
     assert profile["PayloadContent"] == {
         "URL": f"https://devices.test/enroll/{token}/callback",
@@ -139,6 +140,37 @@ async def test_mobileconfig_contents_and_headers(api, anonymous, db):
 
     again = plistlib.loads((await anonymous.get(f"/enroll/{token}.mobileconfig")).content)
     assert again["PayloadUUID"] != profile["PayloadUUID"]   # a fresh one each time
+
+
+async def test_mobileconfig_names_the_device(api, anonymous):
+    """POST /api/enroll passes a device of ipad or iphone on to the profile
+    link; the profile says iPad, iPhone, or (anything else) device."""
+    for device, noun in (("ipad", "iPad"), ("iphone", "iPhone")):
+        r = await api.post("/api/enroll", json={"device_name": "Pat's", "device": device})
+        assert r.status_code == 200, r.text
+        url = r.json()["url"]
+        assert url.startswith("/enroll/") and url.endswith(f".mobileconfig?device={device}"), url
+        r = await anonymous.get(url)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-disposition"] \
+            == f'attachment; filename="add-this-{device}.mobileconfig"'
+        profile = plistlib.loads(r.content)
+        assert profile["PayloadDisplayName"] == f"ServerSherpa Devices — add this {noun}"
+        assert profile["PayloadDescription"].startswith(f"Sends this {noun}'s identifier ")
+
+    # Anything else isn't passed on, and the profile says "device".
+    for junk in ("IPAD", "watch", "ipad&x=1", ""):
+        r = await api.post("/api/enroll", json={"device_name": "Pat's", "device": junk})
+        assert r.status_code == 200, r.text
+        assert r.json()["url"].endswith(".mobileconfig"), junk
+    token = await new_link(api)
+    for params in ({}, {"device": "watch"}, {"device": "IPHONE"}, {"device": "<b>"}):
+        r = await anonymous.get(f"/enroll/{token}.mobileconfig", params=params)
+        assert r.status_code == 200, params
+        profile = plistlib.loads(r.content)
+        assert profile["PayloadDisplayName"] == "ServerSherpa Devices — add this device"
+        assert profile["PayloadDescription"].startswith("Sends this device's identifier ")
+        assert "<b>" not in r.text and "watch" not in r.text
 
 
 async def test_enroll_needs_view_and_a_name(api, main_fake, db):
@@ -171,6 +203,10 @@ async def test_mobileconfig_expired_token_410(api, anonymous, db, queued):
         assert r.status_code == 410, token
         assert r.headers["content-type"].startswith("text/html")
         assert EXPIRED_COPY in r.text
+    # The page's device hint words it like its button.
+    r = await anonymous.get(f"/enroll/{expired}.mobileconfig", params={"device": "ipad"})
+    assert r.status_code == 410
+    assert "Go back to Devices and tap Add this iPad again." in r.text
 
     # The expired link's callback is refused too.
     r = await call_back(anonymous, expired,

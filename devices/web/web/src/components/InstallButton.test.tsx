@@ -3,8 +3,11 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const viewer = vi.hoisted(() => ({ platform: 'desktop' as 'android' | 'ios' | 'desktop' }));
-vi.mock('../lib/platform', () => ({ viewerPlatform: () => viewer.platform }));
+const viewer = vi.hoisted(() => ({
+  platform: 'desktop' as 'android' | 'ios' | 'desktop',
+  device: 'iPhone' as 'iPad' | 'iPhone',
+}));
+vi.mock('../lib/platform', () => ({ viewerPlatform: () => viewer.platform, viewerDevice: () => viewer.device }));
 vi.mock('../lib/goTo', () => ({ goTo: vi.fn() }));
 vi.mock('@portal/lib/qr', () => ({ qrDataUrl: vi.fn((text: string) => `data:image/png;qr,${text}`) }));
 vi.mock('@portal/lib/api', async (importOriginal) => ({
@@ -24,6 +27,7 @@ const asApp = (a: unknown) => a as AppOut;
 
 beforeEach(() => {
   vi.mocked(goTo).mockClear();
+  viewer.device = 'iPhone';
 });
 afterEach(() => {
   cleanup();
@@ -57,7 +61,7 @@ describe('InstallButton', () => {
     expect(within(dialog).getByText('Tap Continue, then Allow.')).toBeTruthy();
     expect(within(dialog).getByText('Open Settings, tap Profile Downloaded, then Install.')).toBeTruthy();
     expect(within(dialog).getByText("You'll come back here automatically.")).toBeTruthy();
-    expect(within(dialog).getByText("iOS shows the profile as Not Verified; that's expected.")).toBeTruthy();
+    expect(within(dialog).queryByText(/Not Signed|Not Verified/)).toBeNull();   // the profile is signed now
 
     const cont = within(dialog).getByRole('button', { name: 'Continue' }) as HTMLButtonElement;
     expect(cont.disabled).toBe(true);
@@ -70,8 +74,36 @@ describe('InstallButton', () => {
     await userEvent.click(cont);
     await waitFor(() => expect(goTo).toHaveBeenCalledWith('/enroll/abc.mobileconfig'));
     expect(calls).toEqual([
-      expect.objectContaining({ method: 'POST', path: '/api/enroll', body: { device_name: "Jimmy's iPhone" } }),
+      expect.objectContaining({ method: 'POST', path: '/api/enroll', body: { device_name: "Jimmy's iPhone", device: 'iphone' } }),
     ]);
+  });
+
+  it('on an iPad it says iPad and tells the API so', async () => {
+    viewer.platform = 'ios';
+    viewer.device = 'iPad';
+    const calls = stubApi({
+      'POST /api/enroll': { url: '/enroll/abc.mobileconfig?device=ipad' },
+      'POST /api/apps/app-i/install': () => json(202, { state: 'preparing', message: 'Preparing the app for this iPad…' }),
+    });
+    const { rerender } = render(<InstallButton app={asApp(iosApp({ ios_state: { state: 'register_first', message: "This iPad isn't registered." } }))}
+                                               deviceRef={null} onChanged={() => {}} />);
+    expect(screen.getByText("This iPad isn't registered.")).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add this iPhone' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Add this iPad' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add this iPad' });
+    expect(within(dialog).queryByText(/Not Signed|Not Verified/)).toBeNull();   // the profile is signed now
+    await userEvent.type(within(dialog).getByLabelText('Name this iPad'), "Jimmy's iPad");
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(goTo).toHaveBeenCalledWith('/enroll/abc.mobileconfig?device=ipad'));
+    expect(calls[0]).toEqual(expect.objectContaining({
+      method: 'POST', path: '/api/enroll', body: { device_name: "Jimmy's iPad", device: 'ipad' },
+    }));
+
+    rerender(<InstallButton app={asApp(iosApp({ ios_state: { state: 'ready', message: '', install_url: 'x' } }))}
+                            deviceRef="dev-1" onChanged={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Install' }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].body).toEqual({ device_ref: 'dev-1', device: 'ipad' });
   });
 
   it('desktop shows QR and no install button', () => {
@@ -94,7 +126,7 @@ describe('InstallButton', () => {
     expect(screen.getByText('Open this page on the phone to install.')).toBeTruthy();
   });
 
-  it('iOS ready installs with the iPhone ref; preparing is a disabled Preparing…', async () => {
+  it('iOS ready installs with the device ref; preparing is a disabled Preparing…', async () => {
     viewer.platform = 'ios';
     const calls = stubApi({
       'POST /api/apps/app-i/install': { url: 'itms-services://?action=download-manifest&url=x' },
@@ -103,7 +135,7 @@ describe('InstallButton', () => {
     const { rerender } = render(<InstallButton app={ready} deviceRef="dev-1" onChanged={() => {}} />);
     await userEvent.click(screen.getByRole('button', { name: 'Install' }));
     await waitFor(() => expect(goTo).toHaveBeenCalledWith('itms-services://?action=download-manifest&url=x'));
-    expect(calls[0].body).toEqual({ device_ref: 'dev-1' });
+    expect(calls[0].body).toEqual({ device_ref: 'dev-1', device: 'iphone' });
 
     const preparing = asApp(iosApp({ ios_state: { state: 'preparing', message: 'Preparing the app for this iPhone…' } }));
     rerender(<InstallButton app={preparing} deviceRef="dev-1" onChanged={() => {}} />);
@@ -112,7 +144,7 @@ describe('InstallButton', () => {
   });
 
   it.each([
-    ['failed', "Registering with Apple didn't finish. Add this iPhone again to retry."],
+    ['failed', "Registering with Apple didn't finish. Add this device again to retry."],
     ['disabled', 'This iPhone was removed from Devices.'],
   ])('an iPhone in %s gets Add this iPhone again', async (state, message) => {
     viewer.platform = 'ios';

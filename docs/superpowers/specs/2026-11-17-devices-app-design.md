@@ -200,7 +200,10 @@ Apps                                          [Upload]   ← add
 1. On the iPhone, signed in, the person taps **Add this iPhone**. The site
    creates a one-time enroll token tied to that person and serves
    `/enroll/<token>.mobileconfig` (Profile Service payload asking for UDID,
-   PRODUCT, VERSION, SERIAL, DEVICE_NAME).
+   PRODUCT, VERSION, SERIAL, DEVICE_NAME), signed with the Apple
+   Distribution certificate and carrying Apple's WWDR intermediate, so
+   iOS shows it as Verified. Without a usable certificate it's served
+   unsigned (iOS says "Not Signed"; the device can still be added).
 2. iOS asks them to open Settings and install it. iOS then POSTs the signed
    device attributes to `/enroll/<token>/callback`; the devices API parses
    them, records the device as *pending*, and redirects Safari back to the
@@ -313,8 +316,11 @@ entering the Apple settings there and clearing them on dev.
 
 - The `.p12`, its password and the `.p8` are encrypted at rest in the devices
   database with a key from `DEVICES_SECRET_KEY` (env only, never in the DB).
-  Only the worker decrypts them, in memory, for an Apple call or a signing
-  run. No endpoint returns them.
+  The worker decrypts them, in memory, for an Apple call or a signing run.
+  The API also decrypts the certificate (the `.p12` and its password, not
+  the `.p8`), in memory only, to sign the add-device profile each time it's
+  downloaded, so iOS shows it as Verified rather than "Not Signed" (Jimmy's
+  decision, 2026-11-20). No endpoint returns them.
 
 ### Deploy and dev
 

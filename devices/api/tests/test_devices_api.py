@@ -116,7 +116,7 @@ async def test_disable_enqueues_and_audits(api, main_fake, db):
 
 async def test_disable_clears_an_old_registration_error(api, db):
     device = await seed_device(db, UDID_A, status="failed")
-    device.error = "Apple refused this iPhone: no"
+    device.error = "Apple refused this device: no"
     await db.commit()
     r = await api.post(f"/api/devices/{device.id}/disable")
     assert (r.json()["status"], r.json()["error"]) == ("disabled", None)
@@ -141,14 +141,14 @@ async def test_disable_blocked_in_read_only_mode(api, main_fake, db):
 async def test_list_devices_never_returns_udid_in_error(api, db):
     # a row written before the worker scrubbed Apple's detail
     device = await seed_device(db, UDID_A, status="failed")
-    device.error = (f"Apple refused this iPhone: A device with number '{UDID_A.lower()}' "
+    device.error = (f"Apple refused this device: A device with number '{UDID_A.lower()}' "
                     f"already exists ({UDID_A.replace('-', '')}).")
     await db.commit()
 
     r = await api.get("/api/devices")
     assert r.status_code == 200
     (out,) = r.json()["devices"]
-    assert out["error"] == ("Apple refused this iPhone: A device with number 'this iPhone' "
-                            "already exists (this iPhone).")
+    assert out["error"] == ("Apple refused this device: A device with number 'this device' "
+                            "already exists (this device).")
     bare = UDID_A.replace("-", "").lower()
     assert UDID_A.lower() not in r.text.lower() and bare not in r.text.lower()

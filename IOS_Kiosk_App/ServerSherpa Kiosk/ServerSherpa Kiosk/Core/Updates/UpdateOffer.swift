@@ -50,10 +50,13 @@ enum UpdateOffer: Equatable, Sendable {
     }
 }
 
-func updateOffer(_ answer: UpdateAnswer, profile: ProfileKind, devicesUrl: String) -> UpdateOffer {
+/// `device` is what this device is called in copy ("iPad" or "iPhone"); Core can't ask UIKit,
+/// so the caller passes it.
+func updateOffer(_ answer: UpdateAnswer, profile: ProfileKind, devicesUrl: String,
+                 device: String) -> UpdateOffer {
     func registerFirstMessage() -> String {
         let host = URLComponents(string: devicesUrl)?.host ?? devicesUrl
-        return "Add this iPhone on \(host) first."
+        return "Add this \(device) on \(host) first."
     }
     switch answer.status {
     case "up_to_date":

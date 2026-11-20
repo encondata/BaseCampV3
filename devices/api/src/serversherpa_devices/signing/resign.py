@@ -34,9 +34,10 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 
 from serversherpa_devices.config import get_settings
 from serversherpa_devices.signing import SignError
+from serversherpa_devices.signing.p12 import P12_UNREADABLE, open_p12
 
-__all__ = ["SignError", "binary_entitlements", "find_app", "pack_ipa", "sign_app",
-           "unpack_ipa"]
+__all__ = ["P12_UNREADABLE", "SignError", "binary_entitlements", "find_app", "pack_ipa",
+           "sign_app", "unpack_ipa"]
 
 SIGN_TIMEOUT = 600            # seconds; well inside the queue's 30-minute stale window
 INFO_TIMEOUT = 120
@@ -44,7 +45,6 @@ INFO_TIMEOUT = 120
 UNPACK_LIMIT = 4 * 1024 ** 3
 _LINK_LIMIT = 4096
 _TAIL_LINES = 20
-P12_UNREADABLE = "The Apple certificate (.p12) can't be opened with its saved password."
 _LEGACY_KDF_ROUNDS = 50000
 
 
@@ -85,12 +85,7 @@ def _legacy_p12(p12: bytes, password: str) -> tuple[bytes, str]:
     """The .p12's key and certificates as a legacy PKCS#12 (SHA-1 MAC,
     3DES) rcodesign can read, and the fresh password it's encrypted with.
     Raises SignError when the stored password doesn't open it."""
-    try:
-        stored = pkcs12.load_pkcs12(p12, password.encode() or None)
-    except (ValueError, TypeError):
-        raise SignError(P12_UNREADABLE) from None
-    if stored.key is None or stored.cert is None:
-        raise SignError(P12_UNREADABLE)
+    stored = open_p12(p12, password)
     temp_password = secrets.token_urlsafe(24)
     encryption = (serialization.PrivateFormat.PKCS12.encryption_builder()
                   .kdf_rounds(_LEGACY_KDF_ROUNDS)

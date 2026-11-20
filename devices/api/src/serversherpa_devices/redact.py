@@ -4,14 +4,14 @@ exists")."""
 
 import re
 
-THIS_IPHONE = "this iPhone"
+THIS_DEVICE = "this device"
 
 
 def without_udid(text: str, udid: str) -> str:
-    """`text` with every copy of `udid` replaced by "this iPhone": any case,
+    """`text` with every copy of `udid` replaced by "this device": any case,
     with or without its dashes (or with dashes anywhere)."""
     chars = [c for c in udid if c != "-"]
     if not text or not chars:
         return text
     pattern = "-?".join(re.escape(c) for c in chars)
-    return re.sub(pattern, THIS_IPHONE, text, flags=re.IGNORECASE)
+    return re.sub(pattern, THIS_DEVICE, text, flags=re.IGNORECASE)

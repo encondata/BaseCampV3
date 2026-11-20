@@ -93,7 +93,7 @@ async def disable_device(device_id: uuid.UUID, request: Request, db: Db, main_ap
     device = await db.scalar(select(IosDevice).where(IosDevice.id == device_id)
                              .with_for_update())
     if device is None:
-        raise api_error(404, "not_found", "That iPhone isn't on the list.")
+        raise api_error(404, "not_found", "That device isn't on the list.")
     if device.status == "disabled":
         return _device_out(device)
     before = device.status

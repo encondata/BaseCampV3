@@ -68,21 +68,22 @@ async def _ios(db: AsyncSession, bundle_id: str, build_sort: int, profile_kind: 
     current = await install_state.current_version(db, app) if app is not None else None
     if current is None or current.build_sort <= build_sort:
         return {"status": "up_to_date"}
-    # Only an Ad Hoc install means this iPhone was in a profile we signed with.
+    # Only an Ad Hoc install means this device was in a profile we signed with.
     if profile_kind != "adhoc":
         return {"status": "register_first",
-                "message": f"Add this iPhone on {install_state.public_url()} first."}
+                "message": f"Add this device on {install_state.public_url()} first."}
     profile = await install_state.app_profile(db, app)
     if profile is None:
-        return {"status": "preparing", "message": install_state.PREPARING}
+        return {"status": "preparing", "message": install_state.worded(install_state.PREPARING)}
     state, signed = await install_state.build_state(db, current, profile)
     if state == "refused":
         # Still "preparing" to the app, with the reason a new upload is needed.
-        return {"status": "preparing", "message": signed.error or install_state.BUILD_FAILED}
+        return {"status": "preparing",
+                "message": signed.error or install_state.worded(install_state.BUILD_FAILED)}
     if signed is None:
         # A failure inside the retry window is still "preparing" to the app.
-        message = install_state.BUILD_FAILED if state == "failed" else install_state.PREPARING
-        return {"status": "preparing", "message": message}
+        template = install_state.BUILD_FAILED if state == "failed" else install_state.PREPARING
+        return {"status": "preparing", "message": install_state.worded(template)}
     return _available(current, install_state.ios_install_url(signed))
 
 

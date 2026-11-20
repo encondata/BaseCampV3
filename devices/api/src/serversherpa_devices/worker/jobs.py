@@ -52,8 +52,8 @@ log = logging.getLogger(__name__)
 
 IPA_TYPE = "application/octet-stream"
 _INFO_PLIST_LIMIT = 4 * 1024 * 1024
-REGISTER_GAVE_UP = "Registering with Apple didn't finish. Add this iPhone again to retry."
-DISABLE_GAVE_UP = ("Apple didn't confirm disabling this iPhone, so Apple still lists it as "
+REGISTER_GAVE_UP = "Registering with Apple didn't finish. Add this device again to retry."
+DISABLE_GAVE_UP = ("Apple didn't confirm disabling this device, so Apple still lists it as "
                    "enabled. It's out of every profile here; disable it in Apple's developer "
                    "site too.")
 SIGN_GAVE_UP = "Signing didn't finish."
@@ -133,7 +133,7 @@ async def register_device(db: AsyncSession, job: Job) -> dict:
             # iPhone stays registering through the retries (gave_up marks it
             # failed after the last one).
             raise AscError(exc.status, exc.code, detail) from None
-        reason = f"Apple refused this iPhone: {detail}"
+        reason = f"Apple refused this device: {detail}"
         await _device_failed(db, device_id, reason)
         if exc.status == 409:          # the request itself is wrong: never retried
             raise JobFailed(reason) from None
