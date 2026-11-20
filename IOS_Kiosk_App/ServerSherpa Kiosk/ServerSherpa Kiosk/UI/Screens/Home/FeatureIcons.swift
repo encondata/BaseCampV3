@@ -32,6 +32,11 @@ enum FeatureIcons {
         svgCircle(15, 21, 3.5), "M9.5 30a5.5 5.5 0 0 1 11 0", "M24 20h6M24 25h6",
     ])
 
+    /// A wrench (the same path on every platform).
+    private static let troubleshooting = icon(strokes: [
+        "M25.5 6.5a8 8 0 0 0-8.9 10.6L6.5 27.2a3.3 3.3 0 0 0 4.7 4.7l10.1-10.1a8 8 0 0 0 10.6-8.9l-4.6 4.6-4.4-1.2-1.2-4.4z",
+    ])
+
     static func icon(_ id: FeatureId) -> VectorIcon {
         switch id {
         case .setup: setup
@@ -42,6 +47,7 @@ enum FeatureIcons {
         case .lookup: lookup
         case .labels: labels
         case .timeclock: timeclock
+        case .troubleshooting: troubleshooting
         case .settings: settings
         case .rolodex: rolodex
         }

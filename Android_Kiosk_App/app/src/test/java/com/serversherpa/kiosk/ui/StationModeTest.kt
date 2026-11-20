@@ -43,7 +43,7 @@ import org.robolectric.annotation.Config
 /**
  * A Time Clock station end to end through [KioskApp]: signed out it rests on Welcome (never the
  * sign-in page), its people and punches go through the station key, and a dropped or paused key
- * shows the matching copy. The gear leads to sign-in and back; signed in, Home has three tiles.
+ * shows the matching copy. The gear leads to sign-in and back; signed in, Home has four tiles.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w800dp-h1280dp")
@@ -154,10 +154,11 @@ class StationModeTest {
         compose.onNodeWithText("Back to the time clock").assertDoesNotExist()
     }
 
-    @Test fun stationHomeShowsThreeTiles() {
+    @Test fun stationHomeShowsFourTiles() {
         val s = station(signedIn = true)
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("tile-TIMECLOCK_STATION").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("tile-SETUP").assertIsDisplayed()
+        compose.onNodeWithTag("tile-TROUBLESHOOTING").assertIsDisplayed()
         compose.onNodeWithTag("tile-SETTINGS").assertIsDisplayed()
         for (other in listOf("SCAN", "ENROLL", "CONTAINERS", "TRUCKS", "LABELS", "TIMECLOCK")) {
             assertEquals(0, compose.onAllNodesWithTag("tile-$other").fetchSemanticsNodes().size)

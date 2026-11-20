@@ -7,7 +7,8 @@ struct HomeTile: Equatable {
 }
 
 /// Only the apps this kiosk can open now: before setup is complete that is Kiosk Setup, the
-/// Rolodex (admins) and Settings; the rest are hidden, not shown locked (Jimmy, 2026-11-17).
+/// Rolodex (admins), Troubleshooting and Settings; the rest are hidden, not shown locked (Jimmy,
+/// 2026-11-17).
 /// Developer mode shows every app. `isAdmin` (rank 60+) adds the Rolodex tile on a full kiosk Home.
 func homeTiles(setupState: SetupState, devMode: Bool, stationType: String? = nil, isAdmin: Bool = false) -> [HomeTile] {
     homeFeatures(stationType: stationType, isAdmin: isAdmin)

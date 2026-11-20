@@ -40,9 +40,9 @@ import kotlinx.coroutines.launch
 
 /**
  * kiosk/src/pages/Home.tsx: the launcher, two tiles per row. At a Time Clock station only Time
- * Clock, Kiosk Setup and Settings show; Time Clock (the web's Start Time Clock) gets the station
- * key if it is missing and signs the person out, which leaves the station on Welcome. An admin
- * (rank 60+) also gets the Rolodex on any other kiosk's Home.
+ * Clock, Kiosk Setup, Troubleshooting and Settings show; Time Clock (the web's Start Time Clock)
+ * gets the station key if it is missing and signs the person out, which leaves the station on
+ * Welcome. An admin (rank 60+) also gets the Rolodex on any other kiosk's Home.
  */
 @Composable
 fun HomeScreen(nav: NavHostController) {
@@ -76,7 +76,7 @@ fun HomeScreen(nav: NavHostController) {
         PageHeader("Kiosk", "What would you like to do?")
         UpdateBanner(container.updates)
         if (!complete && devMode) KioskToast("Developer mode: all features are available while kiosk setup is ${setupState.wire}.")
-        if (!complete && !devMode) KioskToast(if (failed) "Kiosk setup failed. Open Kiosk Setup to try again." else "Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.", error = failed)
+        if (!complete && !devMode) KioskToast(if (failed) "Kiosk setup failed. Open Kiosk Setup to try again." else "Kiosk setup is incomplete. Only Kiosk Setup, Troubleshooting and Settings are available.", error = failed)
         startError?.let { KioskToast(it, error = true) }
         homeFeatures(stationType, isAdmin).chunked(2).forEach { pair ->
             // IntrinsicSize.Min + fillMaxHeight: both tiles in a row take the height of the

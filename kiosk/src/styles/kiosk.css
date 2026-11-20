@@ -1543,3 +1543,38 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .kiosk-net-foot { margin-right: auto; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .kiosk-net-foot .form-error, .kiosk-net-foot .form-notice { margin: 0; }
 .kiosk-wifi-pass { max-width: 260px; }
+
+/* ── Troubleshooting guides (wiki document renderer) ─────────────────
+   Everything follows the theme tokens; only the barcode panel is forced
+   white so scanners can read it in dark mode too. */
+.wiki-doc { max-width: 860px; font-size: 15px; line-height: 1.6; color: var(--text-dark); }
+.wiki-doc h2 { margin: 28px 0 10px; font-size: 22px; }
+.wiki-doc h3 { margin: 22px 0 8px; font-size: 17px; }
+.wiki-doc p { margin: 0 0 12px; }
+.wiki-doc ul, .wiki-doc ol { margin: 0 0 12px; padding-left: 24px; }
+.wiki-doc li > p { margin: 0 0 4px; }
+.wiki-table-wrap { margin: 0 0 16px; overflow-x: auto; }
+.wiki-table {
+  width: 100%; border-collapse: collapse; font-size: 13.5px;
+  background: var(--paper); border: 1px solid var(--paper-line);
+}
+.wiki-table th, .wiki-table td {
+  text-align: left; vertical-align: top; padding: 8px 10px;
+  border-bottom: 1px solid var(--paper-line); overflow-wrap: anywhere;
+}
+.wiki-table th { color: var(--text-mute); font-weight: 600; }
+.wiki-table p { margin: 0; }
+.wiki-callout { margin: 0 0 14px; }
+.wiki-callout p:last-child { margin-bottom: 0; }
+.wiki-callout.is-info, .wiki-callout.is-tip { border-color: var(--paper-line); background: var(--paper); border-left: 3px solid var(--accent); }
+.wiki-callout.is-danger { border-color: color-mix(in srgb, var(--c-red) 50%, transparent); background: color-mix(in srgb, var(--c-red) 10%, transparent); }
+.wiki-barcode { margin: 0 0 18px; }
+.wiki-barcode-panel {
+  display: block; width: fit-content; max-width: 100%; box-sizing: border-box;
+  padding: 16px; background: #fff;
+}
+/* Default (smooth) rendering on purpose: nearest-neighbor downscaling drops or doubles bar columns, making bars uneven. */
+.wiki-barcode img {
+  display: block; max-width: 100%; height: auto;
+}
+.wiki-barcode figcaption { margin-top: 6px; font-size: 13px; color: var(--text-mute); }

@@ -5,6 +5,9 @@ object Routes {
     const val HOME = "home"
     const val SETUP = "setup"
     const val SETTINGS = "settings?tab={tab}"
+    /** The bundled guides; [TROUBLESHOOTING_TOPIC] is one guide by its topics.json id. */
+    const val TROUBLESHOOTING = "troubleshooting"
+    const val TROUBLESHOOTING_TOPIC = "troubleshooting/{topicId}"
     const val SCAN = "scan"
     const val ENROLL = "enroll"
     const val TIMECLOCK = "timeclock"
@@ -21,6 +24,8 @@ object Routes {
     const val NOTIFICATIONS_PATTERN = "notifications?highlight={highlight}&owner={owner}"
 
     fun settings(tab: String? = null): String = if (tab == null) "settings" else "settings?tab=$tab"
+
+    fun troubleshootingTopic(id: String): String = "$TROUBLESHOOTING/" + android.net.Uri.encode(id)
 
     fun notifications(highlight: String? = null, owner: String? = null): String {
         val args = listOfNotNull(

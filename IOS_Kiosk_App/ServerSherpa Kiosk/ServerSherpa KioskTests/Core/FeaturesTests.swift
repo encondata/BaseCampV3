@@ -4,11 +4,11 @@ import Testing
 
 struct FeaturesTests {
     @Test func orderMatchesTheWebKiosk() {
-        #expect(FEATURES.map(\.route) == ["setup", "scan", "enroll", "containers", "trucks", "lookup", "labels", "timeclock", "settings"])
+        #expect(FEATURES.map(\.route) == ["setup", "scan", "enroll", "containers", "trucks", "lookup", "labels", "timeclock", "troubleshooting", "settings"])
     }
 
-    @Test func onlySetupAndSettingsAreAlwaysAvailable() {
-        #expect(Set(FEATURES.filter(\.alwaysAvailable).map(\.id)) == [.setup, .settings])
+    @Test func onlySetupTroubleshootingAndSettingsAreAlwaysAvailable() {
+        #expect(Set(FEATURES.filter(\.alwaysAvailable).map(\.id)) == [.setup, .troubleshooting, .settings])
     }
 
     @Test func placeholdersAreContainersAndTrucks() {
@@ -42,10 +42,10 @@ struct FeaturesTests {
     /// never a station Home, never a non-admin. It needs no move, so it's always available.
     @Test func rolodexIsOnTheFullHomeForAdminsOnly() {
         #expect(homeFeatures(stationType: nil, isAdmin: true).map(\.id)
-                == [.setup, .scan, .enroll, .containers, .trucks, .lookup, .labels, .timeclock, .rolodex, .settings])
+                == [.setup, .scan, .enroll, .containers, .trucks, .lookup, .labels, .timeclock, .rolodex, .troubleshooting, .settings])
         #expect(!homeFeatures(stationType: nil, isAdmin: false).map(\.id).contains(.rolodex))
         #expect(!homeFeatures(stationType: nil).map(\.id).contains(.rolodex))
-        #expect(homeFeatures(stationType: "timeclock", isAdmin: true).map(\.title) == ["Time Clock", "Kiosk Setup", "Settings"])
+        #expect(homeFeatures(stationType: "timeclock", isAdmin: true).map(\.title) == ["Time Clock", "Kiosk Setup", "Troubleshooting", "Settings"])
         #expect(!homeFeatures(stationType: "label", isAdmin: true).map(\.id).contains(.rolodex))
         // the web kiosk's list stays as it is
         #expect(!FEATURES.map(\.id).contains(.rolodex))
@@ -83,6 +83,28 @@ struct FeaturesTests {
         #expect(home.firstIndex(of: .lookup) == home.firstIndex(of: .trucks).map { $0 + 1 })
         #expect(home.filter { $0 == .lookup }.count == 1)
         #expect(!homeFeatures(stationType: "timeclock", isAdmin: true).map(\.id).contains(.lookup))
+    }
+
+    /// The Troubleshooting tile (web/Android): always available, immediately before Settings on
+    /// every Home list, and routed like Settings (no setup gate).
+    @Test func troubleshootingSitsBeforeSettingsEverywhere() {
+        let t = feature(.troubleshooting)
+        #expect(t.title == "Troubleshooting")
+        #expect(t.blurb == "Fix common problems with kiosk hardware.")
+        #expect(t.route == "troubleshooting")
+        #expect(t.alwaysAvailable && !t.placeholder)
+        #expect(Array(homeFeatures(stationType: nil).map(\.id).suffix(2)) == [.troubleshooting, .settings])
+        #expect(Array(homeFeatures(stationType: nil, isAdmin: true).map(\.id).suffix(3)) == [.rolodex, .troubleshooting, .settings])
+        let station = homeFeatures(stationType: "timeclock")
+        #expect(station.first == TIMECLOCK_STATION_FEATURE)
+        #expect(station.dropFirst().map(\.id) == [.setup, .troubleshooting, .settings])
+        #expect(homeTiles(setupState: .incomplete, devMode: false).map(\.feature.id).contains(.troubleshooting))
+        #expect(featureForRoute("troubleshooting")?.id == .troubleshooting)
+        #expect(featureForRoute("troubleshooting/zebra-ds22")?.id == .troubleshooting)
+        #expect(Route.forFeature(.troubleshooting) == .troubleshooting)
+        #expect(Route.troubleshootingTopic("zebra-ds22").featureId == .troubleshooting)
+        #expect(routeAllowed(.troubleshooting, setupState: .incomplete, devMode: false))
+        #expect(routeAllowed(.troubleshootingTopic("nope"), setupState: .failed, devMode: false))
     }
 
     @Test func setupStateWire() {

@@ -9,7 +9,7 @@ import { isSetupComplete, type KioskSetupState } from './setupState';
 
 export interface KioskFeature {
   id: 'setup' | 'rfid' | 'clock' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'lookup' | 'labels'
-  | 'timeclock' | 'dock' | 'settings';
+  | 'timeclock' | 'dock' | 'troubleshooting' | 'settings';
   path: string;
   title: string;
   blurb: string;
@@ -34,6 +34,7 @@ export const FEATURES: KioskFeature[] = [
   // Asset labels only for now: container labels come later on every kiosk.
   { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset labels.' },
   { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.' },
+  { id: 'troubleshooting', path: '/troubleshooting', title: 'Troubleshooting', blurb: 'Fix common problems with kiosk hardware.', alwaysAvailable: true },
   { id: 'settings', path: '/settings', title: 'Settings', blurb: 'Appearance, sound, devices, and more.', alwaysAvailable: true },
 ];
 
@@ -73,16 +74,16 @@ export const DOCK_FEATURE: KioskFeature = {
 };
 
 /** What a laptop station's Home shows (Jimmy, 2026-10-02): an RFID Station
- *  only RFID Reader, Kiosk Setup and Settings; a Label Station only Label
+ *  only RFID Reader, Kiosk Setup, Troubleshooting and Settings; a Label Station only Label
  *  Printing, Kiosk Setup and Settings (its station tile first, 2026-11-17); a Time Clock station only Time
  *  Clock, Kiosk Setup and Settings; a Dock its Dock screen, then RFID
  *  Reader (start/stop and live reads), Kiosk Setup and Settings. Anything
  *  else (web mode, or a laptop not set up yet) shows every feature. */
 const STATION_TILES: Record<StationType, KioskFeature['id'][]> = {
-  rfid: ['rfid', 'setup', 'settings'],
-  label: ['labels', 'setup', 'settings'],
-  timeclock: ['clock', 'setup', 'settings'],
-  dock: ['dock', 'rfid', 'setup', 'settings'],
+  rfid: ['rfid', 'setup', 'troubleshooting', 'settings'],
+  label: ['labels', 'setup', 'troubleshooting', 'settings'],
+  timeclock: ['clock', 'setup', 'troubleshooting', 'settings'],
+  dock: ['dock', 'rfid', 'setup', 'troubleshooting', 'settings'],
 };
 
 export function homeFeatures(laptop: boolean, stationType: StationType | undefined): KioskFeature[] {

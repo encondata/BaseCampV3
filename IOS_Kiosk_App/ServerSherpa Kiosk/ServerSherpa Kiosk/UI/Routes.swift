@@ -14,6 +14,9 @@ enum Route: Hashable {
     case rolodex
     /// A narrow screen's worker page, pushed over the list (its own "‹ Rolodex" goes back).
     case rolodexWorker(String)
+    /// The bundled hardware guides, and one guide by its topic id (no setup gate, like Settings).
+    case troubleshooting
+    case troubleshootingTopic(String)
 
     static func forFeature(_ id: FeatureId) -> Route {
         switch id {
@@ -25,6 +28,7 @@ enum Route: Hashable {
         case .lookup: .lookup
         case .labels: .labels
         case .timeclock: .timeclock
+        case .troubleshooting: .troubleshooting
         case .settings: .settings(nil)
         case .rolodex: .rolodex
         }
@@ -42,6 +46,7 @@ enum Route: Hashable {
         case .lookup: .lookup
         case .labels, .labelsPrint, .labelsPrinter: .labels
         case .rolodex, .rolodexWorker: .rolodex
+        case .troubleshooting, .troubleshootingTopic: .troubleshooting
         }
     }
 }

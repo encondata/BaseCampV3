@@ -1,0 +1,8 @@
+[
+  {
+    "id": "zebra-ds22",
+    "title": "Zebra Scanner Troubleshooting",
+    "blurb": "Set up, pair, and reset Zebra DS22 scanners, with programming barcodes.",
+    "doc": "zebra-ds22.json"
+  }
+]

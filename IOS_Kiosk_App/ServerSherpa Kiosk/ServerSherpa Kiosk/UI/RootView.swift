@@ -85,6 +85,8 @@ struct RootView: View {
         case .rolodex: RolodexView(path: $path)
         case .rolodexWorker(let id): RolodexWorkerScreen(personId: id, path: $path)
         case .lookup: AssetLookupScreen()
+        case .troubleshooting: TroubleshootingView(path: $path)
+        case .troubleshootingTopic(let id): TroubleshootingTopicView(topicId: id, path: $path)
         default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
         }
     }
