@@ -1,5 +1,6 @@
 """The Apple team settings (the apple_settings row): reading an uploaded
-distribution certificate, and the unsealed credentials the worker uses."""
+distribution certificate, the unsealed credentials the worker uses, and the
+unsealed certificate alone, which the API signs the add-device profile with."""
 
 from __future__ import annotations
 
@@ -79,6 +80,18 @@ class AppleCredentials:
         return AscClient(self.key_id, self.issuer_id, self.p8, http=http)
 
 
+@dataclass(frozen=True)
+class StoredCertificate:
+    """The distribution certificate's .p12 and its password, unsealed."""
+    p12: bytes = field(repr=False)
+    password: str = field(repr=False)
+
+
+def _certificate(row: AppleSettings) -> StoredCertificate:
+    return StoredCertificate(p12=unseal(row.p12_enc),
+                             password=unseal(row.p12_password_enc).decode())
+
+
 async def load_credentials(db: AsyncSession) -> AppleCredentials | None:
     """The saved settings, unsealed; None when they aren't filled in.
     Raises secrets.SecretError when they were sealed under another key."""
@@ -87,8 +100,18 @@ async def load_credentials(db: AsyncSession) -> AppleCredentials | None:
             row.team_id, row.issuer_id, row.key_id, row.p8_enc, row.p12_password_enc,
             row.asc_certificate_id):
         return None
+    cert = _certificate(row)
     return AppleCredentials(
         team_id=row.team_id, issuer_id=row.issuer_id, key_id=row.key_id,
-        p8=unseal(row.p8_enc), p12=unseal(row.p12_enc),
-        p12_password=unseal(row.p12_password_enc).decode(),
+        p8=unseal(row.p8_enc), p12=cert.p12, p12_password=cert.password,
         asc_certificate_id=row.asc_certificate_id)
+
+
+async def load_certificate(db: AsyncSession) -> StoredCertificate | None:
+    """The saved .p12 and its password, unsealed (nothing else is); None
+    when they aren't saved. Raises secrets.SecretError when they were sealed
+    under another key, UnicodeDecodeError for a password that isn't UTF-8."""
+    row = await db.get(AppleSettings, 1)
+    if not is_configured(row) or row.p12_password_enc is None:
+        return None
+    return _certificate(row)

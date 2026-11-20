@@ -92,9 +92,10 @@ async def get_mobileconfig(token: str, db: Db, device: str | None = None):
     if await enroll.live_token(db, token) is None:
         return _expired(noun)
     filename = f"add-this-{(noun or 'device').lower()}.mobileconfig"
+    profile = enroll.mobileconfig(public_url=get_settings().public_url, token=token,
+                                  noun=noun or "device")
     return Response(
-        enroll.mobileconfig(public_url=get_settings().public_url, token=token,
-                            noun=noun or "device"),
+        await enroll.signed_mobileconfig(db, profile),
         media_type="application/x-apple-aspen-config",
         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                  "Cache-Control": "no-store"})
