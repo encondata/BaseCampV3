@@ -429,3 +429,33 @@ async def test_scan_delay_is_never_negative(fake, clock, metrics, move):
     m.state.clock_offset = -40.0
     report = await check(clock, metrics, m)
     assert report.delay_ms["median"] >= 0 and report.delay_ms["p95"] >= 0
+
+
+async def test_problems_the_tool_counted_are_findings(fake, clock, metrics, move):
+    m = await move()
+    metrics.count("action_errors", 2)
+    metrics.count("heartbeat_errors")
+    metrics.count("scans_not_sent", 10)
+    report = await clock.run(final_check(
+        portal=m.portal, state=m.state, profile=m.profile, metrics=metrics,
+        rule_checkpoints=m.rules, stopped_early=False, feed_write_errors=3))
+    assert report.verdict == "Fail"
+    assert report.findings == [
+        Finding("fail", "2 steps got an answer this tool does not understand."),
+        Finding("fail", "10 scans were not sent because a station had no key."),
+        Finding("warn", "1 heartbeat got an answer this tool does not understand."),
+        Finding("warn", "3 feed lines could not be written to events.log."),
+    ]
+
+
+async def test_rejected_scans_are_named_only_when_no_failed_step_says_so(fake, clock,
+                                                                        metrics, move):
+    m = await move()
+    metrics.count("scans_rejected")
+    report = await check(clock, metrics, m)
+    assert texts(report) == ["1 scan was rejected by the server in an accepted batch."]
+    assert report.verdict == "Pass with warnings"
+    sid = server_by_serial(m, first_serials(m, 1)[0])
+    m.state.servers[sid].done["label"] = False       # the step its rejected scan was in
+    report = await check(clock, metrics, m)
+    assert not any("rejected" in t for t in texts(report))

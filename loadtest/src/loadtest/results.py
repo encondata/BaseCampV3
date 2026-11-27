@@ -51,12 +51,13 @@ class _Redactor:
 def build_results(*, state: RunState, profile: Profile, metrics: Metrics,
                   report: FinalReport | None, catch_up_seconds: float | None, ended_at: float,
                   reason: str, secrets: Iterable[str] = frozenset(),
-                  db_health: str = "not_sampled") -> dict:
+                  db_health: str = "not_sampled", feed_write_errors: int = 0) -> dict:
     """`report` is None when the run ended in an error before the final check.
 
     Never refuses a result: each secret (6 characters or more) found in a finding's text
     or the reason is replaced with "[removed]", and `redactions` says how many were.
-    `db_health` is Sampler.db_health_state: sampled, not_available or not_sampled."""
+    `db_health` is Sampler.db_health_state: sampled, not_available or not_sampled.
+    `feed_write_errors` is how many feed lines events.log missed."""
     redact = _Redactor(secrets)
     reason = redact(reason)
     waiting = [v for _, v in metrics.series().get("waiting", [])]
@@ -97,6 +98,7 @@ def build_results(*, state: RunState, profile: Profile, metrics: Metrics,
         "findings": findings,
         "calls": metrics.calls(),
         "counters": metrics.counters(),
+        "feed_write_errors": feed_write_errors,
         "scans": scans,
         "scan_delay_ms": delay,
         "backlog": {"peak": max(waiting, default=0), "catch_up_seconds": catch_up_seconds},

@@ -47,7 +47,8 @@ def test_build_results_has_every_section():
     out = build(state)
     assert set(out) == {"run", "verdict", "findings", "calls", "counters", "scans",
                         "scan_delay_ms", "backlog", "series", "db_health", "redactions",
-                        "clock_offset_seconds"}
+                        "clock_offset_seconds", "feed_write_errors"}
+    assert out["feed_write_errors"] == 0
     assert out["clock_offset_seconds"] is None          # not measured
     run = out["run"]
     assert run["server_url"] == "http://localhost:8000"

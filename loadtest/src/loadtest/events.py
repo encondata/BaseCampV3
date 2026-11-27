@@ -40,7 +40,7 @@ class Events:
         self._ring: deque[FeedLine] = deque(maxlen=keep)
         self._subscribers: list[asyncio.Queue[FeedLine]] = []
         self._log = open(log_path, "a", encoding="utf-8") if log_path is not None else None
-        self.write_errors = 0           # log writes that failed (disk full, file removed)
+        self.write_errors = 0           # lines not written to the log (disk full, file removed)
         self._retry_at = 0.0
 
     def feed(self, line: FeedLine) -> None:
@@ -54,7 +54,10 @@ class Events:
             q.put_nowait(line)
 
     def _write(self, line: FeedLine) -> None:
-        if self._log is None or self._log.closed or time.monotonic() < self._retry_at:
+        if self._log is None or self._log.closed:
+            return
+        if time.monotonic() < self._retry_at:   # after a failed write: not tried again yet
+            self.write_errors += 1
             return
         try:
             self._log.write(format_line(line) + "\n")

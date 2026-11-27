@@ -351,7 +351,8 @@ class RunDriver:
             rules = run.rules or set()
         return await final_check(portal=run.portal, state=run.state, profile=run.profile,
                                  metrics=run.metrics, rule_checkpoints=rules,
-                                 stopped_early=stopped_early, extra_findings=extra or ())
+                                 stopped_early=stopped_early, extra_findings=extra or (),
+                                 feed_write_errors=run.events.write_errors)
 
     async def _teardown(self, run: Run) -> None:
         run.stopping = True
@@ -393,7 +394,8 @@ class RunDriver:
         self.result = build_results(
             state=run.state, profile=run.profile, metrics=run.metrics, report=report,
             catch_up_seconds=catch_up, ended_at=run.ended_at, reason=reason,
-            secrets=run.secrets, db_health=db_health)
+            secrets=run.secrets, db_health=db_health,
+            feed_write_errors=run.events.write_errors)
         try:
             write_results(run.run_dir, self.result)
         except OSError as exc:

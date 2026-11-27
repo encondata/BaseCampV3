@@ -356,11 +356,12 @@ async def test_failed_log_write_keeps_the_feed_going(tmp_path, monkeypatch):
     monkeypatch.setattr("loadtest.events.time.monotonic", lambda: now[0])
     for i in range(1, 4):
         events.feed(_line(i))                         # never raises
-    assert events.write_errors == 1 and Broken.tries == 1   # not retried on every line
+    # not retried on every line; every line not written is counted
+    assert events.write_errors == 3 and Broken.tries == 1
     assert len(events.recent()) == 3 and q.qsize() == 3
     now[0] += 5.1
     events.feed(_line(4))
-    assert events.write_errors == 2 and Broken.tries == 2
+    assert events.write_errors == 4 and Broken.tries == 2
     events._log = real
     now[0] += 5.1
     events.feed(_line(5))

@@ -121,10 +121,11 @@ def container_scans_sent(state: RunState) -> int:
 
 async def final_check(*, portal: PortalClient, state: RunState, profile: Profile,
                       metrics: Metrics, rule_checkpoints: set[str], stopped_early: bool,
-                      concurrency: int = 8, extra_findings: Sequence[Finding] = ()
-                      ) -> FinalReport:
+                      concurrency: int = 8, extra_findings: Sequence[Finding] = (),
+                      feed_write_errors: int = 0) -> FinalReport:
     """Raises only asyncio.CancelledError: a failed read is a finding. `extra_findings`
-    (the runner's own, such as a catch-up wait ended early) count toward the verdict."""
+    (the runner's own, such as a catch-up wait ended early) count toward the verdict.
+    `feed_write_errors` is how many feed lines events.log missed."""
     failed_calls = metrics.failed_calls()   # before this check's own reads
     stages = server_stages(profile)
     servers = list(state.servers.values())
@@ -228,6 +229,7 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
         findings.append(Finding("warn", f"{_n(twice, 'scan', 'scans')} {was} processed twice "
                                         "after a retry."))
     findings += _location_findings(state, metrics)
+    findings += _counted_findings(metrics, state, feed_write_errors)
     findings += list(extra_findings)
 
     levels = {f.level for f in findings}
@@ -368,6 +370,38 @@ async def _truck_findings(portal: PortalClient, state: RunState) -> list[Finding
         out.append(Finding("fail", f"{_n(len(away), 'truck', 'trucks')} {are} not at the "
                                    f"destination: "
                                    f"{_listed([f'{t.name} ({t.status})' for t in away])}."))
+    return out
+
+
+def _counted_findings(metrics: Metrics, state: RunState,
+                      feed_write_errors: int) -> list[Finding]:
+    """Problems the tool counted while it ran. A scan rejected inside an accepted batch
+    always fails the step it was in, so it is named only when no step failure is listed
+    (it would say the same thing twice)."""
+    counters = metrics.counters()
+    not_understood = counters.get("action_errors", 0)
+    beats = counters.get("heartbeat_errors", 0)
+    not_sent = counters.get("scans_not_sent", 0)
+    rejected = counters.get("scans_rejected", 0)
+    out: list[Finding] = []
+    if not_understood:
+        out.append(Finding("fail", f"{_n(not_understood, 'step', 'steps')} got an answer "
+                                   "this tool does not understand."))
+    if not_sent:
+        was = "was" if not_sent == 1 else "were"
+        out.append(Finding("fail", f"{_n(not_sent, 'scan', 'scans')} {was} not sent because "
+                                   "a station had no key."))
+    step_failed = any(ok is False for s in state.servers.values() for ok in s.done.values())
+    if rejected and not step_failed:
+        was = "was" if rejected == 1 else "were"
+        out.append(Finding("warn", f"{_n(rejected, 'scan', 'scans')} {was} rejected by the "
+                                   "server in an accepted batch."))
+    if beats:
+        out.append(Finding("warn", f"{_n(beats, 'heartbeat', 'heartbeats')} got an answer this "
+                                   "tool does not understand."))
+    if feed_write_errors:
+        out.append(Finding("warn", f"{_n(feed_write_errors, 'feed line', 'feed lines')} could "
+                                   "not be written to events.log."))
     return out
 
 
