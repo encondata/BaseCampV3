@@ -331,13 +331,14 @@ class Pipeline:
         trip = self.profile.trip
         lo, hi = trip.pause_seconds
         fixed = lo == hi  # real time: updates keep to the clock since departure
-        first = truck.updates_sent + 1
+        # Indexes already sent or already journaled as skipped are never counted again.
+        first = max(truck.updates_sent, truck.skipped_through) + 1
         if fixed and lo > 0:
             due = math.floor((self.clock.now() - truck.departed_at) / lo) + 1
-            if due > first:  # updates that fell while the runner was down
-                missed = min(due, trip.updates + 1) - first
-                self._record({"t": "location_skipped", "truck": truck_id,
-                              "count": truck.updates_skipped + missed})
+            last = min(due, trip.updates + 1) - 1  # last index that fell while down
+            if last >= first:
+                self._record({"t": "location_skipped", "truck": truck_id, "through": last,
+                              "count": truck.updates_skipped + (last - first + 1)})
                 first = due
         for index in range(first, trip.updates + 1):
             if fixed:

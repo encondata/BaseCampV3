@@ -34,6 +34,7 @@ class Truck:
     departed_at: float | None = None
     updates_sent: int = 0
     updates_skipped: int = 0
+    skipped_through: int = 0  # last update index journaled as skipped
     arrived: bool = False
 
 
@@ -103,8 +104,12 @@ class RunState:
         self.trucks[e["truck"]].updates_sent = e["index"]
 
     def _location_skipped(self, e: dict) -> None:
-        # `count` is the truck's cumulative skipped total, so a repeat is harmless.
-        self.trucks[e["truck"]].updates_skipped = e["count"]
+        # `count` is the truck's cumulative skipped total and `through` the last index
+        # skipped, so a repeat is harmless. Entries written before `through` existed
+        # load as 0.
+        truck = self.trucks[e["truck"]]
+        truck.updates_skipped = e["count"]
+        truck.skipped_through = max(truck.skipped_through, e.get("through", 0))
 
     def _arrived(self, e: dict) -> None:
         self.trucks[e["truck"]].arrived = True

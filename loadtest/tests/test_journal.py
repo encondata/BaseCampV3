@@ -35,7 +35,7 @@ ENTRIES = [
     {"t": "location", "at": 1007.0, "truck": "t1", "index": 5, "ok": True},
     {"t": "interrupted", "at": 1008.0},
     {"t": "resumed", "at": 1009.0},
-    {"t": "location_skipped", "at": 1009.5, "truck": "t1", "count": 3},
+    {"t": "location_skipped", "at": 1009.5, "truck": "t1", "through": 8, "count": 3},
     {"t": "arrived", "at": 1010.0, "truck": "t1"},
     {"t": "unloaded", "at": 1011.0, "container": "c1", "ok": True},
     {"t": "unpacked", "at": 1012.0, "stage": "unpack", "server": "z", "container": "c1", "ok": True},
@@ -65,6 +65,7 @@ def test_round_trip(tmp_path):
     assert got.finished == "completed" and got.servers["a"].done["pack"] is False
     assert got.servers["a"].container_id == "c1"
     assert got.trucks["t1"].updates_sent == 5 and got.trucks["t1"].updates_skipped == 3
+    assert got.trucks["t1"].skipped_through == 8
 
 
 def test_torn_last_line_is_ignored(tmp_path):
@@ -98,6 +99,15 @@ def test_apply_is_idempotent():
         twice.apply(e)
         twice.apply(e)
         assert dataclasses.asdict(once) == dataclasses.asdict(twice), e["t"]
+
+
+def test_location_skipped_without_through_still_loads():
+    state = make_state()
+    state.apply({"t": "location_skipped", "at": 1.0, "truck": "t1", "count": 4})
+    assert state.trucks["t1"].updates_skipped == 4 and state.trucks["t1"].skipped_through == 0
+    state.apply({"t": "location_skipped", "at": 2.0, "truck": "t1", "through": 9, "count": 6})
+    state.apply({"t": "location_skipped", "at": 1.5, "truck": "t1", "through": 7, "count": 6})
+    assert state.trucks["t1"].skipped_through == 9  # never moves back
 
 
 def test_unknown_entry_kind_raises():

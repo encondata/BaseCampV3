@@ -1,6 +1,7 @@
 """Continuing a run: cancel a pipeline, reload its journal, run a fresh one."""
 
 import asyncio
+import json
 import random
 from collections import Counter
 
@@ -99,6 +100,37 @@ def assert_complete(state, profile):
     assert all(t.arrived for t in state.trucks.values() if t.container_ids)
 
 
+def journal_entries(move, kind):
+    return [e for e in map(json.loads, move.path.read_text().splitlines()) if e["t"] == kind]
+
+
+def stop_kinds(state) -> set[str]:
+    """Which mid-move situations a stopped run's state holds."""
+    containers = state.containers.values()
+    trucks = state.trucks.values()
+    kinds = set()
+    if any(not c.closed and c.server_ids for c in containers):
+        kinds.add("part-packed")
+    if any(c.closed and c.truck_id is None for c in containers):
+        kinds.add("closed-not-loaded")
+    if any(t.container_ids and t.departed_at is None for t in trucks):
+        kinds.add("loaded-more-to-come")
+    if any(t.departed_at is not None and not t.arrived for t in trucks):
+        kinds.add("mid-trip")
+    if any(t.arrived and any(not state.containers[c].unloaded for c in t.container_ids)
+           for t in trucks):
+        kinds.add("arrived-not-unloaded")
+    if any(c.unloaded and 0 < len(c.unpacked) < len(c.server_ids) for c in containers):
+        kinds.add("part-unpacked")
+    if any("unpack" in s.done and "complete" not in s.done for s in state.servers.values()):
+        kinds.add("mid-destination")
+    return kinds
+
+
+ALL_STOP_KINDS = {"part-packed", "closed-not-loaded", "loaded-more-to-come", "mid-trip",
+                  "arrived-not-unloaded", "part-unpacked", "mid-destination"}
+
+
 def assert_nothing_redone(rec, before):
     """No step in the continued run is for something the reloaded state had finished."""
     for _, step in rec.steps:
@@ -129,6 +161,62 @@ async def test_continue_performs_only_what_is_left(tmp_path):
         for key in server_stage_keys(profile):
             assert counts[(sid, key)] == 1, (sid, key)
     assert_complete(move.state(), profile)
+
+
+async def test_continue_with_one_truck_on_the_road_and_one_loading(tmp_path):
+    profile = real_time()
+    probe = Move(tmp_path / "probe", 340, 17, 2, profile)
+    full, _ = await probe.run()
+    t02_loads = [t for t, s in full.of("truck_load") if s.truck_id == "t02"]
+    move = Move(tmp_path / "move", 340, 17, 2, profile)
+    await move.run(cancel_at=(t02_loads[0] + t02_loads[1]) / 2)
+    stopped = move.state()
+    t01, t02 = stopped.trucks["t01"], stopped.trucks["t02"]
+    assert t01.departed_at is not None and not t01.arrived and t01.updates_sent < 68
+    assert len(t02.container_ids) == 1 and t02.departed_at is None
+
+    second, before = await move.run()
+    assert_nothing_redone(second, before)
+    assert [(s.container_id, s.truck_id) for _, s in second.of("truck_load")] == [("c017", "t02")]
+    departs = [s.truck_id for _, s in second.of("trip") if s.kind == "depart"]
+    assert departs == ["t02"]
+    t01_indexes = [s.index for _, s in second.of("trip")
+                   if s.kind == "location" and s.truck_id == "t01"]
+    assert t01_indexes == list(range(t01.updates_sent + 1, 69))
+    final = move.state()
+    assert final.trucks["t02"].container_ids == ["c016", "c017"]
+    assert all(t.updates_skipped == 0 for t in final.trucks.values())
+    assert_complete(final, profile)
+
+
+async def test_continue_finishes_several_part_packed_containers(tmp_path):
+    profile = real_time()
+    probe = Move(tmp_path / "probe", 45, 3, 1, profile)
+    full, _ = await probe.run()
+    c001 = [t for t, s in full.of("pack") if s.container_id == "c001"]
+    c002 = [t for t, s in full.of("pack") if s.container_id == "c002"]
+    assert c002[0] < c001[-1]  # two crews pack at once
+    move = Move(tmp_path / "move", 45, 3, 1, profile)
+    await move.run(cancel_at=(c002[0] + c001[-1]) / 2)
+    stopped = move.state()
+    already = {c.id: list(c.server_ids) for c in stopped.containers.values()
+               if c.server_ids and not c.closed}
+    assert {"c001", "c002"} <= set(already)  # each crew stopped with its own container
+
+    second, before = await move.run()
+    assert_nothing_redone(second, before)
+    packs = second.of("pack")
+    crews = {cid: {s.crew for _, s in packs if s.container_id == cid} for cid in already}
+    assert all(len(c) <= 1 for c in crews.values())
+    used = [next(iter(c)) for c in crews.values() if c]
+    assert len(used) == len(set(used))  # each part-packed container has its own crew
+    counts = server_stage_counts(second)
+    assert all(counts[(sid, "pack")] == 0 for ids in already.values() for sid in ids)
+    final = move.state()
+    for cid, ids in already.items():
+        assert final.containers[cid].server_ids[:len(ids)] == ids
+    assert [len(c.server_ids) for c in final.containers.values()] == [20, 20, 5]
+    assert_complete(final, profile)
 
 
 async def test_continue_finishes_a_part_packed_container(tmp_path):
@@ -190,6 +278,24 @@ async def test_continue_real_time_trip_skips_missed_updates(tmp_path):
     assert_complete(final, profile)
 
 
+async def test_a_trip_interrupted_twice_counts_each_skip_once(tmp_path):
+    profile = real_time()
+    move, _ = await _stop_after_updates(tmp_path, profile, 10)
+    await move.wait(10800)
+    second, _ = await move.run(cancel_at=100)  # skips 11-22, stops before 23 is due
+    assert not [s for _, s in second.of("trip") if s.kind == "location"]
+    assert move.state().trucks["t01"].updates_skipped == 12
+    await move.wait(1800)
+    third, before = await move.run()  # 23 and 24 fell in the second gap
+    assert_nothing_redone(third, before)
+    truck = move.state().trucks["t01"]
+    assert truck.updates_skipped == 14 and truck.skipped_through == 24
+    sent = [e["index"] for e in journal_entries(move, "location")]
+    assert sent == list(range(1, 11)) + list(range(25, 69))
+    assert [e["count"] for e in journal_entries(move, "location_skipped")] == [12, 14]
+    assert_complete(move.state(), profile)
+
+
 async def test_continue_real_time_trip_past_arrival_goes_straight_to_arrive(tmp_path):
     profile = real_time()
     move, stopped = await _stop_after_updates(tmp_path, profile, 10)
@@ -236,6 +342,22 @@ async def test_continue_an_arrival_that_was_not_journaled(tmp_path):
     assert_complete(move.state(), profile)
 
 
+async def test_an_arrival_continued_after_a_long_gap_skips_nothing(tmp_path):
+    # All 68 updates were sent and `arrive` was cut off; the runner was then down long
+    # past the next pause boundary. Nothing is left to skip, so nothing is journaled.
+    profile = real_time()
+    probe = Move(tmp_path / "probe", 20, 1, 1, profile, SlowRecorder)
+    full, _ = await probe.run()
+    (arrive_at,) = [t for t, s in full.of("trip") if s.kind == "arrive"]
+    move = Move(tmp_path / "move", 20, 1, 1, profile, SlowRecorder)
+    await move.run(cancel_at=arrive_at + 0.1)
+    await move.wait(1800)
+    second, _ = await move.run()
+    assert [s.kind for _, s in second.of("trip")] == ["arrive"]
+    assert journal_entries(move, "location_skipped") == []
+    assert move.state().trucks["t01"].updates_skipped == 0
+
+
 async def test_a_finished_run_continues_with_no_steps(tmp_path):
     profile = fast()
     move = Move(tmp_path, 25, 2, 1, profile)
@@ -254,10 +376,12 @@ async def test_continue_from_any_stop(tmp_path):
     cancel_times = [3.7 * k for k in range(1, int(end // 3.7) + 1)]
     assert len(cancel_times) >= 30
     resent = 0  # server steps cut off mid-call by a cancel and sent again
+    kinds_hit: set[str] = set()
     for i, cancel_at in enumerate(cancel_times):
         move = Move(tmp_path / f"stop{i}", 45, 3, 1, profile, SlowRecorder)
         first, _ = await move.run(cancel_at=cancel_at)
         second, before = await move.run()
+        kinds_hit |= stop_kinds(before)
         assert_nothing_redone(second, before)
         first_counts = server_stage_counts(first)
         second_counts = server_stage_counts(second)
@@ -271,3 +395,4 @@ async def test_continue_from_any_stop(tmp_path):
                     resent += first_counts[pair]
         assert_complete(move.state(), profile)
     assert resent > 0  # the cut-off path was exercised
+    assert kinds_hit == ALL_STOP_KINDS  # every mid-move situation was continued from
