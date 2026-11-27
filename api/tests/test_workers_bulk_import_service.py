@@ -2,6 +2,7 @@
 commit. Actor for preview/commit is an admin (rank 60) unless a test says
 otherwise."""
 import io
+import json
 import uuid
 
 import openpyxl
@@ -71,10 +72,73 @@ async def mk_worker(db, first="Robert", last="Smith", *, preferred=None,
 
 def test_columns_match_canonical_shape():
     assert bi.COLUMNS == [
-        "first_name", "last_name", "preferred_name", "email", "phone",
+        "person_id", "first_name", "last_name", "preferred_name", "email", "phone",
         "job_title", "employee_number", "rfid_tag", "address_line1",
         "address_line2", "city", "region", "postal_code", "country",
-        "partner", "trade", "level", "status", "status_note", "notes"]
+        "partner", "trade", "level", "status", "status_note", "notes",
+        "will_travel", "travel_region", "travel_restrictions"]
+    assert bi.EXPORT_ONLY_COLUMNS[-1] == "certifications"
+    assert not set(bi.COLUMNS) & set(bi.EXPORT_ONLY_COLUMNS)
+
+
+def test_export_only_columns_are_accepted_and_dropped():
+    [(n, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B",
+                                       "badge_uid": "x", "has_login": True, "roles": "admin"}])
+    assert "badge_uid" not in row and "has_login" not in row and row["first_name"] == "A"
+
+
+def test_csv_certifications_cell_is_dropped():
+    csv = "first_name,last_name,certifications\nA,B,OSHA 10 (OSHA)\n".encode()
+    [(_, row)] = bi.parse_upload("w.csv", csv)
+    assert "certifications" not in row
+
+
+def test_json_certifications_ride_along_raw():
+    certs = [{"name": "OSHA 10", "issuer": "OSHA"}]
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "certifications": certs}])
+    assert row["certifications"] == certs
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "certifications": None}])
+    assert "certifications" not in row
+
+
+def test_json_certifications_keep_row_numbers_past_blank_rows():
+    rows = bi.number_json_rows([{}, {"first_name": "A", "last_name": "B",
+                                     "certifications": [{"name": "CPR"}]}])
+    assert [(n, r["certifications"]) for n, r in rows] == [(2, [{"name": "CPR"}])]
+
+
+@pytest.mark.parametrize("bad", ["x", {"name": "a"}, [1]])
+def test_malformed_certifications_still_parse(bad):
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "certifications": bad}])
+    assert row["certifications"] == bad
+
+
+def test_json_upload_file_path_keeps_certifications():
+    body = json.dumps([{"first_name": "A", "last_name": "B", "will_travel": True,
+                        "certifications": [{"name": "CPR"}]}]).encode()
+    [(_, row)] = bi.parse_upload("w.json", body)
+    assert row["will_travel"] == "True" and row["certifications"] == [{"name": "CPR"}]
+
+
+def test_json_upload_errors():
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.parse_upload("w.json", b"{nope")
+    assert exc.value.code == "invalid_json"
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.parse_upload("w.json", b" " * (bi.MAX_BYTES + 1))
+    assert exc.value.code == "file_too_large"
+
+
+def test_json_nulls_read_as_blank():
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "email": None,
+                                       "travel_region": None}])
+    assert row["email"] == "" and row["travel_region"] == ""
+
+
+def test_unknown_column_still_rejected():
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.number_json_rows([{"first_name": "A", "bogus": 1}])
+    assert exc.value.code == "unknown_columns"
 
 
 def test_normalize_phone():

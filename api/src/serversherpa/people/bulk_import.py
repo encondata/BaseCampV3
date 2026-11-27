@@ -12,6 +12,7 @@ already had defaults applied by diff time. Each preview row also carries
 `cells` (the uploaded cells before defaults) — the commit replays those.
 """
 
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -38,11 +39,20 @@ from serversherpa.services.audit import audit
 __all__ = ["BulkImportError", "MAX_BYTES", "MAX_ROWS"]
 
 COLUMNS = [
-    "first_name", "last_name", "preferred_name", "email", "phone",
+    "person_id", "first_name", "last_name", "preferred_name", "email", "phone",
     "job_title", "employee_number", "rfid_tag", "address_line1",
     "address_line2", "city", "region", "postal_code", "country",
     "partner", "trade", "level", "status", "status_note", "notes",
+    "will_travel", "travel_region", "travel_restrictions",
 ]
+# Columns the full export writes that an upload accepts and ignores (the
+# export is re-uploadable). JSON uploads may also carry `certifications`.
+EXPORT_ONLY_COLUMNS = [
+    "badge_uid", "has_photo", "source", "source_ref", "has_login",
+    "login_email", "login_disabled", "last_login_at", "roles", "created_at",
+    "updated_at", "profile_updated_at", "certifications",
+]
+EXPORT_COLUMNS = COLUMNS + EXPORT_ONLY_COLUMNS
 SHEET = "Workers"
 # template column → Person attribute
 PERSON_ATTR = {
@@ -56,19 +66,21 @@ PERSON_ATTR = {
 PROFILE_COLUMNS = ("trade", "level", "status", "status_note")
 
 SAMPLE_ROWS: list[dict] = [
-    {"first_name": "Robert", "last_name": "Smith", "preferred_name": "Bob",
+    {"person_id": "", "first_name": "Robert", "last_name": "Smith", "preferred_name": "Bob",
      "email": "bob.smith@example.com", "phone": "555-123-4567",
      "job_title": "Lead Technician", "employee_number": "E1042",
      "rfid_tag": "", "address_line1": "12 Rack Row", "address_line2": "",
      "city": "Reno", "region": "NV", "postal_code": "89501", "country": "US",
      "partner": "", "trade": "Cable, Rack & Stack", "level": "L4",
-     "status": "active", "status_note": "", "notes": "Sample row — replace me"},
-    {"first_name": "Maria", "last_name": "Lopez", "preferred_name": "",
+     "status": "active", "status_note": "", "notes": "Sample row — replace me",
+     "will_travel": "yes", "travel_region": "", "travel_restrictions": ""},
+    {"person_id": "", "first_name": "Maria", "last_name": "Lopez", "preferred_name": "",
      "email": "", "phone": "(555) 987-6543", "job_title": "",
      "employee_number": "", "rfid_tag": "", "address_line1": "",
      "address_line2": "", "city": "", "region": "", "postal_code": "",
      "country": "", "partner": "Example Staffing", "trade": "Cable",
-     "level": "L2", "status": "standby", "status_note": "", "notes": ""},
+     "level": "L2", "status": "standby", "status_note": "", "notes": "",
+     "will_travel": "", "travel_region": "", "travel_restrictions": ""},
 ]
 
 _EMAIL = TypeAdapter(EmailStr)
@@ -105,12 +117,40 @@ def name_keys(first: str, last: str, preferred: str) -> set[str]:
 
 # ── parsing / templates (thin wrappers over the shared core) ────────
 
+def _drop_export_only(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k not in EXPORT_ONLY_COLUMNS}
+
+
 def number_json_rows(rows: Any) -> list[tuple[int, dict]]:
-    return core.number_json_rows(rows, COLUMNS)
+    if isinstance(rows, dict):
+        rows = [rows]          # mirrors the core: a bare object is one row
+    # Certifications are structured, so lift them out of the raw rows by
+    # index before the core flattens every cell to text. JSON row n = index + 1.
+    certs: dict[int, Any] = {}
+    if isinstance(rows, list):
+        for i, raw in enumerate(rows):
+            if isinstance(raw, dict) and raw.get("certifications") is not None:
+                certs[i + 1] = raw["certifications"]
+    out: list[tuple[int, dict]] = []
+    for n, row in core.number_json_rows(rows, EXPORT_COLUMNS):
+        row = _drop_export_only(row)
+        if n in certs:
+            row["certifications"] = certs[n]
+        out.append((n, row))
+    return out
 
 
 def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
-    return core.parse_upload(filename, content, COLUMNS, SHEET)
+    if filename.lower().endswith(".json"):
+        if len(content) > MAX_BYTES:
+            raise BulkImportError("file_too_large", limit=MAX_BYTES)
+        try:
+            data = json.loads(content.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise BulkImportError("invalid_json") from None
+        return number_json_rows(data)
+    return [(n, _drop_export_only(row)) for n, row in
+            core.parse_upload(filename, content, EXPORT_COLUMNS, SHEET)]
 
 
 def build_rows_csv(rows: list[dict]) -> str:
@@ -173,6 +213,9 @@ async def export_rows(db: AsyncSession) -> list[dict]:
         row["level"] = (profile.level if profile else None) or ""
         row["status"] = (profile.status if profile else None) or "active"
         row["status_note"] = (profile.status_note if profile else None) or ""
+        # new columns; a later task fills them from the person / profile
+        for col in ("person_id", "will_travel", "travel_region", "travel_restrictions"):
+            row[col] = ""
         out.append(row)
     return out
 

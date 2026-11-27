@@ -67,11 +67,11 @@ async def test_export_formats(client, db, seeded_user, admin_hdrs):
     assert csv_resp.headers["content-disposition"] == 'attachment; filename="workers-export.csv"'
     lines = csv_resp.text.splitlines()
     assert lines[0] == ",".join(bi.COLUMNS)
-    assert lines[1].startswith("Exported,Worker,,,555-000-9999")
+    assert lines[1].startswith(",Exported,Worker,,,555-000-9999")
     xlsx_resp = await client.get("/workers/bulk-import/export?format=xlsx", headers=admin_hdrs)
     assert xlsx_resp.status_code == 200
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
-    assert wb["Workers"]["A2"].value == "Exported"
+    assert wb["Workers"]["B2"].value == "Exported"
     assert (await client.get("/workers/bulk-import/export?format=doc",
                              headers=admin_hdrs)).status_code == 422
 
