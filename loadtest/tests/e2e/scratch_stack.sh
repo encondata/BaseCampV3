@@ -4,6 +4,7 @@
 #   loadtest/tests/e2e/scratch_stack.sh up       # create, migrate, start
 #   loadtest/tests/e2e/scratch_stack.sh status   # what is running
 #   loadtest/tests/e2e/scratch_stack.sh down     # stop what up started, drop, remove
+#   loadtest/tests/e2e/scratch_stack.sh restart  # restart the processes only
 #
 # It only ever touches the database serversherpa_loadtest and the bucket
 # serversherpa-loadtest (both fixed in scratch_stack.py, never taken from an

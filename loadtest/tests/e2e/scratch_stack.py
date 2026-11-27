@@ -1,6 +1,10 @@
 """A throwaway BaseCamp server for trying the load test against the real API.
 
-    scratch_stack.sh up | down | status
+    scratch_stack.sh up | down | status | restart
+
+`restart` stops and starts the three processes only (to pick up
+LOADTEST_SCRATCH_TOKEN_SECONDS / LOADTEST_SCRATCH_SESSION_SECONDS, which shorten the
+access token and sign-in lifetimes so refresh and re-sign-in show up in a short run).
 
 `up` makes the database `serversherpa_loadtest` on the dev Postgres container, restores
 the clean starter dump into it, migrates it to head, makes the object storage bucket
@@ -145,6 +149,11 @@ def process_env() -> dict[str, str]:
         "SS_ATTESTATION_STATUS_URL": "http://127.0.0.1:9/attestation",
         "SS_COOKIE_DOMAIN": "",
     })
+    # short sign-ins, to see token refresh and re-sign-in within a short run
+    for ours, theirs in (("LOADTEST_SCRATCH_TOKEN_SECONDS", "SS_ACCESS_TOKEN_TTL_SECONDS"),
+                         ("LOADTEST_SCRATCH_SESSION_SECONDS", "SS_SESSION_TTL_SECONDS")):
+        if os.environ.get(ours):
+            env[theirs] = str(int(os.environ[ours]))
     return env
 
 
@@ -416,6 +425,22 @@ def down() -> None:
     say(f"Port {API_PORT}: {'free' if port_free(API_PORT) else 'IN USE'}")
 
 
+def restart() -> None:
+    """Stops and starts the processes only, to pick up new settings; data stays."""
+    if not database_exists():
+        die("there is no scratch database; run up")
+    env = process_env()
+    say("Processes:")
+    for name in reversed(list(PROCESSES)):
+        stop(name)
+    if not port_free(API_PORT):
+        die(f"port {API_PORT} is in use by something this script did not start")
+    for name in PROCESSES:
+        start(name, env)
+    wait_for_api()
+    say(f"Scratch server: http://{API_HOST}:{API_PORT}")
+
+
 def status() -> None:
     say(f"Database {SCRATCH_DB}: {'present' if database_exists() else 'absent'}")
     for name in PROCESSES:
@@ -438,9 +463,9 @@ def status() -> None:
 
 
 def main() -> None:
-    commands = {"up": up, "down": down, "status": status}
+    commands = {"up": up, "down": down, "status": status, "restart": restart}
     if len(sys.argv) != 2 or sys.argv[1] not in commands:
-        die("usage: scratch_stack.sh up | down | status")
+        die("usage: scratch_stack.sh up | down | status | restart")
     commands[sys.argv[1]]()
 
 
