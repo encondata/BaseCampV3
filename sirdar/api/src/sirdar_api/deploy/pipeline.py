@@ -79,6 +79,7 @@ from sirdar_api.deploy import (
     esxi_provision,
     first_admins,
     home,
+    integrations,
     known_hosts,
     lan_slots,
     provision,
@@ -849,6 +850,13 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     except app_rules.AppsError as e:
         raise PrepareError("Sirdar couldn't write this environment's .env: missing secrets: "
                            f"{', '.join(e.extra['missing'])}.") from None
+    if env.proxy == "switchyard":
+        # Switchyard isn't at the proxy IP on the LAN: inside the containers the
+        # public names go to the public IP, as visitors' do (the router sends
+        # 443 on to Switchyard).
+        cloudflare = await integrations.load_cloudflare(db, settings)
+        if cloudflare is not None:
+            extra["STACK_HOSTS_IP"] = cloudflare.public_ip
     if dep.cloud:
         # Read again here, not only at the start: step 0 may have just made
         # the Spaces secret and the doadmin password.
