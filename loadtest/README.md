@@ -187,8 +187,10 @@ At the top of the file:
   kiosk app does).
 - `sample_seconds`: how often the tool reads the server's waiting scans,
   workers and progress.
-- `[retry]`: how many times a failed call is tried, and the waits between
-  tries.
+- `[retry]`: how many times a failed call is tried (`attempts`), and the
+  waits between tries (`backoff_seconds`). The default is 6 tries with
+  waits of 1, 2, 5, 10 and 30 seconds, so a call keeps trying for about 48
+  seconds before it fails for good.
 - `[trip]`: the truck trip.
   - `hours`: how long the trip lasts (17).
   - `update_minutes`: minutes between location updates (15). The trip

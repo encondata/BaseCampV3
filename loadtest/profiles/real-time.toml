@@ -6,7 +6,7 @@ sample_seconds = 10
 request_timeout_seconds = 30
 
 [retry]
-attempts = 5
+attempts = 6
 backoff_seconds = [1, 2, 5, 10, 30]
 
 [trip]

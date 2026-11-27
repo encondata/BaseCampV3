@@ -174,7 +174,7 @@ def test_a_fixed_pause_that_matches_the_interval_loads(tmp_path):
 
 
 def test_retry_attempts_at_least_one(tmp_path):
-    _expect(tmp_path, lambda t: t.replace("attempts = 5", "attempts = 0"), "attempts")
+    _expect(tmp_path, lambda t: t.replace("attempts = 6", "attempts = 0"), "attempts")
 
 
 def test_retry_needs_a_backoff_value(tmp_path):
@@ -198,7 +198,7 @@ def test_invalid_toml_names_line(tmp_path):
     ("hours = 17", 'hours = "17"', ("hours",)),
     ("backoff_seconds = [1, 2, 5, 10, 30]", "backoff_seconds = 5", ("backoff_seconds",)),
     ("backoff_seconds = [1, 2, 5, 10, 30]", 'backoff_seconds = [1, "x"]', ("backoff_seconds",)),
-    ("attempts = 5", "attempts = true", ("attempts",)),
+    ("attempts = 6", "attempts = true", ("attempts",)),
     ("pause_seconds = [900, 900]", "pause_seconds = 900", ("pause_seconds",)),
     ('label = "RFID enroll"', "label = 3", ("enroll", "label")),
 ])
@@ -216,7 +216,7 @@ def test_stage_not_a_list_of_tables(tmp_path, value):
 
 def test_retry_not_a_table(tmp_path):
     def edit(text):
-        block = "[retry]\nattempts = 5\nbackoff_seconds = [1, 2, 5, 10, 30]\n"
+        block = "[retry]\nattempts = 6\nbackoff_seconds = [1, 2, 5, 10, 30]\n"
         assert block in text
         return "retry = 5\n" + text.replace(block, "")
     _expect(tmp_path, edit, "retry")
@@ -327,3 +327,13 @@ def test_profile_from_raw_validates_like_load_profile():
         profile_from_raw(raw)
     with pytest.raises(ProfileError, match="unknown key 'extra'"):
         profile_from_raw({**raw, "extra": 1})
+
+
+@pytest.mark.parametrize("name", ["real-time", "fast"])
+def test_every_retry_wait_is_used(name):
+    """One attempt more than there are waits: all five (1, 2, 5, 10 and 30 s, about 48 s
+    of patience) come into play before a step fails for good."""
+    retry = load_profile(profile_path(name)).retry
+    assert retry.backoff_seconds == (1, 2, 5, 10, 30)
+    assert retry.attempts == len(retry.backoff_seconds) + 1
+    assert sum(retry.backoff_seconds[:retry.attempts - 1]) == 48
