@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .client.kiosk import NO_RETRY, KioskDevice
-from .client.portal import MoveInfo, PortalClient, TotpEnrollRequired
+from .client.portal import MoveInfo, PortalClient, SiteChoice, TotpEnrollRequired
 from .clock import Clock
 from .fleet import FleetError
 from .http import CallFailed
@@ -50,15 +50,20 @@ MESSAGES = {
                    "new run.",
     "no_origin": "The run's move has no origin site. Set one on the move in the portal, then "
                  "continue.",
+    "not_connected": "Sign in to a server first.",
+    "setup_working": "A move is being created on the server. Wait for it to finish.",
 }
 
 
 class RunnerError(Exception):
-    """`message` is safe to show on the page."""
+    """`message` is safe to show on the page. `fields` names the request fields that are
+    wrong, when the problem is in what was typed."""
 
-    def __init__(self, code: str, message: str | None = None) -> None:
+    def __init__(self, code: str, message: str | None = None, *,
+                 fields: list[str] | None = None) -> None:
         self.code = code
         self.message = message if message is not None else MESSAGES[code]
+        self.fields = fields
         super().__init__(code, self.message)
 
 
@@ -155,6 +160,37 @@ class Connection:
         self.moves = []
         if portal is not None:
             await portal.close()
+
+    async def list_moves(self, also: dict | None = None) -> None:
+        """Reads the server's moves into `moves`, In progress first. `also` ({id, name,
+        status}): a move that is listed even when the read fails (it was just created)."""
+        try:
+            found = await self.portal.moves()
+        except Exception:
+            if also is None:
+                raise
+            log("the move list could not be read again after creating a move")
+            if all(m["id"] != also["id"] for m in self.moves):
+                self.moves.insert(0, dict(also))
+            return
+        found = sorted(found, key=lambda m: m.status != "in_progress")
+        self.moves = [{"id": m.id, "name": m.name, "status": m.status} for m in found]
+
+    async def read_sites(self) -> list[SiteChoice]:
+        try:
+            return await self.portal.sites()
+        except CallFailed as exc:
+            if exc.code == "redirected":
+                raise RunnerError("redirected") from None
+            if exc.status is None:
+                raise RunnerError("unreachable") from None
+            if exc.status == 403:
+                raise RunnerError("sites_unreadable", "The portal account is not allowed to "
+                                  "read the sites. Sign in with an admin account.") from None
+            raise RunnerError("sites_unreadable", "The sites could not be read from the server "
+                              f"(HTTP {exc.status}). Try again.") from None
+        except BAD_ANSWER:
+            raise RunnerError("bad_answer") from None
 
     async def read_move(self, move_id: str) -> MoveInfo:
         try:

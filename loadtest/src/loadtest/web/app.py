@@ -84,7 +84,19 @@ class ContinueBody(_Body):
     totp_code: _text(12) | None = None
 
 
-FIELD_NAMES = {name for model in (ConnectBody, CheckBody, ContinueBody)
+class SetupBody(_Body):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                           max_length=200)]
+    origin_site_id: _text(64)
+    destination_site_id: _text(64)
+    servers: Annotated[int, Field(ge=1)]
+    containers: int
+    trucks: int
+    # never altered; not empty, since an empty move password clears the move's
+    move_password: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+FIELD_NAMES = {name for model in (ConnectBody, CheckBody, ContinueBody, SetupBody)
                for name in model.model_fields}
 UNKNOWN_FIELD = "(unknown field)"
 
@@ -142,7 +154,8 @@ async def event_stream(runner, is_disconnected: Callable[[], Awaitable[bool]], *
             stopper = asyncio.ensure_future(stopping.wait())
         while not (stopping is not None and stopping.is_set()) and not await is_disconnected():
             now = loop.time()
-            every = active_every if runner.phase in ACTIVE else idle_every
+            busy = runner.phase in ACTIVE or getattr(runner, "setting_up", False)
+            every = active_every if busy else idle_every
             if now - last_snapshot >= every:
                 last_snapshot = now
                 for chunk in snapshot_event():
@@ -438,6 +451,9 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
 
     @app.exception_handler(RunnerError)
     async def runner_error(request: Request, exc: RunnerError) -> JSONResponse:
+        if exc.fields:          # a problem in what was typed, like a bad body
+            return JSONResponse({"code": exc.code, "message": exc.message,
+                                 "fields": list(exc.fields)}, status_code=422)
         return JSONResponse({"code": exc.code, "message": exc.message}, status_code=409)
 
     @app.exception_handler(RequestValidationError)
@@ -489,6 +505,19 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
     async def continue_run(body: ContinueBody) -> dict:
         return await runner.continue_run(body.password, body.move_password, body.email,
                                          body.totp_code or None)
+
+    @app.get("/api/sites")
+    async def sites() -> JSONResponse:
+        return JSONResponse(await runner.sites(), headers=NO_STORE)
+
+    @app.post("/api/setup", status_code=202)
+    async def setup(body: SetupBody) -> dict:
+        """Answers once the move's creation has begun; the snapshot's `setup` follows it."""
+        await runner.start_setup(
+            name=body.name, origin_site_id=body.origin_site_id,
+            destination_site_id=body.destination_site_id, servers=body.servers,
+            containers=body.containers, trucks=body.trucks, move_password=body.move_password)
+        return {}
 
     @app.post("/api/discard")
     async def discard() -> dict:
