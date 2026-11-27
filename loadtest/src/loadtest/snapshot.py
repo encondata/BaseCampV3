@@ -47,6 +47,7 @@ def build_snapshot(*, phase: str, error: str | None, connection: Connection,
     elif report and report.move:
         move = {"name": report.move.name, "servers": servers, "containers": need_c,
                 "trucks": need_t}
+    stages, fractions = _stages(run, profile, servers, need_c, need_t)
     latest = run.sampler.latest if run and run.sampler else {}
     elapsed = None
     if state:
@@ -67,8 +68,8 @@ def build_snapshot(*, phase: str, error: str | None, connection: Connection,
         "speed": profile.name if profile else None,
         "started_at": state.started_at if state else None,
         "elapsed": elapsed,
-        "overall": _overall(state, profile, servers),
-        "stages": _stages(run, profile, servers, need_c, need_t),
+        "overall": _overall(state, profile, servers, fractions),
+        "stages": stages,
         "trucks": _trucks(state, profile),
         "server": {"waiting": latest.get("waiting"),
                    "waiting_peak": latest.get("waiting_peak", 0),
@@ -83,22 +84,49 @@ def build_snapshot(*, phase: str, error: str | None, connection: Connection,
     }
 
 
-def _overall(state: RunState | None, profile: Profile | None, servers: int) -> dict:
+def _overall(state: RunState | None, profile: Profile | None, servers: int,
+             fractions: list[float]) -> dict:
+    """`done` is servers past the last stage; `percent` is the mean of every stage's
+    percent, so it moves through the whole move (a trip counts its location updates)."""
+    percent = round(sum(fractions) / len(fractions) * 100, 1) if fractions else 0.0
     if state is None or profile is None:
-        return {"done": 0, "total": servers}
+        return {"done": 0, "total": servers, "percent": percent}
     last = profile.stages[-1].key
-    return {"done": sum(last in s.done for s in state.servers.values()), "total": servers}
+    return {"done": sum(last in s.done for s in state.servers.values()), "total": servers,
+            "percent": percent}
+
+
+def _trip_fraction(state: RunState, profile: Profile) -> float:
+    """Location updates sent or skipped over all of them; an arrived truck is complete."""
+    updates = profile.trip.updates
+    trucks = list(state.trucks.values())
+    if not trucks or updates <= 0:
+        return 0.0
+    moved = sum(updates if t.arrived else min(updates, t.updates_sent + t.updates_skipped)
+                for t in trucks)
+    return moved / (len(trucks) * updates)
 
 
 def _stages(run: Run | None, profile: Profile | None, servers: int, containers: int,
-            trucks: int) -> list[dict]:
+            trucks: int) -> tuple[list[dict], list[float]]:
+    """One row per stage with its `percent`, and each stage's unrounded fraction done."""
     if run is not None and run.pipeline is not None:
-        return [asdict(p) for p in run.pipeline.progress()]
+        kinds = {s.key: s.kind for s in run.profile.stages}
+        rows, fractions = [], []
+        for p in run.pipeline.progress():
+            if kinds.get(p.key) == "trip":
+                fraction = _trip_fraction(run.state, run.profile)
+            else:
+                fraction = p.done / p.total if p.total else 0.0
+            rows.append({**asdict(p), "percent": round(fraction * 100, 1)})
+            fractions.append(fraction)
+        return rows, fractions
     if profile is None:
-        return []
+        return [], []
     totals = {"truck_load": containers, "truck_unload": containers, "trip": trucks}
-    return [{"key": s.key, "label": s.label, "done": 0, "total": totals.get(s.kind, servers)}
-            for s in profile.stages]
+    rows = [{"key": s.key, "label": s.label, "done": 0, "total": totals.get(s.kind, servers),
+             "percent": 0.0} for s in profile.stages]
+    return rows, [0.0] * len(rows)
 
 
 def _trucks(state: RunState | None, profile: Profile | None) -> dict:

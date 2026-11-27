@@ -253,7 +253,8 @@ async def test_a_whole_run_passes(world, fake, clock):
     await runner.start()
     assert runner.phase == "starting"
     assert runner.snapshot()["stages"][0] == {"key": "enroll", "label": "RFID enroll",
-                                              "done": 0, "total": SERVERS}
+                                              "done": 0, "total": SERVERS,
+                                              "percent": 0.0}
     world.process_scans()
     with pytest.raises(TimeoutError):
         await clock.run(runner.wait(), limit=30)
@@ -271,7 +272,7 @@ async def test_a_whole_run_passes(world, fake, clock):
     result = runner.result()
     assert result["verdict"] == "Pass", result["findings"]
     assert snap["verdict"] == "Pass"
-    assert snap["overall"] == {"done": SERVERS, "total": SERVERS}
+    assert snap["overall"] == {"done": SERVERS, "total": SERVERS, "percent": 100.0}
     assert snap["trucks"] == {"loaded": 1, "on_road": 0, "arrived": 1, "furthest": None}
     assert all(s["done"] == s["total"] for s in snap["stages"])
     assert snap["counters"].get("action_errors", 0) == 0
@@ -970,3 +971,44 @@ async def test_snapshot_page_keys_for_a_continued_run(world, clock):
     await clock.run(runner.wait())
     assert runner.phase == "done"
     assert page_keys(runner) == {"moves": [], "selected": None, "devices": 32}
+
+
+# ── follow-up 3: overall progress moves through the whole move ─────────
+
+
+async def test_overall_percent_moves_through_the_whole_move(world, clock):
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    assert runner.snapshot()["overall"]["percent"] == 0.0
+    world.process_scans()
+    seen, trip_moving = [], []
+    while True:
+        try:
+            await clock.run(runner.wait(), limit=2)
+        except TimeoutError:
+            pass
+        snap = json.loads(json.dumps(runner.snapshot()))
+        seen.append((snap["overall"]["percent"], snap["overall"]["done"]))
+        trip = next(s for s in snap["stages"] if s["key"] == "trip")
+        if snap["trucks"]["on_road"] and 0 < trip["percent"] < 100:
+            trip_moving.append(trip["percent"])
+        if runner.phase == "done":
+            break
+    percents = [p for p, _ in seen]
+    assert percents == sorted(percents)                  # never goes down
+    assert any(0 < p < 100 and done == 0 for p, done in seen)
+    assert len(set(trip_moving)) > 3                     # the trip row moves steadily
+    final = runner.snapshot()
+    assert final["overall"]["percent"] == 100.0
+    assert all(s["percent"] == 100.0 for s in final["stages"])
+
+
+async def test_overall_percent_of_a_continued_run_starts_from_the_journal(world, clock):
+    await crashed_run(world, clock)
+    runner = world.runner()
+    await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    resumed = runner.snapshot()["overall"]["percent"]
+    assert 0 < resumed < 100
+    await clock.run(runner.wait())
+    assert runner.snapshot()["overall"]["percent"] == 100.0
