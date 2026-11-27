@@ -78,6 +78,11 @@ Anyone who opens it can press Start or Stop, so the tool asks for a key:
   `/?key=…`. The key changes every time the tool starts. Keep the link to
   yourself.
 
+The page itself is plain http. Passwords typed on another machine cross
+the network unencrypted, and so does the portal password on its way to
+the server when the server address is `http://`. On a network you do not
+trust, use the page on the runner machine itself.
+
 To keep the page on this machine only:
 
 ```bash
@@ -99,6 +104,17 @@ Other options:
 - `--runs-dir /some/folder` saves results somewhere else (the default is
   the `runs` folder in this directory).
 
+Only one copy of the tool may use a runs folder at a time. A second copy
+on the same folder stops at once with:
+
+> Another copy of the load test is already using this runs folder.
+
+If the port is taken, the tool says:
+
+> Port 8795 is already in use. The load test may already be running on
+> this machine; open its page instead, or start this one with --port and
+> --runs-dir set to something else.
+
 ### Use the server's https address
 
 Enter the server as `https://…`, the same address the portal uses. The
@@ -114,16 +130,22 @@ readiness check warns about this, or fails if 2FA is involved.
    Enter a 2FA code if the page asks for one.
 2. **Pick the move**, enter the move password, and pick the speed.
 3. **Check server.** Every line must pass before Start is enabled. Each
-   failed line says what to fix. Two lines are only warnings:
+   failed line says what to fix. Some lines are only warnings:
    - checkpoints with no enabled status rule (their scans are recorded but
      change no status);
    - the run sends the server's normal notifications to anyone watching
-     this move, its trucks or its sites.
+     this move, its trucks or its sites;
+   - **Clocks agree** compares this machine's clock with the server's. It
+     passes within 5 seconds and warns above that ("Scan delay figures
+     allow for it"). At 60 seconds or more it fails: set this machine's
+     clock, then check again.
 4. **Start.** The page shows overall progress, each stage, the trucks, the
    server's waiting scans, and a live feed. You can close the page and
    open it again; the run keeps going.
-5. **Stop** ends the run early. It waits for calls already sent, then
-   writes the result.
+5. **Stop** ends the run early, and it is final: a stopped run cannot be
+   continued. It waits for calls already sent, then writes the result.
+   Once the move has finished and the tool is waiting for the server to
+   catch up, Stop only ends that wait; the final check still runs in full.
 
 ## The two speeds and how long each takes
 
@@ -223,7 +245,9 @@ LOADTEST_ROUTER_URL=https://osrm.example.com .venv/bin/python -m loadtest
 
 The result shows on the page when the run ends. It is also saved in the
 run's folder as `results.json` (every number, plus every sample with its
-time) and `events.log` (the whole live feed).
+time) and `events.log` (the whole live feed, each line with its date and
+time). Each run has its own folder in the runs folder, named by its start
+time in UTC, for example `2026-11-27_14-02-11Z`.
 
 ### The verdict
 
@@ -232,9 +256,10 @@ time) and `events.log` (the whole live feed).
 - **Pass with warnings**: the same, but something needs a look. For
   example, the server processed a scan twice, or a check was skipped
   because a status rule is missing.
-- **Fail**: a call failed for good, a scan was never processed, the run
-  was stopped early, or the final check found a server, container or truck
-  in the wrong state.
+- **Fail**: a call failed for good, a step failed (a server, container or
+  truck step, before or after a Continue), a scan was never processed, the
+  run was stopped early, or the final check found a server, container or
+  truck in the wrong state.
 
 The reasons are listed under the verdict, under **Findings**.
 
@@ -258,7 +283,8 @@ The reasons are listed under the verdict, under **Findings**.
   were tried again, how many failed for good, and the response times
   (median, 95th percentile, slowest).
 - **Run facts**: server, move, counts, speed, the profile used, start and
-  end times, and any interruptions.
+  end times, the clock difference between this machine and the server,
+  and any interruptions.
 
 `results.json` also keeps, through the run: the waiting count, workers
 running, each move status count from the server, and database health (only
@@ -278,8 +304,9 @@ finds every scan the server processed twice and lists them as a warning.
 ## Continuing an interrupted run
 
 A run is **interrupted** when the tool stops without finishing: the runner
-machine restarts, the tool is closed, or the process is killed. The run's
-journal in its folder records every finished step, so nothing is lost.
+machine restarts, the tool is closed, the process is killed, or the run
+stops on a problem (the page says what it was). The run's journal in its
+folder records every finished step, so nothing is lost.
 
 When the tool starts again, the page shows the interrupted run with two
 choices:
@@ -292,6 +319,8 @@ On Continue:
 
 - A step that was sent but not yet recorded is sent again with the same
   scan id, so the server normally counts it once (see "processed twice").
+  If the server answers that an unpack or unload is already done, it
+  counts as done.
 - A cart or container that was half done starts its timer again.
 - A truck on the road is placed where the clock says it should be. Location
   updates that fell in the gap are skipped and counted as skipped.
@@ -310,8 +339,9 @@ The tool does not clean up after itself. A run leaves:
 - every scan it sent, in each server's scan history;
 - the RFID tag it gave each server;
 - the servers' move statuses, container contents and truck statuses;
-- 32 devices named "Load test – …" with serials starting `LOADTEST-`, in
-  Settings › Devices;
+- 33 devices named "Load test – …" with serials starting `LOADTEST-`, in
+  Settings › Devices (the run's 32, plus "Load test – check" from the
+  readiness check);
 - each truck's location updates (68 per truck) and its trip;
 - the notifications the server sent to anyone watching the move, its
   trucks or its sites.

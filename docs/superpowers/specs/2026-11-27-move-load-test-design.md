@@ -428,8 +428,13 @@ Claude's calls, each easy to change:
 5. **RFID points are one reader each.** The 20 teams and 4 people set how
    often a cart passes; they are not separate devices.
 6. **Destination order:** unload, unpack, RFID 3, RFID 4, QA, Complete.
-7. **The page is reachable on the LAN** (binds 0.0.0.0), like the mockup
-   server. Anyone on the network could press Start or Stop while it runs.
+7. **The page is reachable on the LAN, but protected** (binds 0.0.0.0),
+   like the mockup server. The tool prints a keyed link (`/?key=…`, a new
+   key every start); another machine needs it, and the runner machine
+   itself does not. The page answers only to this machine's own names (a
+   Host allowlist). `--host 127.0.0.1` keeps the page on the runner
+   machine only. Behind a reverse proxy, `--allow-host <name>` adds the
+   proxy's name, and then everyone needs the key, on this machine too.
 8. **The generator page is copied** into the tool; the mockup stays.
 9. **Verdict is about correctness only**, not speed.
 10. **Continue run** is included, because a real-time run lasts two days.
@@ -439,3 +444,39 @@ Claude's calls, each easy to change:
     a retry is a warning, not a failure.
 14. **No charts on the result page.** The samples are saved so one can be
     added; Jimmy decides whether he wants it.
+
+## Changes made while building
+
+The design changed in these ways while the tool was built and reviewed:
+
+- **Results are never refused.** A secret found in a result's text is
+  replaced with "[removed]", and the result says how many were. Losing a
+  two-day run's answer would be worse.
+- **Three verdicts.** Pass: nothing wrong. Pass with warnings: the run is
+  sound, but something needs a look (a scan processed twice, a skipped
+  check, the catch-up wait ended early). Fail: a step or call failed for
+  good, a scan was never processed, the run was stopped, or the end state
+  is wrong.
+- **Errors and wrong passwords never forfeit a run.** A problem during a
+  run leaves it interrupted, and it can be continued. A wrong move
+  password on Continue changes nothing.
+- **Stop during the catch-up wait ends only the wait.** The move has
+  finished, so the final check still runs in full. A Stop at any other
+  time is final.
+- **The access key.** See decision 7.
+- **The overall bar is progress through all stages,** the trip's location
+  updates included, not only servers done.
+- **Refresh calls do not count toward the verdict.** A failed refresh is
+  followed by a new sign-in; only that sign-in failing counts.
+- **The verdict for truck and trip steps comes from the journal.** Load,
+  unload, depart, each location update and arrive record whether they
+  landed, so a failure before a Continue is never forgotten.
+- **Statistics survive a Continue.** Every call time, count and sample is
+  saved as it happens in the run's folder and read back on Continue, so
+  the result covers the whole run.
+- **The clock check.** The readiness check compares this machine's clock
+  with the server's. Scan delay allows for the difference; a difference
+  of a minute or more stops the run from starting.
+- **Route length in miles.**
+- **Retries are patient for about 48 seconds:** six tries, with waits of
+  1, 2, 5, 10 and 30 seconds.
