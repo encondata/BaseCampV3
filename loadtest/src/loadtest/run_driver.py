@@ -37,6 +37,7 @@ RUNNER = "Runner"           # the feed's device name for the runner's own lines
 EVENTS_LOG = "events.log"
 _END_PHASE = {"completed": "done", "stopped": "stopped"}
 CONTINUABLE = "The run can be continued."
+SAVE_FAILED = "The result could not be saved to the run folder."
 WAIT_ENDED = "The wait for the server to catch up was ended early."
 
 
@@ -361,14 +362,16 @@ class RunDriver:
                 catch_up: float | None) -> None:
         run.ended_at = self.clock.now()
         if reason == "error":
-            # an interim result, then the run stays continuable
-            self._save_result(run, self.error.rstrip("."), report, catch_up)
+            # the run stays continuable; its interim result lists the interruption
+            message = self.error
             self._interrupt_entry(run)
-            self.feed(run, "Run interrupted", self.error, ok=False)
-            self.error = _continuable(self.error)
+            saved = self._save_result(run, message.rstrip("."), report, catch_up)
+            self.feed(run, "Run interrupted", message, ok=False)
+            self.error = _continuable(message) + ("" if saved else f" {SAVE_FAILED}")
             self._set_phase("error")
             return
-        self._save_result(run, reason, report, catch_up)
+        if not self._save_result(run, reason, report, catch_up):
+            self.error = SAVE_FAILED
         self.journal(run, {"t": "run_finished", "reason": reason})
         run.finished = True
         if self.result is not None:
@@ -377,7 +380,9 @@ class RunDriver:
         self._set_phase(_END_PHASE[reason])
 
     def _save_result(self, run: Run, reason: str, report: FinalReport | None,
-                     catch_up: float | None) -> None:
+                     catch_up: float | None) -> bool:
+        """Builds the result and writes results.json; False when the file could not be
+        written (the result is still kept for the page)."""
         db_health = run.sampler.db_health_state if run.sampler else "not_sampled"
         self.result = build_results(
             state=run.state, profile=run.profile, metrics=run.metrics, report=report,
@@ -387,11 +392,13 @@ class RunDriver:
             write_results(run.run_dir, self.result)
         except OSError as exc:
             log("could not save results.json", exc)
-            self.error = "The result could not be saved to the run folder."
+            return False
+        return True
 
     def _finish_failed(self, run: Run, exc: Exception) -> None:
         log("the run could not finish", exc)
-        if run.finished:
+        if run.finished:    # the journal says how it ended: the phase must say the same
+            self._set_phase(_END_PHASE.get(run.state.finished, "done"))
             return
         self._interrupt_entry(run)
         self.error = _continuable(safe_error(exc))

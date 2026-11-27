@@ -26,6 +26,7 @@ from .profile import Profile, RetrySpec
 CONNECT_RETRY = RetrySpec(attempts=3, backoff_seconds=(1.0, 2.0))
 CONNECT_TIMEOUT = 30.0
 BAD_ANSWER = (ValueError, KeyError, TypeError)
+CONTINUE_AGAIN = "try Continue again"      # preflight's closing words, on the continue path
 
 MESSAGES = {
     "bad_phase": "That cannot be done right now.",
@@ -199,13 +200,13 @@ class Connection:
             try:
                 await device.sign_in(move_password)
             except KIOSK_FAILURES as exc:
-                raise RunnerError("move_password", sign_in_failure(exc)) from None
+                raise RunnerError("move_password", sign_in_failure(exc, CONTINUE_AGAIN)) from None
             if checkpoints:
                 try:
                     await device.setup(initiative_id=move.id, site_id=move.origin.id,
                                        scan_status=checkpoints[0])
                 except KIOSK_FAILURES as exc:
-                    raise RunnerError("move_password",
-                                      setup_failure(exc, move, checkpoints[0])) from None
+                    raise RunnerError("move_password", setup_failure(
+                        exc, move, checkpoints[0], CONTINUE_AGAIN)) from None
         finally:
             await device.close()

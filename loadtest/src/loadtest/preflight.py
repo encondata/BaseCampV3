@@ -132,19 +132,22 @@ def _coordinates(site: SiteInfo | None) -> tuple[float, float] | None:
     return (site.lat, site.lng)
 
 
-def sign_in_failure(exc: Exception) -> str:
-    """A refused or failed first sign-in (the password step or the heartbeat after it)."""
+def sign_in_failure(exc: Exception, then: str = "check again") -> str:
+    """A refused or failed first sign-in (the password step or the heartbeat after it).
+    `then` is what the user does once it is fixed."""
     if not isinstance(exc, CallFailed):
         return f"The kiosk sign-in failed: {NOT_UNDERSTOOD}. Check the server address."
     if exc.call == "heartbeat":
         return ("The move password was accepted, but the kiosk could not finish signing in "
-                f"({_answered(exc)}). Check the server, then check again.")
+                f"({_answered(exc)}). Check the server, then {then}.")
     return SIGN_IN_FAILURES.get(exc.code or "") or (
         f"The kiosk sign-in failed ({_answered(exc)}).")
 
 
-def setup_failure(exc: Exception, move: MoveInfo, checkpoint: str) -> str:
-    """The move-bound kiosk setup that proves the password is for this move."""
+def setup_failure(exc: Exception, move: MoveInfo, checkpoint: str,
+                  then: str = "check again") -> str:
+    """The move-bound kiosk setup that proves the password is for this move. `then` is
+    what the user does once it is fixed."""
     if not isinstance(exc, CallFailed):
         return f"The kiosk could not be set up: {NOT_UNDERSTOOD}. Check the server address."
     if exc.code == "move_locked":
@@ -158,7 +161,7 @@ def setup_failure(exc: Exception, move: MoveInfo, checkpoint: str) -> str:
     if exc.code == "bad_site":
         return "The server does not accept the move's origin site for a kiosk. Check the move."
     return ("The move password was accepted, but the kiosk could not be set up for this move "
-            f"({_answered(exc)}). Check the server, then check again.")
+            f"({_answered(exc)}). Check the server, then {then}.")
 
 
 async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, move_id: str,

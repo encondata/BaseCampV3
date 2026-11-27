@@ -20,7 +20,14 @@ from typing import Literal
 import httpx
 
 from .clock import Clock, RealClock
-from .connection import MESSAGES, Connection, RunnerError, normalize_server, sign_in_error
+from .connection import (
+    MESSAGES,
+    Connection,
+    RunnerError,
+    log,
+    normalize_server,
+    sign_in_error,
+)
 from .events import Events, FeedLine
 from .ids import make_tags
 from .journal import start_entry
@@ -193,11 +200,11 @@ class Runner:
         if (self._shut or self._busy or self._driver.active
                 or self.phase not in ("connected", "checked")):
             raise RunnerError("bad_phase")
+        if self._unfinished.find() is not None:
+            raise RunnerError("unfinished_run")
         report, profile = self._report, self._profile
         if self.phase != "checked" or report is None or not report.can_start:
             raise RunnerError("not_ready")
-        if self._unfinished.find() is not None:
-            raise RunnerError("unfinished_run")
         state = self._new_state(report, profile)
         run_dir = self._new_run_dir()
         try:
@@ -208,9 +215,12 @@ class Runner:
                 run.journal.close()
                 run.events.close()
                 raise RunnerError("cannot_write") from None
-        except RunnerError:
+        except Exception as exc:
             shutil.rmtree(run_dir, ignore_errors=True)
-            raise
+            if isinstance(exc, RunnerError):
+                raise
+            log("could not open the run folder", exc)
+            raise RunnerError("cannot_write") from None
         self._launch(run, "Run started",
                      f"{len(state.servers):,} servers, {len(state.containers):,} containers, "
                      f"{len(state.trucks):,} trucks, {profile.name}")

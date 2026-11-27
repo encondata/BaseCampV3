@@ -365,6 +365,8 @@ async def test_fleet_failure_leaves_the_run_continuable(world, fake, clock):
     assert result["verdict"] == "Fail"
     assert result["run"]["reason"] == error.removesuffix(CONTINUABLE).rstrip(".")
     assert (run_dir / "results.json").is_file()
+    # the interim result lists the interruption that ended it
+    assert [i["resumed_at"] for i in result["run"]["interruptions"]] == [None]
     assert runner.unfinished()["run_dir"] == str(run_dir)
     fake._failures.clear()
     await world.ready(runner)
@@ -839,3 +841,85 @@ async def test_feed_subscription_survives_runs(world, clock):
     assert queue.qsize() > first
     assert len(run_dirs(world)) == 2
     runner.unsubscribe(queue)
+
+
+# ── follow-up ──────────────────────────────────────────────────────────
+
+
+async def test_a_failure_after_run_finished_still_ends_the_phase(world, clock, monkeypatch):
+    from loadtest.run_driver import RunDriver
+    real = RunDriver.feed
+
+    def feed(self, run, action, subject="", ok=True):
+        if action == "Result":
+            raise RuntimeError("no")
+        real(self, run, action, subject, ok)
+
+    monkeypatch.setattr(RunDriver, "feed", feed)
+    runner = world.runner()
+    await world.ready(runner)
+    world.process_scans()
+    await runner.start()
+    await clock.run(runner.wait())
+    assert runner.phase == "done"
+    [run_dir] = run_dirs(world)
+    kinds = [e["t"] for e in journal_entries(run_dir)]
+    assert kinds[-1] == "run_finished" and "interrupted" not in kinds
+    monkeypatch.undo()
+    assert (await clock.run(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD)))["status"] == "ok"
+
+
+async def test_an_unsaved_interim_result_keeps_the_error(world, fake, clock, monkeypatch):
+    def refuse(run_dir, result):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("loadtest.run_driver.write_results", refuse)
+    runner = world.runner()
+    await world.ready(runner)
+    fake.fail("POST", "/kiosk/setup", status=422, times=100)
+    await runner.start()
+    await clock.run(runner.wait())
+    error = runner.snapshot()["error"]
+    assert error.startswith("Load test – RFID enroll")
+    assert error.endswith(". The run can be continued. "
+                          "The result could not be saved to the run folder.")
+    [line] = [line for line in runner.recent() if line.action == "Run interrupted"]
+    assert line.subject.startswith("Load test – RFID enroll")
+    assert runner.result()["verdict"] == "Fail"
+
+
+async def test_any_failure_opening_a_run_leaves_no_folder(world, clock, monkeypatch):
+    runner = world.runner()
+    await world.ready(runner)
+
+    def boom(self, **kwargs):
+        raise ValueError("no")
+
+    monkeypatch.setattr("loadtest.run_driver.RunDriver.open_run", boom)
+    with pytest.raises(RunnerError) as err:
+        await runner.start()
+    assert err.value.code == "cannot_write"
+    assert run_dirs(world) == []
+
+
+async def test_continue_failures_say_try_continue_again(world, fake, clock):
+    run_dir = await crashed_run(world, clock)
+    fake.fail("POST", "/kiosk/setup", status=500, times=1)
+    runner = world.runner()
+    with pytest.raises(RunnerError) as err:
+        await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    assert err.value.message == (
+        "The move password was accepted, but the kiosk could not be set up for this move "
+        "(the server answered 500). Check the server, then try Continue again.")
+    assert runner.unfinished()["run_dir"] == str(run_dir)
+
+
+async def test_start_names_the_unfinished_run_before_a_failed_check(world, clock):
+    await crashed_run(world, clock)
+    runner = world.runner()
+    await clock.run(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD))
+    report = await clock.run(runner.check(world.move_id, "wrong-move-pass", "fast"))
+    assert not report.can_start
+    with pytest.raises(RunnerError) as err:
+        await runner.start()
+    assert err.value.code == "unfinished_run"
