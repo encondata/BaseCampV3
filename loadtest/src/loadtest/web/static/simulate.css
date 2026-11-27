@@ -1,0 +1,185 @@
+/* Simulate view. Built only from the page's own tokens and components (index.html):
+   every color is a var(--…) token, so light and dark follow the page's theme. */
+
+/* spacing between the blocks of each step, as between the generator's cards */
+#view-simulate .sim-run-grid > .card,
+#view-simulate .sim-result-grid > .card { margin-top: 0; }
+#view-simulate #sim-body > :not([hidden]) ~ :not([hidden]),
+#view-simulate #sim-setup > * + *,
+#view-simulate #sim-run > * + *,
+#view-simulate #sim-result > * + *,
+#view-simulate #sim-result-body > :not([hidden]) ~ :not([hidden]) { margin-top: 16px; }
+#sim-unf-fields { margin-top: 14px; }
+#view-simulate .sim-notice { margin-top: 18px; margin-bottom: 16px; }
+#sim-body { margin-top: 22px; }
+
+/* ── form pieces the generator has no need for ── */
+.sim-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.sim-set { border: 0; margin: 0; padding: 0; min-width: 0; }
+.sim-label { font-size: 12.5px; font-weight: 500; color: var(--text-dark); }
+.field select {
+  width: 100%; height: 40px;
+  font-family: var(--font-display); font-size: 13.5px; color: var(--text-dark);
+  background: var(--surface-2); border: 1px solid var(--paper-line); border-radius: 9px;
+  padding: 0 10px; outline: none;
+}
+.field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15); }
+.field select.bad { border-color: var(--c-red); }
+.field input:disabled, .field select:disabled { opacity: 0.55; cursor: default; }
+.sim-set:disabled .segmented { opacity: 0.55; }
+.sim-speed { align-self: flex-start; }
+.sim-speed.bad { border-color: var(--c-red); }
+.sim-text { margin: 0; font-size: 13.5px; font-weight: 300; color: var(--text-dark); line-height: 1.55; }
+.actions .sim-text { color: var(--text-mute); font-size: 12.5px; }
+.sim-heading { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-dark); margin: 0; }
+.sim-summary { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+.sim-row-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-mute); }
+
+/* an inline question that replaces a button row */
+.sim-ask { margin-top: 18px; }
+.sim-ask-text { font-size: 13.5px; font-weight: 500; color: var(--text-dark); }
+
+/* buttons at the bottom of a tall card stay on screen */
+.sim-stick {
+  position: sticky; bottom: 0; z-index: 2;
+  background: var(--surface);
+  margin: 0 -20px -18px; padding: 14px 20px 18px;
+  border-radius: 0 0 12px 12px;
+}
+#sim-ready .sim-stick { border-top: 1px solid var(--paper-line); }
+.sim-stick .actions { margin-top: 10px; }
+.sim-stick > .actions:first-child { margin-top: 0; }
+#sim-move-set .sim-stick { margin-top: 4px; }
+.sim-stick .sim-summary + .sim-text { margin-top: 8px; }
+
+/* ── status chips (the page's .chip in the portal's status colors) ── */
+.chip.ok { border-color: var(--c-green-bd); background: var(--c-green-bg); color: var(--c-green); }
+.chip.warn { border-color: var(--c-amber-bd); background: var(--c-amber-bg); color: var(--c-amber); }
+.chip.bad { border-color: var(--c-red-bd); background: var(--c-red-bg); color: var(--c-red); }
+.chip.mark { justify-content: center; min-width: 52px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; height: 22px; }
+
+/* readiness lines and findings */
+.sim-list { list-style: none; margin: 0; padding: 0; }
+.sim-list li {
+  display: grid; grid-template-columns: 64px minmax(160px, 260px) minmax(0, 1fr); gap: 4px 14px; align-items: baseline;
+  padding: 10px 0; border-bottom: 1px solid var(--paper-line); font-size: 13px;
+}
+.sim-list li:last-child { border-bottom: 0; }
+.sim-list .chip { align-self: start; }
+.sim-list .sim-check-label { font-weight: 500; color: var(--text-dark); }
+.sim-list .sim-check-detail { font-weight: 300; color: var(--text-mute); line-height: 1.5; }
+.sim-list.findings li { grid-template-columns: 64px minmax(0, 1fr); }
+.sim-list.findings .sim-check-detail { color: var(--text-dark); }
+#sim-checks { margin-top: 8px; }
+
+/* ── run ── */
+/* the head of the run and result views stays on screen; its paper backing covers the
+   gap above and below it, so nothing shows through while the page scrolls under it */
+.sim-top { position: sticky; top: 0; z-index: 3; background: var(--paper); margin-top: -16px; padding: 16px 0; }
+#view-simulate #sim-run > .sim-top ~ *,
+#view-simulate #sim-result > .sim-top ~ * { margin-top: 0; }
+.sim-run-line { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+.sim-counts { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+.sim-run-line .chip { margin-left: auto; }
+.sim-overall {
+  display: grid; grid-template-columns: auto minmax(120px, 1fr) auto auto auto;
+  align-items: center; gap: 10px 16px; margin-top: 14px;
+}
+.sim-bar { min-width: 0; }
+.sim-overall-text, .sim-elapsed { font-family: var(--font-mono); font-size: 12px; color: var(--text-dark); white-space: nowrap; }
+.sim-elapsed { color: var(--text-mute); }
+.sim-live { margin: 10px 0 0; font-size: 13px; color: var(--text-mute); }
+.sim-live:empty { display: none; }
+.sim-ask[hidden] + .sim-live { margin-top: 10px; }
+
+.sim-run-grid { display: grid; grid-template-columns: minmax(220px, 4fr) minmax(0, 8fr); gap: 16px; align-items: stretch; }
+.sim-run-grid > .card { min-width: 0; }
+.sim-stages { display: grid; gap: 2px; }
+.sim-stage { display: grid; grid-template-columns: minmax(150px, 1.7fr) auto minmax(60px, 1fr); align-items: center; gap: 12px; padding: 2px 0; font-size: 13px; }
+.sim-stage-count { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); text-align: right; white-space: nowrap; min-width: 92px; }
+.sim-lines { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--paper-line); display: grid; gap: 8px; }
+.sim-line { margin: 0; display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 12px; align-items: baseline; font-family: var(--font-mono); font-size: 12px; color: var(--text-dark); overflow-wrap: anywhere; }
+
+.sim-feed-card { display: flex; flex-direction: column; }
+/* the feed fills its card beside the stages and scrolls inside it */
+.sim-feed-wrap { position: relative; flex: 1; min-height: 300px; }
+.sim-feed {
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface-2);
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dark);
+}
+.sim-feed::-webkit-scrollbar-thumb { border-color: var(--surface-2); }
+.feed-row {
+  display: grid; grid-template-columns: 62px minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.1fr) 44px 56px;
+  gap: 0 10px; padding: 4px 12px; border-bottom: 1px solid var(--paper-line); align-items: baseline;
+}
+.feed-row:last-child { border-bottom: 0; }
+.feed-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-time { color: var(--text-mute); }
+.feed-ok { color: var(--c-green); }
+.feed-failed { color: var(--c-red); }
+.feed-ms { text-align: right; color: var(--text-mute); }
+.feed-note { grid-column: 1 / -1; color: var(--c-red); white-space: normal; overflow-wrap: anywhere; padding-top: 2px; }
+.feed-row.failed { background: var(--c-red-bg); }
+.sim-jump { position: absolute; right: 14px; bottom: 12px; box-shadow: 0 6px 18px -10px var(--ink); }
+
+/* ── result ── */
+.sim-result-head .results-head { margin-bottom: 0; }
+.sim-result-head .help { margin-top: 10px; overflow-wrap: anywhere; }
+.sim-verdict.chip { height: 38px; padding: 0 18px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.sim-result-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; }
+.sim-list.findings li.sim-none { display: block; color: var(--text-dark); }
+#sim-calls tr.sim-group th {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 400; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--accent); text-align: left; padding: 14px 12px 6px; border-bottom: 1px solid var(--paper-line); background: var(--surface);
+}
+.sim-result-grid > .card { min-width: 0; }
+#view-simulate .table-wrap { max-height: none; }
+.sim-facts th[scope='row'] {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-mute); text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--paper-line); white-space: nowrap; width: 1%;
+}
+.sim-facts tr:last-child th { border-bottom: 0; }
+.sim-facts td { white-space: normal; overflow-wrap: anywhere; }
+
+.sim-offline { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+@media (max-width: 1100px) {
+  /* stages and feed stay side by side: each stage row puts its bar under its name */
+  .sim-run-grid { grid-template-columns: minmax(200px, 4fr) minmax(0, 7fr); }
+  .sim-stage { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 3px 0; }
+  .sim-stage .progress-track { grid-column: 1 / -1; }
+  .sim-result-grid { grid-template-columns: 1fr 1fr; }
+  .sim-result-grid > .card:first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 1000px) {
+  /* each feed line wraps onto two rows: time · device · result / action · subject · ms */
+  .feed-row { grid-template-columns: 60px minmax(0, 0.7fr) minmax(0, 1.3fr) 52px; padding: 5px 10px; }
+  .feed-time { grid-column: 1; grid-row: 1; }
+  .feed-device { grid-column: 2 / 4; grid-row: 1; }
+  .feed-result { grid-column: 4; grid-row: 1; text-align: right; }
+  .feed-action { grid-column: 1 / 3; grid-row: 2; color: var(--text-mute); }
+  .feed-subject { grid-column: 3; grid-row: 2; }
+  .feed-ms { grid-column: 4; grid-row: 2; }
+  .feed-note { grid-row: 3; }
+}
+@media (max-width: 719px) {
+  /* stacked: the feed comes right under the head, the stages after it */
+  .sim-run-grid { grid-template-columns: 1fr; }
+  .sim-feed-card { order: -1; }
+  .sim-feed-wrap { flex: none; min-height: 0; height: clamp(300px, 60vh, 560px); }
+}
+@media (max-width: 760px) {
+  .sim-fields { grid-template-columns: 1fr; }
+  .sim-list li { grid-template-columns: 64px minmax(0, 1fr); }
+  .sim-list li .sim-check-detail { grid-column: 2; }
+  .sim-overall { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .sim-overall .sim-bar { grid-column: 2 / -1; }
+  .sim-overall-text { grid-column: 1 / 3; white-space: normal; }
+  .sim-stop { grid-column: 3; grid-row: 2; }
+  .sim-elapsed { grid-column: 1 / -1; grid-row: 3; }
+  .sim-run-line .chip { margin-left: 0; }
+  .sim-result-grid { grid-template-columns: 1fr; }
+  .sim-feed { font-size: 11px; }
+}
+#view-simulate #sim-error { margin-top: 0; }

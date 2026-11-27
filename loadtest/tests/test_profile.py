@@ -1,0 +1,339 @@
+import dataclasses
+import re
+
+import pytest
+
+from loadtest.profile import (
+    ProfileError,
+    containers_needed,
+    device_count,
+    load_profile,
+    profile_path,
+    trucks_needed,
+)
+
+
+def test_real_time_profile_matches_the_spec():
+    p = load_profile(profile_path("real-time"))
+    assert [s.key for s in p.stages] == ["enroll", "cage_exit", "label", "loading_dock", "pack",
+        "truck_load", "trip", "truck_unload", "unpack", "staging", "into_cage", "qa", "complete"]
+    assert p.trip.updates == 68
+    assert device_count(p) == 32
+    label = next(s for s in p.stages if s.key == "label")
+    assert (label.crews, label.seconds) == (3, (15.0, 30.0))
+
+
+def test_fast_profile_only_changes_waits():
+    rt, fast = load_profile(profile_path("real-time")), load_profile(profile_path("fast"))
+    strip = lambda s: dataclasses.replace(s, seconds=(0, 0), per="server")  # noqa: E731
+    assert [strip(s) for s in rt.stages] == [strip(s) for s in fast.stages]
+    assert all(s.seconds == (0.5, 1.0) for s in fast.stages if s.kind != "trip")
+    assert fast.trip.pause_seconds == (0.5, 1.0) and fast.trip.updates == 68
+
+
+def test_counts_needed():
+    p = load_profile(profile_path("real-time"))
+    assert containers_needed(p, 3000) == 150 and trucks_needed(p, 150) == 10
+    assert containers_needed(p, 45) == 3 and trucks_needed(p, 17) == 2
+
+
+def _mutated(tmp_path, edit):
+    text = profile_path("real-time").read_text()
+    new = edit(text)
+    assert new != text
+    path = tmp_path / "bad.toml"
+    path.write_text(new)
+    return path
+
+
+def _stage_edit(key, old, new):
+    def edit(text):
+        head, sep, rest = text.partition(f'key = "{key}"\n')
+        return head + sep + rest.replace(old, new, 1)
+    return edit
+
+
+def _expect(tmp_path, edit, *words):
+    with pytest.raises(ProfileError) as err:
+        load_profile(_mutated(tmp_path, edit))
+    for w in words:
+        assert w in str(err.value)
+
+
+def test_unknown_key(tmp_path):
+    _expect(tmp_path, lambda t: t.replace("container_size", "container_sizee"), "container_sizee")
+
+
+def test_missing_key(tmp_path):
+    _expect(tmp_path, lambda t: t.replace("heartbeat_seconds = 60\n", ""), "heartbeat_seconds")
+
+
+def test_unknown_stage_key(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", "devices = 5", "devices = 5\nbogus = 1"), "qa", "bogus")
+
+
+def test_seconds_min_over_max(tmp_path):
+    _expect(tmp_path, _stage_edit("label", "[15, 30]", "[30, 15]"), "label", "seconds")
+
+
+def test_seconds_negative(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", "[15, 15]", "[-1, 15]"), "qa", "seconds")
+
+
+@pytest.mark.parametrize("field", ["crews", "devices", "batch"])
+def test_counts_below_one_on_non_trip(tmp_path, field):
+    pattern = re.compile(rf'({field} = )\d+')
+    def edit(text):
+        head, sep, rest = text.partition('key = "label"\n')
+        return head + sep + pattern.sub(r"\g<1>0", rest, count=1)
+    _expect(tmp_path, edit, "label", field)
+
+
+def test_duplicate_stage_key(tmp_path):
+    _expect(tmp_path, lambda t: t.replace('key = "complete"', 'key = "qa"'), "qa", "duplicate")
+
+
+def test_missing_trip_stage(tmp_path):
+    def edit(text):
+        a = text.index('[[stage]]\nkey = "trip"')
+        b = text.index('[[stage]]\nkey = "truck_unload"')
+        return text[:a] + text[b:]
+    _expect(tmp_path, edit, "trip")
+
+
+def test_pack_stages_out_of_order(tmp_path):
+    def edit(text):
+        a = text.index('[[stage]]\nkey = "pack"')
+        b = text.index('[[stage]]\nkey = "truck_load"')
+        block = text[a:b]
+        text = text[:a] + text[b:]
+        c = text.index('[[stage]]\nkey = "trip"')
+        return text[:c] + block + text[c:]
+    _expect(tmp_path, edit, "pack", "order")
+
+
+def test_each_stage_between_pack_and_unpack(tmp_path):
+    def edit(text):
+        return text.replace(
+            '[[stage]]\nkey = "truck_unload"',
+            '[[stage]]\nkey = "extra"\nlabel = "Extra"\nsite = "origin"\nkind = "each"\n'
+            'action = "scan"\ncheckpoint = "qa"\ndevice = "handheld"\ndevices = 1\ncrews = 1\n'
+            'batch = 1\nseconds = [1, 1]\nper = "server"\n\n[[stage]]\nkey = "truck_unload"',
+        )
+    _expect(tmp_path, edit, "extra", "between")
+
+
+def test_site_before_trip_must_be_origin(tmp_path):
+    _expect(tmp_path, _stage_edit("enroll", 'site = "origin"', 'site = "destination"'),
+            "enroll", "origin")
+
+
+def test_site_after_trip_must_be_destination(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'site = "destination"', 'site = "origin"'),
+            "qa", "destination")
+
+
+def test_kind_action_pair(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'action = "scan"', 'action = "pack"'), "qa", "action")
+
+
+def test_device_for_action(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'device = "handheld"', 'device = "rfid_station"'),
+            "qa", "device")
+
+
+def test_per_cart_only_on_cart_stages(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'per = "server"', 'per = "cart"'), "qa", "per")
+
+
+def test_per_container_only_on_container_stages(tmp_path):
+    _expect(tmp_path, _stage_edit("cage_exit", 'per = "cart"', 'per = "container"'),
+            "cage_exit", "per")
+
+
+def test_trip_hours_must_divide_into_whole_updates(tmp_path):
+    _expect(tmp_path, lambda t: t.replace("update_minutes = 15", "update_minutes = 7"),
+            "update_minutes")
+
+
+def test_a_fixed_pause_must_match_the_update_interval(tmp_path):
+    """Real time: the trip is paced by update_minutes, and a fixed pause_seconds that says
+    something else would silently stretch or shorten it."""
+    _expect(tmp_path, lambda t: t.replace("update_minutes = 15", "update_minutes = 30"),
+            "pause_seconds", "update_minutes", "1800")
+
+
+def test_a_fixed_pause_that_matches_the_interval_loads(tmp_path):
+    text = profile_path("real-time").read_text().replace(
+        "update_minutes = 15", "update_minutes = 30").replace(
+        "pause_seconds = [900, 900]", "pause_seconds = [1800, 1800]")
+    path = tmp_path / "real-time.toml"
+    path.write_text(text)
+    trip = load_profile(path).trip
+    assert trip.updates == 34 and trip.pause_seconds == (1800.0, 1800.0)
+
+
+def test_retry_attempts_at_least_one(tmp_path):
+    _expect(tmp_path, lambda t: t.replace("attempts = 6", "attempts = 0"), "attempts")
+
+
+def test_retry_needs_a_backoff_value(tmp_path):
+    _expect(tmp_path, lambda t: t.replace("backoff_seconds = [1, 2, 5, 10, 30]",
+                                          "backoff_seconds = []"), "backoff_seconds")
+
+
+def test_invalid_toml_names_line(tmp_path):
+    path = tmp_path / "bad.toml"
+    path.write_text('container_size = 20\nbroken = = 1\n')
+    with pytest.raises(ProfileError) as err:
+        load_profile(path)
+    assert "line 2" in str(err.value)
+
+
+@pytest.mark.parametrize("old,new,words", [
+    ("crews = 5", 'crews = "x"', ("enroll", "crews")),
+    ("[15, 15]", '"15"', ("enroll", "seconds")),
+    ("[15, 15]", "[15]", ("enroll", "seconds")),
+    ("[15, 15]", '[15, "x"]', ("enroll", "seconds")),
+    ("hours = 17", 'hours = "17"', ("hours",)),
+    ("backoff_seconds = [1, 2, 5, 10, 30]", "backoff_seconds = 5", ("backoff_seconds",)),
+    ("backoff_seconds = [1, 2, 5, 10, 30]", 'backoff_seconds = [1, "x"]', ("backoff_seconds",)),
+    ("attempts = 6", "attempts = true", ("attempts",)),
+    ("pause_seconds = [900, 900]", "pause_seconds = 900", ("pause_seconds",)),
+    ('label = "RFID enroll"', "label = 3", ("enroll", "label")),
+])
+def test_wrong_type_is_a_profile_error(tmp_path, old, new, words):
+    _expect(tmp_path, lambda t: t.replace(old, new, 1), *words)
+
+
+@pytest.mark.parametrize("value", ["5", "[1]"])
+def test_stage_not_a_list_of_tables(tmp_path, value):
+    def edit(text):
+        # a top-level "stage" key placed before [retry]; the real tables are cut off
+        return text[: text.index("[[stage]]")].replace("[retry]", f"stage = {value}\n\n[retry]", 1)
+    _expect(tmp_path, edit, "stage")
+
+
+def test_retry_not_a_table(tmp_path):
+    def edit(text):
+        block = "[retry]\nattempts = 6\nbackoff_seconds = [1, 2, 5, 10, 30]\n"
+        assert block in text
+        return "retry = 5\n" + text.replace(block, "")
+    _expect(tmp_path, edit, "retry")
+
+
+@pytest.mark.parametrize("field", ["container_size", "containers_per_truck"])
+@pytest.mark.parametrize("value", ["0", "2.5", '"20"'])
+def test_size_fields_are_whole_and_positive(tmp_path, field, value):
+    _expect(tmp_path, lambda t: re.sub(rf"^{field} = .*$", f"{field} = {value}", t, flags=re.M),
+            field)
+
+
+@pytest.mark.parametrize("field", ["heartbeat_seconds", "sample_seconds",
+                                   "request_timeout_seconds"])
+@pytest.mark.parametrize("value", ["0", "-1", '"x"'])
+def test_second_fields_are_positive(tmp_path, field, value):
+    _expect(tmp_path, lambda t: re.sub(rf"^{field} = .*$", f"{field} = {value}", t, flags=re.M),
+            field)
+
+
+@pytest.mark.parametrize("value", ['""', "3"])
+def test_final_status_non_empty_string(tmp_path, value):
+    _expect(tmp_path, lambda t: t.replace('final_status = "complete"',
+                                          f"final_status = {value}"), "final_status")
+
+
+@pytest.mark.parametrize("old,new,field", [
+    ("devices = 0", "devices = 1", "devices"),
+    ("crews = 0", "crews = 1", "crews"),
+    ("devices = 0", 'devices = 0\ndevice = "handheld"', "device"),
+    ("devices = 0", 'devices = 0\ncheckpoint = "qa"', "checkpoint"),
+])
+def test_trip_stage_has_no_devices_crews_device_or_checkpoint(tmp_path, old, new, field):
+    _expect(tmp_path, _stage_edit("trip", old, new), "trip", field)
+
+
+def test_site_outside_origin_destination(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'site = "destination"', 'site = "moon"'), "qa", "site")
+
+
+def test_missing_stage_key(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'label = "QA"\n', ""), "qa", "label")
+
+
+@pytest.mark.parametrize("old,new,words", [
+    ("hours = 17", "hours = inf", ("hours",)),
+    ("hours = 17", "hours = nan", ("hours",)),
+    ("hours = 17", "hours = 1e308", ("hours",)),
+    ("update_minutes = 15", "update_minutes = inf", ("update_minutes",)),
+    ("crews = 5", "crews = inf", ("enroll", "crews")),
+    ("crews = 5", "crews = nan", ("enroll", "crews")),
+    ("heartbeat_seconds = 60", "heartbeat_seconds = nan", ("heartbeat_seconds",)),
+    ("sample_seconds = 10", "sample_seconds = inf", ("sample_seconds",)),
+    ("[15, 15]", "[0, inf]", ("enroll", "seconds")),
+    ("[15, 15]", "[nan, 15]", ("enroll", "seconds")),
+    ("pause_seconds = [900, 900]", "pause_seconds = [0, inf]", ("pause_seconds",)),
+    ("backoff_seconds = [1, 2, 5, 10, 30]", "backoff_seconds = [1, inf]", ("backoff_seconds",)),
+    ("container_size = 20", "container_size = inf", ("container_size",)),
+])
+def test_non_finite_values_are_profile_errors(tmp_path, old, new, words):
+    _expect(tmp_path, lambda t: t.replace(old, new, 1), *words)
+
+
+@pytest.mark.parametrize("old,field", [
+    ("container_size = 20", "container_size"),
+    ("heartbeat_seconds = 60", "heartbeat_seconds"),
+    ("crews = 5", "crews"),
+    ("[15, 15]", "seconds"),
+])
+def test_huge_integer_literal_is_a_profile_error(tmp_path, old, field):
+    huge = "9" * 400
+    if old.startswith("["):
+        new = f"[{huge}, {huge}]"
+    else:
+        new = old.split(" = ")[0] + f" = {huge}"
+    _expect(tmp_path, lambda t: t.replace(old, new, 1), field)
+
+
+def test_missing_file_is_a_profile_error(tmp_path):
+    path = tmp_path / "nope.toml"
+    with pytest.raises(ProfileError) as err:
+        load_profile(path)
+    assert "nope.toml" in str(err.value)
+
+
+def test_non_utf8_file_is_a_profile_error(tmp_path):
+    path = tmp_path / "latin.toml"
+    path.write_bytes(b'final_status = "caf\xe9"\n')
+    with pytest.raises(ProfileError) as err:
+        load_profile(path)
+    assert "latin.toml" in str(err.value) and "UTF-8" in str(err.value)
+
+
+@pytest.mark.parametrize("name", ["real-time", "fast"])
+def test_profile_from_raw_rebuilds_the_bundled_profiles(name):
+    from loadtest.profile import profile_from_raw
+
+    path = profile_path(name)
+    assert profile_from_raw(load_profile(path).raw, name=path.stem) == load_profile(path)
+
+
+def test_profile_from_raw_validates_like_load_profile():
+    from loadtest.profile import profile_from_raw
+
+    raw = dict(load_profile(profile_path("fast")).raw)
+    raw["container_size"] = 0
+    with pytest.raises(ProfileError, match="container_size must be at least 1"):
+        profile_from_raw(raw)
+    with pytest.raises(ProfileError, match="unknown key 'extra'"):
+        profile_from_raw({**raw, "extra": 1})
+
+
+@pytest.mark.parametrize("name", ["real-time", "fast"])
+def test_every_retry_wait_is_used(name):
+    """One attempt more than there are waits: all five (1, 2, 5, 10 and 30 s, about 48 s
+    of patience) come into play before a step fails for good."""
+    retry = load_profile(profile_path(name)).retry
+    assert retry.backoff_seconds == (1, 2, 5, 10, 30)
+    assert retry.attempts == len(retry.backoff_seconds) + 1
+    assert sum(retry.backoff_seconds[:retry.attempts - 1]) == 48

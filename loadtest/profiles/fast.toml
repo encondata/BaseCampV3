@@ -1,0 +1,195 @@
+container_size = 20
+containers_per_truck = 15
+final_status = "complete"
+heartbeat_seconds = 60
+sample_seconds = 10
+request_timeout_seconds = 30
+
+[retry]
+attempts = 6
+backoff_seconds = [1, 2, 5, 10, 30]
+
+[trip]
+hours = 17
+update_minutes = 15
+pause_seconds = [0.5, 1.0]
+
+[[stage]]
+key = "enroll"
+label = "RFID enroll"
+site = "origin"
+kind = "each"
+action = "enroll"
+checkpoint = "pre_stage"
+device = "handheld"
+devices = 5
+crews = 5
+batch = 1
+seconds = [0.5, 1]
+per = "server"
+
+[[stage]]
+key = "cage_exit"
+label = "RFID 1 – Cage Exit"
+site = "origin"
+kind = "cart"
+action = "station_rfid"
+checkpoint = "rfid_1_cage_exit"
+device = "rfid_station"
+devices = 1
+crews = 20
+batch = 10
+seconds = [0.5, 1]
+per = "cart"
+
+[[stage]]
+key = "label"
+label = "Label station"
+site = "origin"
+kind = "each"
+action = "station_label"
+checkpoint = "labeled"
+device = "label_station"
+devices = 3
+crews = 3
+batch = 1
+seconds = [0.5, 1]
+per = "server"
+
+[[stage]]
+key = "loading_dock"
+label = "RFID 2 – Loading Dock"
+site = "origin"
+kind = "cart"
+action = "station_rfid"
+checkpoint = "rfid_2_loading_dock"
+device = "rfid_station"
+devices = 1
+crews = 4
+batch = 10
+seconds = [0.5, 1]
+per = "cart"
+
+[[stage]]
+key = "pack"
+label = "Pack containers"
+site = "origin"
+kind = "pack"
+action = "pack"
+checkpoint = "in_container"
+device = "handheld"
+devices = 4
+crews = 4
+batch = 1
+seconds = [0.5, 1]
+per = "server"
+
+[[stage]]
+key = "truck_load"
+label = "Load truck"
+site = "origin"
+kind = "truck_load"
+action = "load"
+checkpoint = "on_truck"
+device = "handheld"
+devices = 1
+crews = 1
+batch = 1
+seconds = [0.5, 1]
+per = "container"
+
+[[stage]]
+key = "trip"
+label = "Truck trip"
+site = "origin"
+kind = "trip"
+action = "trip"
+devices = 0
+crews = 0
+batch = 1
+seconds = [0, 0]
+per = "server"
+
+[[stage]]
+key = "truck_unload"
+label = "Unload truck"
+site = "destination"
+kind = "truck_unload"
+action = "unload"
+checkpoint = "received"
+device = "handheld"
+devices = 1
+crews = 1
+batch = 1
+seconds = [0.5, 1]
+per = "container"
+
+[[stage]]
+key = "unpack"
+label = "Unpack containers"
+site = "destination"
+kind = "unpack"
+action = "unpack"
+checkpoint = "un_pack"
+device = "handheld"
+devices = 4
+crews = 4
+batch = 1
+seconds = [0.5, 1]
+per = "server"
+
+[[stage]]
+key = "staging"
+label = "RFID 3 – Staging"
+site = "destination"
+kind = "cart"
+action = "station_rfid"
+checkpoint = "rfid_3_staging"
+device = "rfid_station"
+devices = 1
+crews = 4
+batch = 10
+seconds = [0.5, 1]
+per = "cart"
+
+[[stage]]
+key = "into_cage"
+label = "RFID 4 – Into Cage"
+site = "destination"
+kind = "cart"
+action = "station_rfid"
+checkpoint = "rfid_4_into_cage"
+device = "rfid_station"
+devices = 1
+crews = 20
+batch = 10
+seconds = [0.5, 1]
+per = "cart"
+
+[[stage]]
+key = "qa"
+label = "QA"
+site = "destination"
+kind = "each"
+action = "scan"
+checkpoint = "qa"
+device = "handheld"
+devices = 5
+crews = 5
+batch = 1
+seconds = [0.5, 1]
+per = "server"
+
+[[stage]]
+key = "complete"
+label = "Complete"
+site = "destination"
+kind = "each"
+action = "scan"
+checkpoint = "complete"
+device = "handheld"
+devices = 5
+crews = 5
+batch = 1
+seconds = [0.5, 1]
+per = "server"

@@ -1,0 +1,26 @@
+[project]
+name = "basecamp-loadtest"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["httpx==0.28.1", "fastapi==0.141.1", "uvicorn==0.52.4"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"loadtest.web" = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
