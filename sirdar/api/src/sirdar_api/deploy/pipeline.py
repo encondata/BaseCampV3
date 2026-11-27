@@ -877,6 +877,30 @@ async def render_app_env(db: AsyncSession, env: Environment, settings: Settings,
     return AppEnv(text=text, extra_secrets=tuple(found))
 
 
+class EnvFileNotDeployed(Exception):
+    """The environment has never deployed: no commit names its image."""
+
+
+async def current_env_file(db: AsyncSession, env: Environment, settings: Settings) -> str:
+    """The app .env the environment runs now, for the .env download: its
+    commit (current_sha) and today's record. DigitalOcean and LAN Blue/Green
+    render the active slot's (the first slot's while none is active), with
+    its own keys, as that slot's Update wrote them. EnvFileNotDeployed
+    without a commit; PrepareError (our copy) when it can't be built."""
+    if not env.current_sha:
+        raise EnvFileNotDeployed
+    cloud = env.target_id == targets.DO_TARGET
+    bluegreen = lan_slots.is_bluegreen(env)
+    slot = None
+    if cloud or bluegreen:
+        slot = env.active_slot or (env.slots[0] if env.slots else None)
+        if slot is None:
+            raise EnvFileNotDeployed
+    app_env = await render_app_env(db, env, settings, sha=env.current_sha, slot=slot,
+                                   cloud=cloud, bluegreen=bluegreen)
+    return app_env.text
+
+
 async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings, *,
                    needs_host: bool = True, more_secrets: tuple[str, ...] = ()) -> _Context:
     """Everything the steps need. Without host steps (a publish job, or a

@@ -19,7 +19,7 @@ from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permi
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, DoEnvironment,
                                   Environment, EnvironmentFirstAdmin, EsxiVm, Snapshot,
-                                  SshKnownHost)
+                                  SshKnownHost, User)
 from sirdar_api.deploy import (
     ConnectFailed,
     apps as app_rules,
@@ -50,7 +50,9 @@ from sirdar_api.deploy import (
 from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.deploy.steps import REMOVING_MODES, STEPS_BY_KEY, plan_for
+from sirdar_api.security.passwords import verify_password
 from sirdar_api.seed import files as seed_files
+from sirdar_api.services import auth as auth_service
 from sirdar_api.services import portal_policy
 from sirdar_api.services.audit import audit
 
@@ -833,6 +835,63 @@ async def set_first_admin(name: str, body: FirstAdminIn, request: Request, db: D
     await db.commit()
     await db.refresh(env)
     return await serialize.environment_out(db, env)
+
+
+class EnvFileIn(BaseModel):
+    # No constraint: a missing or empty password is a wrong one (403), and no
+    # validation error can ever describe it.
+    password: str | None = None
+
+
+_ENV_FILE_HEADERS = {"Cache-Control": "no-store"}
+
+
+@router.post("/environments/{name}/env-file")
+async def download_env_file(name: str, body: EnvFileIn, request: Request, db: DbSession,
+                            actor: AuthContext = require_permission("deploy", "change")):
+    """The environment's current app .env (what step 4 writes), after the
+    caller types their Sirdar password again. A wrong password is a sign-in
+    strike (the sign-in lockout applies), and while the account is locked
+    every password is refused. Both outcomes are audited; the file is never
+    logged, audited or kept."""
+    env = await _environment(db, name)
+    settings = get_settings()
+    ip = client_ip(request)
+    # Locked like sign-in: parallel wrong passwords serialize, so every strike counts.
+    user = await db.scalar(select(User).where(User.person_id == actor.user.person_id)
+                           .with_for_update().execution_options(populate_existing=True))
+    now = datetime.now(UTC)
+    pepper = settings.password_pepper.get_secret_value()
+    password_ok = (user.password_hash is not None and bool(body.password)
+                   and verify_password(user.password_hash, body.password, pepper=pepper))
+    refusal = None
+    if user.locked_until is not None and user.locked_until > now:
+        refusal = (423, "account_locked")
+    elif not password_ok:
+        if user.password_hash is not None:
+            auth_service._strike(user, now, settings)
+        refusal = (403, "invalid_current_password")
+    if refusal is not None:
+        audit(db, actor_id=user.person_id, action="environment.env_file_refused",
+              entity_type="environment", entity_id=env.name, ip=ip,
+              changes={"environment": env.name, "reason": refusal[1]})
+        await db.commit()
+        raise _refuse(*refusal)
+    try:
+        text = await pipeline.current_env_file(db, env, settings)
+    except pipeline.EnvFileNotDeployed:
+        await db.rollback()
+        raise _refuse(409, "env_file_not_deployed") from None
+    except pipeline.PrepareError as e:
+        await db.rollback()
+        raise _refuse(409, "env_file_unavailable", reason=e.reason) from None
+    audit(db, actor_id=user.person_id, action="environment.env_file_downloaded",
+          entity_type="environment", entity_id=env.name, ip=ip,
+          changes={"environment": env.name})
+    await db.commit()
+    return Response(content=text, media_type="text/plain; charset=utf-8",
+                    headers={**_ENV_FILE_HEADERS,
+                             "Content-Disposition": f'attachment; filename="{env.name}.env"'})
 
 
 # ---- deployments (deploy pipeline) ---------------------------------------------
