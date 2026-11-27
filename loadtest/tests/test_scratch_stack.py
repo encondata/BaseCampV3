@@ -47,6 +47,12 @@ def test_a_process_is_ours_only_with_the_start_time_we_recorded(stack):
     module.pid_file("api").write_text("\n".join(lines) + "\n")
     module.stop("api")
     assert module.started_pid("api") is None and not module.pid_file("api").exists()
-    _, status = os.waitpid(pid, 0)                       # it was stopped by a signal
-    assert os.WIFSIGNALED(status)
+    try:
+        _, status = os.waitpid(pid, 0)                   # it was stopped by a signal
+    except ChildProcessError:
+        pass        # already reaped (stop() or another reaper got there first); it is gone
+    else:
+        assert os.WIFSIGNALED(status)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)                                  # no such process any more
     started.clear()
