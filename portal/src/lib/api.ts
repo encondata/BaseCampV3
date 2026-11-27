@@ -1570,7 +1570,8 @@ export interface WorkerBulkRowResult {
   diff: BulkDiff | null;
   person_id: string | null;
   /** The uploaded cells, no defaults — what the commit replays. */
-  cells: Record<string, string>;
+  cells: Record<string, unknown>;
+  notes: string[];
   data: Record<string, unknown> | null;
 }
 
@@ -1618,11 +1619,11 @@ export async function commitWorkerBulk(
   return resp.json();
 }
 
-export function downloadWorkerTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+export function downloadWorkerTemplate(format: 'csv' | 'xlsx' | 'json'): Promise<void> {
   return downloadAttachment(`/workers/bulk-import/template?format=${format}`, `workers-template.${format}`);
 }
 
-export function downloadWorkerExport(format: 'csv' | 'xlsx'): Promise<void> {
+export function downloadWorkerExport(format: 'csv' | 'xlsx' | 'json'): Promise<void> {
   return downloadAttachment(`/workers/bulk-import/export?format=${format}`, `workers-export.${format}`);
 }
 

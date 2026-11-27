@@ -34,7 +34,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 function pickFile() {
-  const input = screen.getByLabelText('Upload a file (.csv or .xlsx)') as HTMLInputElement;
+  const input = screen.getByLabelText('Upload a file (.csv, .xlsx or .json)') as HTMLInputElement;
   fireEvent.change(input, { target: { files: [new File(['first_name\nX'], 'crew.csv', { type: 'text/csv' })] } });
 }
 

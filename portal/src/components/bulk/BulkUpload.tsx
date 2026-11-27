@@ -21,7 +21,9 @@ export interface BulkPreviewRow {
   errors: string[];
   diff: BulkDiff | null;
   /** The uploaded cells, no defaults — what the commit replays. */
-  cells: Record<string, string>;
+  cells: Record<string, unknown>;
+  /** Advisory lines about the row (e.g. an unmatched person_id). */
+  notes?: string[];
   data: Record<string, unknown> | null;
 }
 
@@ -38,6 +40,8 @@ export interface BulkUploadConfig<P extends BulkPreviewRow, R extends BulkSummar
   /** Matched-by cell for rows with no match ("new worker"). */
   newLabel: string;
   errors: Record<string, string>;
+  /** Accepted upload extensions; default ['.csv', '.xlsx']. */
+  fileTypes?: string[];
   preview(file: File, filename: string): Promise<BulkPreviewResult<P>>;
   commit(rows: Record<string, unknown>[], approved: string[], source: string): Promise<BulkSummaryResult<R>>;
   /** The existing record's id on a matched preview row. */
@@ -157,16 +161,20 @@ export default function BulkUpload<P extends BulkPreviewRow, R extends BulkSumma
     });
 
   const inputId = `${config.idPrefix}-bulk-file`;
+  const fileTypes = config.fileTypes ?? ['.csv', '.xlsx'];
+  const typeLabel = fileTypes.length > 1
+    ? `${fileTypes.slice(0, -1).join(', ')} or ${fileTypes[fileTypes.length - 1]}`
+    : fileTypes[0];
 
   return (
     <div className="bulk-import">
       <div className="bulk-file-row">
-        <label htmlFor={inputId}>Upload a file (.csv or .xlsx)</label>
+        <label htmlFor={inputId}>{`Upload a file (${typeLabel})`}</label>
         <input
           id={inputId}
           ref={fileRef}
           type="file"
-          accept=".csv,.xlsx"
+          accept={fileTypes.join(',')}
           disabled={busy}
           onChange={(e) => {
             setFile(e.target.files?.[0] ?? null);
@@ -240,6 +248,9 @@ export default function BulkUpload<P extends BulkPreviewRow, R extends BulkSumma
                   r.matched_by ?? config.newLabel,
                   r.action === 'update' ? (willUpdate ? 'Update' : 'Skip') : ACTION_LABEL[r.action],
                   <>
+                    {(r.notes ?? []).map((n) => (
+                      <span key={n} className="muted">{n}</span>
+                    ))}
                     {r.action === 'error' && r.errors.map((e) => (
                       <span key={e} className="pf-error">{e}</span>
                     ))}

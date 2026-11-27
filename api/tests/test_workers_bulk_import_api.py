@@ -52,6 +52,14 @@ async def test_template_formats(client, db, seeded_user, admin_hdrs):
     ref_cells = [row[0].value for row in wb["Reference"].iter_rows()]
     assert "L1" in ref_cells and "blacklist" in ref_cells and "Partner names" in ref_cells
 
+    json_resp = await client.get("/workers/bulk-import/template?format=json",
+                                 headers=admin_hdrs)
+    assert json_resp.status_code == 200
+    assert json_resp.headers["content-type"].startswith("application/json")
+    assert json_resp.headers["content-disposition"] == (
+        'attachment; filename="workers-template.json"')
+    assert json_resp.json()[0]["certifications"][0]["name"] == "OSHA 10"
+
     assert (await client.get("/workers/bulk-import/template?format=doc",
                              headers=admin_hdrs)).status_code == 422
 
@@ -66,14 +74,37 @@ async def test_export_formats(client, db, seeded_user, admin_hdrs):
     assert csv_resp.status_code == 200
     assert csv_resp.headers["content-disposition"] == 'attachment; filename="workers-export.csv"'
     lines = csv_resp.text.splitlines()
-    assert lines[0] == ",".join(bi.COLUMNS)
-    assert lines[1].startswith("Exported,Worker,,,555-000-9999")
+    assert lines[0] == ",".join(bi.EXPORT_COLUMNS)
+    assert ",Exported,Worker,,,555-000-9999" in lines[1]
+    assert lines[1].startswith(str(person.id) + ",Exported,Worker")
     xlsx_resp = await client.get("/workers/bulk-import/export?format=xlsx", headers=admin_hdrs)
     assert xlsx_resp.status_code == 200
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
-    assert wb["Workers"]["A2"].value == "Exported"
+    assert wb["Workers"]["B2"].value == "Exported"
+    json_resp = await client.get("/workers/bulk-import/export?format=json",
+                                 headers=admin_hdrs)
+    assert json_resp.status_code == 200
+    assert json_resp.headers["content-type"].startswith("application/json")
+    assert json_resp.headers["content-disposition"] == (
+        'attachment; filename="workers-export.json"')
+    data = json_resp.json()
+    assert isinstance(data, list) and data[0]["person_id"] == str(person.id)
     assert (await client.get("/workers/bulk-import/export?format=doc",
                              headers=admin_hdrs)).status_code == 422
+
+
+async def test_export_requires_users_view(client, db, seeded_user, admin_hdrs):
+    admin = await db.scalar(select(Person).where(Person.email == "ada@test.example.com"))
+    db.add(PermissionOverride(person_id=admin.id, resource="users",
+                              action="view", allow=False))
+    await db.commit()
+    for fmt in ("csv", "xlsx", "json"):
+        resp = await client.get(f"/workers/bulk-import/export?format={fmt}",
+                                headers=admin_hdrs)
+        assert resp.status_code == 403, fmt
+        assert resp.json()["detail"]["code"] == "forbidden"
+    assert (await client.get("/workers/bulk-import/template?format=csv",
+                             headers=admin_hdrs)).status_code == 200
 
 
 async def test_preview_json_and_file_paths(client, db, seeded_user, admin_hdrs):

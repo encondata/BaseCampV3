@@ -21,6 +21,7 @@ const CONFIG: BulkUploadConfig<WorkerBulkRowResult, WorkerBulkAppliedRow> = {
   noun: 'worker',
   newLabel: 'new worker',
   errors: WORKER_BULK_ERRORS,
+  fileTypes: ['.csv', '.xlsx', '.json'],
   preview: (file, name) => previewWorkerBulk(file, name),
   commit: (rows, approved, source) => commitWorkerBulk(rows, approved, source),
   idOf: (r) => r.person_id,

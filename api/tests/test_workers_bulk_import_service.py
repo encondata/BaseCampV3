@@ -2,6 +2,7 @@
 commit. Actor for preview/commit is an admin (rank 60) unless a test says
 otherwise."""
 import io
+import json
 import uuid
 
 import openpyxl
@@ -9,7 +10,8 @@ import pytest
 from sqlalchemy import func, select
 
 from serversherpa.db.models import (
-    AuditLog, Partner, Person, PersonRole, UserAccount, WorkerProfile,
+    AuditLog, Partner, Person, PersonRole, UserAccount, WorkerCertification,
+    WorkerProfile,
 )
 from serversherpa.people import bulk_import as bi
 
@@ -71,10 +73,73 @@ async def mk_worker(db, first="Robert", last="Smith", *, preferred=None,
 
 def test_columns_match_canonical_shape():
     assert bi.COLUMNS == [
-        "first_name", "last_name", "preferred_name", "email", "phone",
+        "person_id", "first_name", "last_name", "preferred_name", "email", "phone",
         "job_title", "employee_number", "rfid_tag", "address_line1",
         "address_line2", "city", "region", "postal_code", "country",
-        "partner", "trade", "level", "status", "status_note", "notes"]
+        "partner", "trade", "level", "status", "status_note", "notes",
+        "will_travel", "travel_region", "travel_restrictions"]
+    assert bi.EXPORT_ONLY_COLUMNS[-1] == "certifications"
+    assert not set(bi.COLUMNS) & set(bi.EXPORT_ONLY_COLUMNS)
+
+
+def test_export_only_columns_are_accepted_and_dropped():
+    [(n, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B",
+                                       "badge_uid": "x", "has_login": True, "roles": "admin"}])
+    assert "badge_uid" not in row and "has_login" not in row and row["first_name"] == "A"
+
+
+def test_csv_certifications_cell_is_dropped():
+    csv = "first_name,last_name,certifications\nA,B,OSHA 10 (OSHA)\n".encode()
+    [(_, row)] = bi.parse_upload("w.csv", csv)
+    assert "certifications" not in row
+
+
+def test_json_certifications_ride_along_raw():
+    certs = [{"name": "OSHA 10", "issuer": "OSHA"}]
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "certifications": certs}])
+    assert row["certifications"] == certs
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "certifications": None}])
+    assert "certifications" not in row
+
+
+def test_json_certifications_keep_row_numbers_past_blank_rows():
+    rows = bi.number_json_rows([{}, {"first_name": "A", "last_name": "B",
+                                     "certifications": [{"name": "CPR"}]}])
+    assert [(n, r["certifications"]) for n, r in rows] == [(2, [{"name": "CPR"}])]
+
+
+@pytest.mark.parametrize("bad", ["x", {"name": "a"}, [1]])
+def test_malformed_certifications_still_parse(bad):
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "certifications": bad}])
+    assert row["certifications"] == bad
+
+
+def test_json_upload_file_path_keeps_certifications():
+    body = json.dumps([{"first_name": "A", "last_name": "B", "will_travel": True,
+                        "certifications": [{"name": "CPR"}]}]).encode()
+    [(_, row)] = bi.parse_upload("w.json", body)
+    assert row["will_travel"] == "True" and row["certifications"] == [{"name": "CPR"}]
+
+
+def test_json_upload_errors():
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.parse_upload("w.json", b"{nope")
+    assert exc.value.code == "invalid_json"
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.parse_upload("w.json", b" " * (bi.MAX_BYTES + 1))
+    assert exc.value.code == "file_too_large"
+
+
+def test_json_nulls_read_as_blank():
+    [(_, row)] = bi.number_json_rows([{"first_name": "A", "last_name": "B", "email": None,
+                                       "travel_region": None}])
+    assert row["email"] == "" and row["travel_region"] == ""
+
+
+def test_unknown_column_still_rejected():
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.number_json_rows([{"first_name": "A", "bogus": 1}])
+    assert exc.value.code == "unknown_columns"
 
 
 def test_normalize_phone():
@@ -125,12 +190,12 @@ async def test_export_rows_shape_and_round_trip(db, admin):
     await mk_worker(db, "Old", "Gone", archived=True)
     rows = await bi.export_rows(db)
     assert [r["last_name"] for r in rows] == ["Alpha", "Zulu"]
-    assert set(rows[0]) == set(bi.COLUMNS)
+    assert list(rows[0]) == bi.EXPORT_COLUMNS
     assert rows[0]["status"] == "active"                # profile-less default
     assert rows[1]["partner"] == "Haul It" and rows[1]["level"] == "L2"
     assert rows[1]["phone"] == "555-000-1111"
 
-    csv_text = bi.build_rows_csv(rows)
+    csv_text = bi.build_export_csv(rows)
     out = await preview(db, admin, [r for _, r in bi.parse_upload("e.csv", csv_text.encode())])
     assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged"]
 
@@ -141,10 +206,126 @@ async def test_export_round_trips_with_two_workers_sharing_a_name(db, admin):
     await mk_worker(db, "Chris", "Lee", email="c1@test.example.com")
     await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
     await mk_worker(db, "Amy", "Alpha", phone="555-000-2222")
-    csv_text = bi.build_rows_csv(await bi.export_rows(db))
+    csv_text = bi.build_export_csv(await bi.export_rows(db))
     out = await preview(db, admin, [r for _, r in bi.parse_upload("e.csv", csv_text.encode())])
     assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged", "unchanged"]
     assert out["can_commit"] is True
+
+
+async def test_export_rows_full_shape(db, admin):
+    from datetime import UTC, date, datetime
+    full = await mk_worker(db, "Full", "Zed", email="full@test.example.com",
+                           profile={"will_travel": True, "travel_region": "West",
+                                    "travel_restrictions": "No nights"})
+    full.avatar_key = "photos/x.jpg"
+    db.add(PersonRole(person_id=full.id, role="staff"))
+    db.add(UserAccount(person_id=full.id, email="login@test.example.com",
+                       password_hash="secret", disabled_at=datetime.now(UTC),
+                       last_login_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)))
+    db.add(WorkerCertification(person_id=full.id, name="Late", issuer="B",
+                               expires_on=date(2028, 1, 1)))
+    db.add(WorkerCertification(person_id=full.id, name="Open"))
+    db.add(WorkerCertification(person_id=full.id, name="Soon", issuer="A",
+                               issued_on=date(2025, 1, 1), expires_on=date(2027, 1, 31)))
+    await db.commit()
+    await mk_worker(db, "Bare", "Alpha")
+    rows = {r["last_name"]: r for r in await bi.export_rows(db)}
+    assert list(rows["Zed"]) == bi.EXPORT_COLUMNS
+    z = rows["Zed"]
+    assert z["person_id"] == str(full.id) and z["badge_uid"] == str(full.badge_uid)
+    assert z["will_travel"] is True and z["travel_region"] == "West"
+    assert z["has_photo"] is True and z["has_login"] is True
+    assert z["login_email"] == "login@test.example.com" and z["login_disabled"] is True
+    assert z["last_login_at"] == "2026-01-02T03:04:05+00:00"
+    assert z["roles"] == "staff, worker" and z["source"] == "manual"
+    assert z["created_at"].endswith("+00:00")
+    assert [c["name"] for c in z["certifications"]] == ["Soon", "Late", "Open"]
+    assert z["certifications"][0] == {
+        "name": "Soon", "issuer": "A", "issued_on": "2025-01-01",
+        "expires_on": "2027-01-31", "source": "manual"}
+    b = rows["Alpha"]
+    assert b["email"] is None and b["has_login"] is False
+    assert b["login_email"] is None and b["login_disabled"] is None
+    assert b["will_travel"] is None and b["has_photo"] is False
+    assert b["certifications"] == [] and b["status"] == "active"
+    assert b["roles"] == "worker"
+
+
+async def test_export_never_leaks_secrets(db, admin):
+    from datetime import UTC, datetime
+    p = await mk_worker(db, "Sec", "Ret", account=True)
+    p.avatar_key = "photos/secret.jpg"
+    acct = await db.scalar(select(UserAccount).where(UserAccount.person_id == p.id))
+    acct.totp_secret_enc = b"abc"
+    acct.last_login_at = datetime.now(UTC)
+    await db.commit()
+    text = bi.build_export_json(await bi.export_rows(db))
+    for word in ("password_hash", "totp", "last_login_ip", "ui_prefs", "avatar_key",
+                 "photos/secret.jpg"):
+        assert word not in text
+    csv_text = bi.build_export_csv(await bi.export_rows(db))
+    assert "photos/secret.jpg" not in csv_text and "password_hash" not in csv_text
+
+
+def test_flatten_row():
+    row = {c: None for c in bi.EXPORT_COLUMNS}
+    row.update(first_name="A", will_travel=False, has_photo=True, certifications=[
+        {"name": "CPR", "issuer": "Red Cross", "issued_on": None,
+         "expires_on": "2027-01-31", "source": "manual"},
+        {"name": "OSHA 10", "issuer": None, "issued_on": None,
+         "expires_on": None, "source": "manual"},
+        {"name": "First Aid", "issuer": None, "issued_on": "2025-03-01",
+         "expires_on": None, "source": "manual"}])
+    flat = bi.flatten_row(row)
+    assert flat["last_name"] == "" and flat["first_name"] == "A"
+    assert flat["will_travel"] == "no" and flat["has_photo"] == "yes"
+    assert flat["certifications"] == (
+        "CPR (Red Cross) → 2027-01-31; OSHA 10; First Aid 2025-03-01 →")
+    assert bi.flatten_row({**row, "certifications": []})["certifications"] == ""
+
+
+async def _round_trip_workers(db):
+    from datetime import date
+    await mk_worker(db, "Yes", "Travel", email="y@test.example.com",
+                    profile={"will_travel": True, "travel_region": "East"})
+    await mk_worker(db, "No", "Travel", profile={"will_travel": False})
+    await mk_worker(db, "Unset", "Travel", profile={"trade": "Cable"})
+    z = await mk_worker(db, "Zip", "Code")
+    z.postal_code = "02134"
+    db.add(WorkerCertification(person_id=z.id, name="CPR", issuer="Red Cross",
+                               expires_on=date(2027, 1, 31)))
+    await db.commit()
+
+
+async def test_csv_and_xlsx_export_round_trip_unchanged(db, admin):
+    await _round_trip_workers(db)
+    rows = await bi.export_rows(db)
+    csv_text = bi.build_export_csv(rows)
+    levels, statuses, partners = await bi.reference_lists(db)
+    blob = bi.build_export_xlsx(rows, levels, statuses, partners)
+    for name, content in (("w.csv", csv_text.encode()), ("w.xlsx", blob)):
+        out = await preview(db, admin, [r for _, r in bi.parse_upload(name, content)])
+        assert [r["action"] for r in out["rows"]] == ["unchanged"] * 4, name
+    assert csv_text.splitlines()[0] == ",".join(bi.EXPORT_COLUMNS)
+
+
+async def test_json_export_round_trips_unchanged(db, admin):
+    await _round_trip_workers(db)
+    text = bi.build_export_json(await bi.export_rows(db))
+    numbered = bi.parse_upload("w.json", text.encode())
+    out = await bi.preview_rows(db, numbered, actor_id=admin.id, actor_rank=ADMIN_RANK)
+    assert [r["action"] for r in out["rows"]] == ["unchanged"] * 4
+
+
+def test_template_json_shape():
+    rows = json.loads(bi.build_template_json())
+    assert list(rows[0]) == bi.COLUMNS + ["certifications"]
+    assert rows[0]["person_id"] is None and rows[0]["will_travel"] is True
+    assert rows[0]["certifications"] == [{
+        "name": "OSHA 10", "issuer": "OSHA", "issued_on": "2025-03-01",
+        "expires_on": None}]
+    assert rows[1]["will_travel"] is None and rows[1]["certifications"] == []
+    assert bi.number_json_rows(rows)
 
 
 async def test_reference_lists(db, admin):
@@ -490,3 +671,330 @@ async def test_commit_is_all_or_nothing(db, admin):
         Person.last_name == "Row")) == 0
     with pytest.raises(bi.BulkImportError):
         await commit(db, admin, [])
+
+
+# ── person_id, travel, certifications ───────────────────────────────
+
+async def _cert_count(db, person_id):
+    return await db.scalar(select(func.count()).select_from(WorkerCertification).where(
+        WorkerCertification.person_id == person_id))
+
+
+async def test_person_id_matches_first(db, admin):
+    p = await mk_worker(db, email="r@x.example.com")
+    r = await one(db, admin, {"person_id": str(p.id), "first_name": "Robert", "last_name": "Smith"})
+    assert r["action"] == "unchanged" and r["matched_by"].startswith("person_id")
+
+
+async def test_person_id_disagreeing_with_email_is_an_error(db, admin):
+    a = await mk_worker(db, "Ann", "One", email="a@x.example.com")
+    await mk_worker(db, "Bea", "Two", email="b@x.example.com")
+    r = await one(db, admin, {"person_id": str(a.id), "first_name": "Bea", "last_name": "Two",
+                              "email": "b@x.example.com"})
+    assert r["action"] == "error"
+
+
+async def test_foreign_person_id_is_ignored_with_a_note(db, admin):
+    r = await one(db, admin, {"person_id": str(uuid.uuid4()), "first_name": "New", "last_name": "Person"})
+    assert r["action"] == "create" and r["notes"] == ["person_id not found here"] and not r["errors"]
+
+
+async def test_invalid_person_id_is_an_error(db, admin):
+    r = await one(db, admin, {"person_id": "nope", "first_name": "A", "last_name": "B"})
+    assert r["errors"] == ["person_id 'nope' is not valid"]
+
+
+async def test_duplicate_person_id_within_the_import(db, admin):
+    pid = str(uuid.uuid4())
+    out = await preview(db, admin, [
+        {"person_id": pid, "first_name": "A", "last_name": "One"},
+        {"person_id": pid.upper(), "first_name": "B", "last_name": "Two"}])
+    assert [r["errors"] for r in out["rows"]] == [
+        ["duplicate person_id within the import"]] * 2
+
+
+async def test_person_id_splits_a_shared_name(db, admin):
+    a = await mk_worker(db)
+    b = await mk_worker(db)
+    out = await preview(db, admin, [
+        {"person_id": str(a.id), "first_name": "Robert", "last_name": "Smith"},
+        {"person_id": str(b.id), "first_name": "Robert", "last_name": "Smith"}])
+    assert [(r["action"], r["person_id"]) for r in out["rows"]] == [
+        ("unchanged", str(a.id)), ("unchanged", str(b.id))]
+
+
+async def test_new_rows_have_empty_notes(db, admin):
+    r = await one(db, admin, {"first_name": "New", "last_name": "Person"})
+    assert r["notes"] == []
+
+
+async def test_will_travel_diff_and_apply(db, admin):
+    p = await mk_worker(db, email="t@x.example.com", profile={})
+    row = {"email": "t@x.example.com", "first_name": "Robert", "last_name": "Smith",
+           "will_travel": "No", "travel_region": "West"}
+    r = await one(db, admin, row)
+    assert r["diff"]["will_travel"] == {"old": None, "new": "no"}
+    await commit(db, admin, [r["cells"]], approved=[str(p.id)])
+    prof = await db.get(WorkerProfile, p.id); await db.refresh(prof)
+    assert prof.will_travel is False and prof.travel_region == "West"
+
+
+async def test_will_travel_same_value_is_unchanged_and_create_sets_it(db, admin):
+    await mk_worker(db, email="t@x.example.com", profile={"will_travel": True})
+    r = await one(db, admin, {"email": "t@x.example.com", "first_name": "Robert",
+                              "last_name": "Smith", "will_travel": "TRUE"})
+    assert r["action"] == "unchanged" and r["data"]["will_travel"] == "yes"
+    res = await commit(db, admin, [{"first_name": "C", "last_name": "D", "will_travel": "yes",
+                                    "travel_restrictions": "No flights"}])
+    prof = await db.get(WorkerProfile, uuid.UUID(res["rows"][0]["person_id"]))
+    assert prof.will_travel is True and prof.travel_restrictions == "No flights"
+
+
+def test_parse_will_travel_and_cert_key():
+    assert [bi.parse_will_travel(v) for v in ("", "Yes", "no", "TRUE", "false")] == [
+        None, True, False, True, False]
+    with pytest.raises(ValueError):
+        bi.parse_will_travel("maybe")
+    assert bi.cert_key(" CPR ", "Red  Cross") == "cpr|red cross"
+    assert bi.cert_key("CPR", None) == "cpr|"
+
+
+async def test_will_travel_invalid(db, admin):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "will_travel": "maybe"})
+    assert "will_travel must be yes or no" in r["errors"]
+
+
+async def test_certifications_added_on_create(db, admin):
+    res = await commit(db, admin, [{"first_name": "C", "last_name": "D",
+        "certifications": [{"name": "CPR", "issuer": "Red Cross", "expires_on": "2027-01-31"}]}])
+    pid = uuid.UUID(res["rows"][0]["person_id"])
+    certs = list(await db.scalars(select(WorkerCertification).where(WorkerCertification.person_id == pid)))
+    assert [(c.name, c.issuer, str(c.expires_on), c.source) for c in certs] == [("CPR", "Red Cross", "2027-01-31", "manual")]
+    entry = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_id == str(pid), AuditLog.action == "certification.add"))
+    assert entry.changes == {"name": {"from": None, "to": "CPR"}}
+
+
+async def test_certifications_on_update_need_the_tick_and_skip_existing(db, admin):
+    p = await mk_worker(db, email="c@x.example.com", profile={})
+    db.add(WorkerCertification(person_id=p.id, name="CPR", issuer="Red Cross")); await db.commit()
+    row = {"email": "c@x.example.com", "first_name": "Robert", "last_name": "Smith",
+           "certifications": [{"name": "cpr", "issuer": "red  cross"}, {"name": "OSHA 10"}]}
+    r = await one(db, admin, row)
+    assert r["action"] == "update" and r["diff"] == {"certifications": {"add": ["OSHA 10"]}}
+    await commit(db, admin, [r["cells"]])                       # not ticked → skipped
+    assert await _cert_count(db, p.id) == 1
+    await commit(db, admin, [r["cells"]], approved=[str(p.id)])
+    assert await _cert_count(db, p.id) == 2
+    assert (await one(db, admin, row))["action"] == "unchanged"  # re-run adds nothing
+
+
+async def test_duplicate_certifications_in_a_row_collapse(db, admin):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR", "issuer": "Red Cross", "source": "learning", "id": "x"},
+        {"name": "cpr", "issuer": "RED CROSS", "issued_on": "2025-01-01"}]})
+    assert r["data"]["certifications"] == [
+        {"name": "CPR", "issuer": "Red Cross", "issued_on": None, "expires_on": None}]
+    json.dumps(r["data"])                                       # stays serializable
+
+
+async def test_certification_only_row_skips_rank_guard(db, admin):
+    boss = await mk_worker(db, "Big", "Boss", email="boss@x.example.com", account=True, profile={})
+    db.add(PersonRole(person_id=boss.id, role="developer")); await db.commit()   # rank above admin's 60
+    r = await one(db, admin, {"email": "boss@x.example.com", "first_name": "Big", "last_name": "Boss",
+                              "certifications": [{"name": "CPR"}]})
+    assert r["action"] == "update" and not r["errors"]
+    r2 = await one(db, admin, {"email": "boss@x.example.com", "first_name": "Big", "last_name": "Boss",
+                               "job_title": "CEO", "certifications": [{"name": "CPR"}]})
+    assert "rank too low to edit this person" in r2["errors"]
+
+
+@pytest.mark.parametrize("value, error", [
+    ("x", "certifications must be a list"), ({"name": "a"}, "certifications must be a list"),
+    ([1], "certifications must be a list"), ([{"issuer": "X"}], "certification 1: name is required"),
+    ([{"name": "A", "issued_on": "3/1/25"}], "certification 1: issued_on '3/1/25' is not a date (YYYY-MM-DD)"),
+    ([{"name": "A"}, {"name": "B", "expires_on": "2027-02-30"}],
+     "certification 2: expires_on '2027-02-30' is not a date (YYYY-MM-DD)"),
+])
+async def test_bad_certifications_are_row_errors(db, admin, value, error):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": value})
+    assert error in r["errors"]
+
+
+async def test_commit_replays_certifications_once(db, admin):
+    r = await one(db, admin, {"first_name": "C", "last_name": "D",
+                              "certifications": [{"name": "CPR"}]})
+    assert r["cells"]["certifications"] == [{"name": "CPR"}]
+    res = await commit(db, admin, [r["cells"]])
+    assert await _cert_count(db, uuid.UUID(res["rows"][0]["person_id"])) == 1
+
+
+async def test_foreign_ids_match_by_email(db, admin):
+    p = await mk_worker(db, email="f@x.example.com")
+    r = await one(db, admin, {"person_id": str(uuid.uuid4()), "first_name": "Rob",
+                              "last_name": "Smith", "email": "f@x.example.com"})
+    assert r["action"] in ("update", "unchanged") and r["person_id"] == str(p.id)
+    assert r["matched_by"] == "email" and r["notes"] == ["person_id not found here"]
+
+
+# ── fix wave: kiosk identities, shared keys, cert edge cases ────────
+
+async def test_export_skips_kiosk_move_identities(db, admin):
+    from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
+    kiosk = await mk_worker(db, "Kiosk", "Identity")
+    kiosk.source = KIOSK_MOVE_SOURCE
+    await db.commit()
+    await mk_worker(db, "Real", "Worker")
+    rows = await bi.export_rows(db)
+    assert [r["last_name"] for r in rows] == ["Worker"]
+    assert str(kiosk.id) not in {r["person_id"] for r in rows}
+
+
+async def _two_sharing_a_phone(db):
+    a = await mk_worker(db, "Ann", "One", phone="555-777-0001")
+    b = await mk_worker(db, "Bea", "Two", phone="(555) 777-0001")
+    return a, b
+
+
+async def test_shared_phone_json_export_round_trips_unchanged(db, admin):
+    a, b = await _two_sharing_a_phone(db)
+    text = bi.build_export_json(await bi.export_rows(db))
+    out = await bi.preview_rows(db, bi.parse_upload("w.json", text.encode()),
+                                actor_id=admin.id, actor_rank=ADMIN_RANK)
+    assert [(r["action"], r["errors"]) for r in out["rows"]] == [
+        ("unchanged", []), ("unchanged", [])]
+    assert [r["person_id"] for r in out["rows"]] == [str(a.id), str(b.id)]
+    assert [r["matched_by"] for r in out["rows"]] == ["person_id, name"] * 2
+    assert out["can_commit"] is True
+
+
+async def test_shared_phone_export_without_person_id_still_errors(db, admin):
+    await _two_sharing_a_phone(db)
+    rows = json.loads(bi.build_export_json(await bi.export_rows(db)))
+    for r in rows:
+        r.pop("person_id")
+    out = await bi.preview_rows(db, bi.parse_upload("w.json", json.dumps(rows).encode()),
+                                actor_id=admin.id, actor_rank=ADMIN_RANK)
+    assert [r["errors"] for r in out["rows"]] == [
+        ["duplicate phone within the import"]] * 2
+    # alone in the upload, the row still meets the DB-side shared-phone error
+    alone = await one(db, admin, {"first_name": "Ann", "last_name": "One",
+                                  "phone": "555-777-0001"})
+    assert alone["errors"] == ["two people share the phone '555-777-0001'"]
+
+
+async def test_person_id_with_another_persons_phone_still_errors(db, admin):
+    a = await mk_worker(db, "Ann", "One", phone="555-777-0001")
+    await mk_worker(db, "Bea", "Two", phone="555-777-0002")
+    r = await one(db, admin, {"person_id": str(a.id), "first_name": "Ann",
+                              "last_name": "One", "phone": "555-777-0002"})
+    assert r["action"] == "error"
+    assert r["errors"] == [
+        "person_id matches Ann One, phone matches Bea Two, name matches Ann One"]
+
+
+async def test_person_id_with_a_shared_phone_not_its_own_still_errors(db, admin):
+    """Only a key whose hits include the person_id's person is dropped."""
+    a = await mk_worker(db, "Ann", "One", phone="555-777-0001")
+    await mk_worker(db, "Bea", "Two", phone="555-777-0002")
+    await mk_worker(db, "Cy", "Three", phone="555-777-0002")
+    r = await one(db, admin, {"person_id": str(a.id), "first_name": "Ann",
+                              "last_name": "One", "phone": "555-777-0002"})
+    assert r["errors"] == ["two people share the phone '555-777-0002'"]
+
+
+async def test_in_upload_email_repeat_is_exempt_with_person_id(db, admin):
+    """people.email is unique, so only the row whose person already has the
+    email skips the in-upload check."""
+    a = await mk_worker(db, "Ann", "One", email="ann@x.example.com")
+    b = await mk_worker(db, "Bea", "Two")
+    out = await preview(db, admin, [
+        {"person_id": str(a.id), "first_name": "Ann", "last_name": "One",
+         "email": "ann@x.example.com"},
+        {"person_id": str(b.id), "first_name": "Bea", "last_name": "Two",
+         "email": "ANN@x.example.com"}])
+    assert [r["errors"] for r in out["rows"]] == [
+        [], ["duplicate email 'ann@x.example.com' within the import"]]
+    assert out["rows"][0]["action"] == "unchanged"
+
+
+async def test_person_id_rows_setting_one_new_email_are_duplicates(db, admin):
+    """Exempting these would pass preview and then break people_email_uniq."""
+    a = await mk_worker(db, "Ann", "One")
+    b = await mk_worker(db, "Bea", "Two")
+    out = await preview(db, admin, [
+        {"person_id": str(a.id), "first_name": "Ann", "last_name": "One",
+         "email": "new@x.example.com"},
+        {"person_id": str(b.id), "first_name": "Bea", "last_name": "Two",
+         "email": "new@x.example.com"}])
+    assert [r["errors"] for r in out["rows"]] == [
+        ["duplicate email 'new@x.example.com' within the import"]] * 2
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_blank_certification_dates_read_as_null(db, admin, blank):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR", "issued_on": blank, "expires_on": blank}]})
+    assert r["errors"] == []
+    assert r["data"]["certifications"] == [
+        {"name": "CPR", "issuer": None, "issued_on": None, "expires_on": None}]
+
+
+@pytest.mark.parametrize("issuer", [["Red Cross"], {"name": "Red Cross"}, True, False])
+async def test_non_text_certification_issuer_is_a_row_error(db, admin, issuer):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR"}, {"name": "OSHA 10", "issuer": issuer}]})
+    assert r["errors"] == ["certification 2: issuer must be text"]
+
+
+async def test_numeric_certification_issuer_becomes_text(db, admin):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR", "issuer": 911}]})
+    assert r["errors"] == [] and r["data"]["certifications"][0]["issuer"] == "911"
+
+
+async def test_archived_person_id_is_ignored_with_a_note(db, admin):
+    old = await mk_worker(db, "Old", "Timer", phone="555-777-0009", archived=True)
+    live = await mk_worker(db, "Liv", "Ing", phone="555-777-0010")
+    # matches by its other keys
+    hit = await one(db, admin, {"person_id": str(old.id), "first_name": "Liv",
+                                "last_name": "Ing", "phone": "555-777-0010"})
+    assert hit["notes"] == ["person_id not found here"] and not hit["errors"]
+    assert hit["person_id"] == str(live.id) and hit["matched_by"] == "phone, name"
+    # or creates when none match
+    new = await one(db, admin, {"person_id": str(old.id), "first_name": "Old",
+                                "last_name": "Timer", "phone": "555-777-0009"})
+    assert new["action"] == "create" and new["notes"] == ["person_id not found here"]
+    assert not new["errors"]
+
+
+async def test_approved_certification_add_on_update_is_audited(db, admin):
+    p = await mk_worker(db, email="aud@x.example.com", profile={})
+    r = await one(db, admin, {"email": "aud@x.example.com", "first_name": "Robert",
+                              "last_name": "Smith", "certifications": [{"name": "CPR"}]})
+    assert r["action"] == "update"
+    await commit(db, admin, [r["cells"]], approved=[str(p.id)])
+    entries = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(p.id), AuditLog.action == "certification.add")))
+    assert [e.changes for e in entries] == [{"name": {"from": None, "to": "CPR"}}]
+
+
+async def test_export_never_selects_password_hashes(db, admin):
+    from sqlalchemy import event
+
+    from serversherpa.db.engine import get_engine
+    await mk_worker(db, "Sec", "Ret", account=True)
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *rest):
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        rows = await bi.export_rows(db)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert rows[0]["has_login"] is True
+    assert any("user_accounts" in s for s in statements)
+    assert not any("password_hash" in s for s in statements)
