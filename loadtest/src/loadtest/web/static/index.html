@@ -271,7 +271,7 @@
 <header class="topbar">
   <button class="brand" type="button" data-go="start" title="Back to start">
     <span class="brand-name">Data <em>Generator</em></span>
-    <span class="brand-tag">Standalone · local only</span>
+    <span class="brand-tag">Standalone · runs on this machine</span>
   </button>
   <div class="segmented" role="group" aria-label="Theme">
     <button type="button" data-theme-choice="light">Light</button>
@@ -481,7 +481,6 @@
     </div>
 
     <div id="sim-body" hidden>
-      <div class="banner-err sim-notice" id="sim-error" hidden></div>
 
       <!-- interrupted run -->
       <form class="card" id="sim-unf" novalidate autocomplete="off" hidden>
@@ -515,7 +514,7 @@
           <button class="btn-ghost" type="button" id="sim-unf-new">Start new run</button>
         </div>
         <div class="actions sim-ask" id="sim-unf-ask" hidden>
-          <span class="sim-ask-text">Discard the interrupted run? It cannot be continued afterwards.</span>
+          <span class="sim-ask-text">Discard the interrupted run? It cannot be continued afterward.</span>
           <button class="btn-solid" type="button" id="sim-unf-discard">Discard run</button>
           <button class="btn-ghost" type="button" id="sim-unf-keep">Keep it</button>
         </div>
@@ -605,6 +604,7 @@
 
       <!-- step 3: run -->
       <section id="sim-run" hidden>
+        <div class="sim-top">
         <div class="card sim-run-head">
           <div class="sim-run-line">
             <span class="sim-heading" id="sim-run-move"></span>
@@ -628,6 +628,7 @@
           <p class="sim-live" id="sim-live" aria-live="polite"></p>
           <div class="banner-err" id="sim-stop-err" hidden></div>
         </div>
+        </div>
         <div class="sim-run-grid">
           <section class="card">
             <p class="eyebrow-sm">Stages</p>
@@ -649,22 +650,21 @@
 
       <!-- step 4: result -->
       <section id="sim-result" hidden>
-        <div class="card sim-result-head">
-          <div class="results-head">
-            <span class="sim-verdict" id="sim-verdict" hidden></span>
-            <span class="sim-heading" id="sim-result-move"></span>
-            <button class="btn-solid" type="button" id="sim-new">New run</button>
+        <div class="sim-top">
+          <div class="card sim-result-head">
+            <div class="results-head">
+              <span class="sim-verdict" id="sim-verdict" hidden></span>
+              <span class="sim-heading" id="sim-result-move"></span>
+              <button class="btn-solid" type="button" id="sim-new">New run</button>
+            </div>
+            <p class="help" id="sim-saved" hidden></p>
           </div>
-          <p class="help" id="sim-saved" hidden></p>
         </div>
+        <div class="banner-err sim-notice" id="sim-error" hidden></div>
         <div id="sim-result-body">
           <section class="card" id="sim-findings-card">
             <p class="eyebrow-sm">Findings</p>
-            <ul class="sim-list" id="sim-findings"></ul>
-          </section>
-          <section class="card">
-            <p class="eyebrow-sm">Calls</p>
-            <div class="table-wrap"><table id="sim-calls"></table></div>
+            <ul class="sim-list findings" id="sim-findings"></ul>
           </section>
           <div class="sim-result-grid">
             <section class="card">
@@ -680,11 +680,11 @@
               <p class="eyebrow-sm">Backlog</p>
               <div class="table-wrap"><table id="sim-backlog"></table></div>
             </section>
-            <section class="card">
-              <p class="eyebrow-sm">Database health</p>
-              <p class="sim-text" id="sim-db"></p>
-            </section>
           </div>
+          <section class="card">
+            <p class="eyebrow-sm">Calls</p>
+            <div class="table-wrap"><table id="sim-calls"></table></div>
+          </section>
           <section class="card">
             <p class="eyebrow-sm">Run facts</p>
             <div class="table-wrap"><table class="sim-facts" id="sim-facts"></table></div>

@@ -41,21 +41,27 @@
       toolSilent();
       throw new ApiError('offline', OFFLINE);
     }
-    return answer(res);
+    return answer(res, true);
   }
 
-  async function answer(res) {
-    toolAnswered();
+  // A 5xx or an answer that is not the tool's JSON (a proxy's error page while the tool
+  // restarts) counts as not answering; only a successful JSON answer clears that.
+  async function answer(res, isPost) {
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
-    if (res.status === 403 && data && data.code === 'forbidden') {
+    const ours = !!data && typeof data === 'object';
+    if (res.status === 403 && ours && data.code === 'forbidden') {
       block();
       throw new ApiError('forbidden', '');
     }
-    if (!res.ok) {
-      throw new ApiError((data && data.code) || 'internal', (data && data.message) || INTERNAL,
-        data && data.fields);
+    if (!ours || (res.status >= 500 && !(isPost && data.message))) {
+      toolSilent();
+      throw new ApiError('offline', OFFLINE);
     }
+    if (!res.ok) {
+      throw new ApiError(data.code || 'internal', data.message || INTERNAL, data.fields);
+    }
+    toolAnswered();
     return data;
   }
 
@@ -72,10 +78,13 @@
   }
 
   let blocked = false;      // the access key is missing: nothing more is asked
-  let offline = false;
+  let stateDown = false;    // the last request found the tool not answering
+  let streamDown = false;   // the event stream closed for good and must be reopened
   let retryTimer = null;
   let events = null;
+  let lastOpen = 0;         // when the stream was last (re)opened
   let eventsRun = undefined; // the run the open stream was opened for
+  let seq = 0, appliedSeq = 0; // an older /api/state answer never overwrites a newer state
 
   function block() {
     blocked = true;
@@ -86,57 +95,70 @@
     retryTimer = null;
     if (events) { events.close(); events = null; }
   }
-  function toolSilent() {
+  // The notice shows while the state or the stream is down, and the quiet 5-second retry
+  // runs until both are back.
+  function paintHealth() {
     if (blocked) return;
-    offline = true;
-    $('sim-offline').hidden = false;
-    if (!retryTimer) retryTimer = setInterval(refresh, RETRY_MS);
+    const down = stateDown || streamDown;
+    $('sim-offline').hidden = !down;
+    if (down && !retryTimer) retryTimer = setInterval(refresh, RETRY_MS);
+    if (!down && retryTimer) { clearInterval(retryTimer); retryTimer = null; }
   }
-  function toolAnswered() {
-    if (!offline) return;
-    offline = false;
-    $('sim-offline').hidden = true;
-    clearInterval(retryTimer);
-    retryTimer = null;
-  }
+  function toolSilent() { stateDown = true; paintHealth(); }
+  function toolAnswered() { stateDown = false; paintHealth(); }
 
   async function refresh() {
     if (blocked) return;
+    const mine = ++seq;
     let state;
     try { state = await get('/api/state'); } catch (e) { return; }
+    if (mine < appliedSeq) return;
+    appliedSeq = mine;
     apply(state);
-    openEvents();
+    openEvents(false);
   }
 
   function parse(text) {
     try { return JSON.parse(text); } catch (e) { return null; }
   }
 
-  function openEvents() {
+  function openEvents(now) {
     if (blocked || (events && events.readyState !== EventSource.CLOSED)) return;
+    if (!now && Date.now() - lastOpen < RETRY_MS) return;    // never a tight reopen loop
+    lastOpen = Date.now();
     const stream = new EventSource('/api/events');
     events = stream;
     // on the first open and on every reconnect: start the feed over, then read the state
-    stream.addEventListener('open', () => { clearFeed(); refresh(); });
-    stream.addEventListener('snapshot', e => { const s = parse(e.data); if (s) apply(s); });
+    stream.addEventListener('open', () => {
+      streamDown = false;
+      paintHealth();
+      clearFeed();
+      refresh();
+    });
+    stream.addEventListener('snapshot', e => {
+      const s = parse(e.data);
+      if (s) { appliedSeq = ++seq; apply(s); }
+    });
     stream.addEventListener('feed', e => { const line = parse(e.data); if (line) queueFeed(line); });
     stream.addEventListener('error', () => {
-      if (stream.readyState === EventSource.CLOSED && events === stream) events = null;
+      if (stream.readyState === EventSource.CLOSED && events === stream) {
+        events = null;
+        streamDown = true;     // refused or not an event stream: reopened by the retry
+        paintHealth();
+      }
       refresh();      // says why: the tool is down (notice and retry) or the key is missing
     });
   }
   function reopenEvents() {
     if (events) { events.close(); events = null; }
-    openEvents();
+    openEvents(true);
   }
 
   /* ───────────── page state (only what the tool cannot know) ───────────── */
   let snap = null;
   let view = null;
   let busy = '';            // the request this page is waiting on: connect, check, start…
-  let moves = null;         // the last connect answer's moves
-  let movesFor = null;      // the sign-in those moves belong to
-  let movesPending = false; // a connect just answered; its sign-in is in the next state
+  let movesDrawn = null;    // the moves list (and selection) the Move select was filled from
   let totpAsked = false;
   let editing = false;      // "Change move or speed" chosen while a check is shown
   let newRunFrom = null;    // the run whose result New run set aside
@@ -145,8 +167,6 @@
   let unfOpen = false, unfAsk = false, unfTotp = false;
   let speed = recall('speed') === 'real-time' ? 'real-time' : 'fast';
   let result = null, resultFor = null, resultLoading = false, resultDrawn = null;
-
-  const connKey = c => (c ? `${c.server}\n${c.email}` : null);
 
   function apply(state) {
     if (!state || typeof state !== 'object') return;
@@ -157,7 +177,6 @@
       eventsRun = run;
       reopenEvents();     // a new run: its own buffered feed, nothing doubled or lost
     }
-    if (movesPending && state.connected) { movesFor = connKey(state.connected); movesPending = false; }
     const first = snap === null;
     snap = state;
     if (first && ACTIVE.includes(state.phase) && !location.hash) location.hash = 'simulate';
@@ -241,7 +260,7 @@
   }
   const percent = (done, total) => (total ? Math.min(100, Math.floor((done / total) * 100)) : 0);
   function clock(seconds) {
-    if (seconds == null) return DASH;
+    if (seconds == null || !Number.isFinite(seconds)) return DASH;
     const s = Math.max(0, Math.round(seconds));
     const two = n => String(n).padStart(2, '0');
     return `${two(Math.floor(s / 3600))}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
@@ -254,21 +273,28 @@
     return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ` +
       `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
   }
-  const ms = v => (v == null ? '' : `${fmtN(Math.round(v))} ms`);
+  const ms = v => (v == null ? DASH : `${fmtN(Math.round(v))} ms`);
+  // the feed leaves the time blank on its own lines (the runner's), which have none
+  const feedMs = v => (v == null ? '' : ms(v));
   const count = v => (v == null ? DASH : fmtN(v));
 
-  // One action at a time; its error shows next to the button that started it.
+  // One action at a time; its error shows next to the button that started it, or where
+  // the user lands when the view changed meanwhile (errId may be a function of the view).
+  // A tool that is not answering is said once, in the notice at the top.
   async function act(name, errId, fields, work) {
     if (busy) return;
+    const where = () => (typeof errId === 'function' ? errId() : errId);
     busy = name;
-    showErr(errId, '');
+    showErr(where(), '');
     clearFields(fields);
     render();
     try {
       await work();
     } catch (err) {
-      if (err.code !== 'forbidden') {
-        showErr(errId, err.message || INTERNAL);
+      if (err.code !== 'forbidden' && err.code !== 'offline') {
+        busy = '';
+        render();
+        showErr(where(), err.message || INTERNAL);
         markFields(err.fields || [], fields);
       }
     } finally {
@@ -285,7 +311,11 @@
     const u = snap.unfinished;
     const show = !!u && !ACTIVE.includes(snap.phase);
     $('sim-unf').hidden = !show;
-    if (!show) { unfOpen = unfAsk = unfTotp = false; return; }
+    if (!show) {      // gone (continued, discarded, maybe from another tab): drop what was typed
+      unfOpen = unfAsk = unfTotp = false;
+      ['sim-c-password', 'sim-c-move-password', 'sim-c-totp'].forEach(id => { $(id).value = ''; });
+      return;
+    }
     if (u.damaged) unfOpen = false;
     setText('sim-unf-text', u.damaged
       ? 'An interrupted run’s record cannot be read, so it cannot be continued.'
@@ -377,11 +407,19 @@
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
+  // The Move select follows the state's moves list; the tool's last selection (move and
+  // speed) is put back whenever the list or that selection changes, not on every render.
   function fillMoves() {
+    const moves = snap.moves || [];
+    const sel = snap.selected || null;
+    const key = JSON.stringify([moves, sel]);
+    if (key === movesDrawn) return;
+    movesDrawn = key;
     const select = $('sim-move');
-    const keep = select.value || (snap && snap.check && snap.check.move && snap.check.move.id);
+    const keep = (sel && sel.move_id) || select.value;
+    if (sel && SPEED_NAMES[sel.speed]) speed = sel.speed;
     select.replaceChildren();
-    if (!moves || !moves.length) {
+    if (!moves.length) {
       const none = el('option', null, 'No moves on this server');
       none.value = '';
       none.disabled = true;
@@ -412,15 +450,15 @@
       $('sim-server').value = (c && c.server) || recall('server');
       $('sim-email').value = (c && c.email) || recall('email');
     }
-    const haveMoves = !!c && !!moves && movesFor === connKey(c);
+    const listed = !!c && ['connected', 'checked'].includes(snap.phase);
+    if (listed) fillMoves();
     $('sim-totp-field').hidden = !(totpAsked || snap.needs_totp);
-    $('sim-move-set').disabled = !haveMoves || !!busy;
-    $('sim-check-go').disabled = !haveMoves || !moves.length || !!busy;
+    $('sim-move-set').disabled = !listed || !!busy;
+    $('sim-check-go').disabled = !listed || !(snap.moves || []).length || !!busy;
     $('sim-connect-go').disabled = !!busy;
     $('sim-connect-go').textContent = busy === 'connect' ? 'Connecting…' : 'Connect';
     $('sim-check-go').textContent = busy === 'check' ? 'Checking…' : 'Check server';
-    const line = !c ? '' : haveMoves ? `Connected to ${c.server} as ${c.email}.`
-      : `Connected to ${c.server} as ${c.email}. Enter the password and connect again to list the moves.`;
+    const line = listed ? `Connected to ${c.server} as ${c.email}.` : '';
     $('sim-connected').hidden = !line;
     setText('sim-connected', line);
     paintSpeed();
@@ -452,13 +490,10 @@
         $('sim-totp').focus();
         return;
       }
-      moves = (got && got.moves) || [];
-      movesPending = true;
       totpAsked = false;
       editing = false;
       $('sim-password').value = '';
       $('sim-totp').value = '';
-      fillMoves();
       await refresh();
     }).then(() => {
       if (!$('sim-move-set').disabled) $('sim-move').focus();
@@ -470,7 +505,11 @@
     paintSpeed();
   }));
 
-  function runCheck(errId) {
+  // A failed check clears the tool's report, so the view may drop back to the form:
+  // its error shows on whichever card is on screen.
+  const checkErr = () => (view === 'ready' ? 'sim-ready-err' : 'sim-check-err');
+
+  function runCheck() {
     const fromForm = view === 'connect';
     const checked = snap.check && snap.check.move && snap.check.move.id;
     const moveId = fromForm || !checked ? $('sim-move').value : checked;
@@ -485,18 +524,18 @@
     if (!movePassword) {
       editing = true;
       render();
-      fieldError('sim-move-password', 'Enter the move password, then check the server.');
+      fieldError('sim-move-password', 'Enter the move password, then choose Check server.');
       if (!$('sim-move-set').disabled) $('sim-move-password').focus();
       return;
     }
-    act('check', errId, CHECK_FIELDS, async () => {
+    act('check', checkErr, CHECK_FIELDS, async () => {
       await post('/api/check', { move_id: moveId, move_password: movePassword, speed });
       remember('speed', speed);
       editing = false;
       await refresh();
     });
   }
-  $('sim-move-form').addEventListener('submit', e => { e.preventDefault(); runCheck('sim-check-err'); });
+  $('sim-move-form').addEventListener('submit', e => { e.preventDefault(); runCheck(); });
 
   /* ───────────── readiness ───────────── */
   const MARKS = { pass: ['ok', 'Pass'], fail: ['bad', 'Fix'], warn: ['warn', 'Note'] };
@@ -525,7 +564,7 @@
     $('sim-change').disabled = !!busy;
   }
 
-  $('sim-recheck').addEventListener('click', () => runCheck('sim-ready-err'));
+  $('sim-recheck').addEventListener('click', () => runCheck());
   $('sim-change').addEventListener('click', () => {
     editing = true;
     showErr('sim-ready-err', '');
@@ -558,10 +597,13 @@
     setText('sim-run-speed', speedName(snap.speed));
     $('sim-run-speed').hidden = !snap.speed;
 
-    const o = snap.overall || { done: 0, total: 0 };
-    const pct = percent(o.done, o.total);
+    // the bar moves through the whole move; it reads 100% only once every server is done
+    const o = snap.overall || { done: 0, total: 0, percent: 0 };
+    let pct = Math.min(100, Math.round(o.percent || 0));
+    if (pct === 100 && !(o.total && o.done >= o.total)) pct = 99;
     bar($('sim-overall-bar'), $('sim-overall-fill'), pct);
-    setText('sim-overall-text', `${fmtN(o.done)} / ${fmtN(o.total)} complete · ${pct}%`);
+    setText('sim-overall-text',
+      `${pct}% of the move · ${fmtN(o.done)} / ${fmtN(o.total)} servers complete`);
     setText('sim-elapsed', clock(snap.elapsed));
 
     const finishing = snap.phase === 'finishing';
@@ -574,14 +616,17 @@
       : 'Stop this run? It cannot be picked up again.');
     setText('sim-stop-yes', finishing ? 'Stop waiting' : 'Stop run');
     setText('sim-stop-no', finishing ? 'Keep waiting' : 'Keep running');
-    setText('sim-live', snap.phase === 'starting' ? 'Starting the devices…'
+    setText('sim-live', snap.phase === 'starting'
+      ? (snap.devices ? `Starting ${fmtN(snap.devices)} devices…` : 'Starting the devices…')
       : finishing ? 'Move finished. Waiting for the server to catch up…' : '');
 
     renderStages(snap.stages || []);
 
     const t = snap.trucks || {};
     let trucks = `loaded ${count(t.loaded)} · on the road ${count(t.on_road)} · arrived ${count(t.arrived)}`;
-    if (t.on_road > 0 && t.furthest) trucks += `   ${t.furthest.name}  ${t.furthest.percent}% of route`;
+    if (t.on_road > 0 && t.furthest) {
+      trucks += ` · furthest: ${t.furthest.name}, ${t.furthest.percent}% of route`;
+    }
     setText('sim-trucks', trucks);
 
     const s = snap.server || {};
@@ -618,7 +663,8 @@
     for (const s of stages) {
       const r = stageRows.get(s.key);
       r.done.textContent = `${fmtN(s.done)}/${fmtN(s.total)}`;
-      bar(r.track, r.fill, percent(s.done, s.total), s.label);
+      const pct = s.percent == null ? percent(s.done, s.total) : Math.min(100, Math.round(s.percent));
+      bar(r.track, r.fill, pct, s.label);
     }
   }
 
@@ -656,12 +702,14 @@
     if (feedQueue.length > FEED_MAX) feedQueue.splice(0, feedQueue.length - FEED_MAX);
     if (!feedFrame) feedFrame = requestAnimationFrame(flushFeed);
   }
+  // every simulated device is named "Load test – …"; the feed shows the rest
+  const shortDevice = name => String(name || '').replace(/^Load test [–-] /, '');
   function feedRow(l) {
     const row = el('div', l.ok ? 'feed-row' : 'feed-row failed');
-    row.append(el('span', 'feed-time', l.time), el('span', 'feed-device', l.device),
+    row.append(el('span', 'feed-time', l.time), el('span', 'feed-device', shortDevice(l.device)),
       el('span', 'feed-action', l.action), el('span', 'feed-subject', l.subject),
       el('span', l.ok ? 'feed-result feed-ok' : 'feed-result feed-failed', l.ok ? 'ok' : 'failed'),
-      el('span', 'feed-ms', ms(l.ms)));
+      el('span', 'feed-ms', feedMs(l.ms)));
     if (!l.ok && l.note) row.append(el('div', 'feed-note', l.note));
     return row;
   }
@@ -688,8 +736,25 @@
 
   /* ───────────── result ───────────── */
   const VERDICTS = { Pass: 'ok', 'Pass with warnings': 'warn', Fail: 'bad' };
-  const DB_HEALTH = { sampled: 'Sampled', not_available: 'Not available for this account',
-    not_sampled: 'Not sampled' };
+  const DB_HEALTH = { sampled: 'Sampled during the run (saved in the result file)',
+    not_available: 'Not available for this account', not_sampled: 'Not sampled' };
+  // Plain names for the calls a run makes, in the order the Calls table lists them.
+  const CALL_GROUPS = [
+    ['The move', [
+      ['portal-login', 'Portal sign-in'], ['portal-refresh', 'Portal sign-in renewal'],
+      ['move-login', 'Kiosk sign-in'], ['refresh', 'Kiosk sign-in renewal'],
+      ['setup', 'Kiosk setup'], ['station-key', 'Station key'], ['sync', 'Move download'],
+      ['enroll', 'RFID enroll'], ['station-scans', 'Scans from RFID and label stations'],
+      ['scans', 'Scans from handhelds'], ['pack', 'Pack into container'],
+      ['load', 'Load onto truck'], ['truck-status', 'Truck departs and arrives'],
+      ['truck-location', 'Truck location update'], ['unload', 'Unload from truck'],
+      ['unpack', 'Unpack from container']]],
+    ['Background and checks', [
+      ['heartbeat', 'Device heartbeat'], ['station-heartbeat', 'Station heartbeat'],
+      ['waiting-scans', 'Check: scans waiting'], ['asset-totals', 'Check: move progress'],
+      ['system-status', 'Check: server status'], ['db-health', 'Check: database health'],
+      ['portal-read', 'Check: move details'], ['asset-scans', 'Check: scan history']]],
+  ];
 
   async function loadResult(key) {
     if (resultLoading || resultFor === key) return;
@@ -719,6 +784,37 @@
     $(id).replaceChildren(head, body);
   }
 
+  // The Calls table: plain names in two groups, each under a small heading row; a call
+  // with no plain name is listed as it is, at the end of "The move".
+  function callsTable(calls) {
+    const known = new Set(CALL_GROUPS.flatMap(([, names]) => names.map(([n]) => n)));
+    const extra = Object.keys(calls).filter(n => !known.has(n)).map(n => [n, n]);
+    const head = el('thead');
+    const tr = el('tr');
+    ['Call', 'Count', 'Retries', 'Failures', 'Median', '95th', 'Slowest']
+      .forEach((h, i) => tr.append(el('th', i ? 'num' : null, h)));
+    head.append(tr);
+    const body = el('tbody');
+    CALL_GROUPS.forEach(([group, names], g) => {
+      const rows = names.concat(g === 0 ? extra : []).filter(([n]) => calls[n]);
+      if (!rows.length) return;
+      const heading = el('tr', 'sim-group');
+      const th = el('th', null, group);
+      th.colSpan = 7;
+      th.setAttribute('scope', 'colgroup');
+      heading.append(th);
+      body.append(heading);
+      rows.forEach(([n, label]) => {
+        const c = calls[n];
+        const row = el('tr');
+        [label, fmtN(c.count), fmtN(c.retries), fmtN(c.failures), ms(c.median_ms), ms(c.p95_ms),
+          ms(c.max_ms)].forEach((v, i) => row.append(el('td', i ? 'num mono' : null, v)));
+        body.append(row);
+      });
+    });
+    $('sim-calls').replaceChildren(head, body);
+  }
+
   function facts(r) {
     const run = r.run;
     const rows = [
@@ -729,6 +825,7 @@
       ['Started', when(run.started_at)],
       ['Ended', when(run.ended_at)],
       ['Duration', clock((Date.parse(run.ended_at) - Date.parse(run.started_at)) / 1000)],
+      ['Database health', DB_HEALTH[r.db_health] || DASH],
     ];
     const breaks = run.interruptions || [];
     if (breaks.length) {
@@ -751,17 +848,14 @@
 
   function drawResult(r) {
     const findings = r.findings || [];
-    $('sim-findings-card').hidden = !findings.length;
     $('sim-findings').className = 'sim-list findings';
-    $('sim-findings').replaceChildren(...findings.map(f => {
+    $('sim-findings').replaceChildren(...(findings.length ? findings.map(f => {
       const li = el('li');
       li.append(el('span', `chip mark ${f.level === 'fail' ? 'bad' : 'warn'}`, f.level === 'fail' ? 'Fail' : 'Note'),
         el('span', 'sim-check-detail', f.text));
       return li;
-    }));
-    table('sim-calls', ['Call', 'Count', 'Retries', 'Failures', 'Median', '95th', 'Slowest'],
-      Object.entries(r.calls || {}).map(([name, c]) => [name, fmtN(c.count), fmtN(c.retries),
-        fmtN(c.failures), ms(c.median_ms), ms(c.p95_ms), ms(c.max_ms)]), [1, 2, 3, 4, 5, 6]);
+    }) : [el('li', 'sim-none', 'No problems found.')]));
+    callsTable(r.calls || {});
     const sc = r.scans || {};
     table('sim-scans', ['Sent', 'Processed', 'Processed twice', 'Never processed'],
       [[count(sc.sent), count(sc.processed), count(sc.processed_twice), count(sc.never_processed)]],
@@ -777,7 +871,6 @@
     const catchUp = b.catch_up_seconds != null ? clock(b.catch_up_seconds)
       : r.run && r.run.reason === 'completed' ? 'did not catch up' : DASH;
     table('sim-backlog', ['Peak', 'Catch-up time'], [[count(b.peak), catchUp]], [0, 1]);
-    $('sim-db').textContent = DB_HEALTH[r.db_health] || DASH;
     facts(r);
   }
 

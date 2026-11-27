@@ -174,3 +174,59 @@ def test_status_tokens_live_in_both_themes():
     for token in ("--c-green", "--c-green-bg", "--c-green-bd", "--c-amber", "--c-amber-bg",
                   "--c-amber-bd"):
         assert f"{token}:" in light and f"{token}:" in dark, token
+
+
+# ── fix round 1 ────────────────────────────────────────────────────────
+
+SRC = Path(__file__).resolve().parents[1] / "src" / "loadtest"
+
+
+def recorded_call_names() -> set[str]:
+    """Every call name the clients record, read from their source."""
+    names: set[str] = set()
+    for path in (SRC / "client" / "kiosk.py", SRC / "client" / "portal.py"):
+        code = path.read_text(encoding="utf-8")
+        names |= set(re.findall(r'\bname(?::\s*str)?\s*=\s*"([a-z][a-z-]*)"', code))
+        names |= set(re.findall(r'metrics\.record\("([a-z][a-z-]*)"', code))
+        names |= set(re.findall(r'\("/kiosk/[^"]*",\s*"([a-z][a-z-]*)",', code))      # scan batches
+        names |= set(re.findall(r'self\._(?:container|truck)\("([a-z]+)"', code))       # pack/load…
+    return names
+
+
+def test_every_recorded_call_has_a_plain_name():
+    js = read("simulate.js")
+    names = recorded_call_names()
+    assert {"portal-read", "station-scans", "scans", "pack", "unpack", "load", "unload",
+            "enroll", "sync", "db-health"} <= names          # the reader finds them all
+    for name in names:
+        assert re.search(r"\['" + re.escape(name) + r"', '[A-Z][^']+'\]", js), name
+    assert "'The move'" in js and "'Background and checks'" in js
+
+
+def test_wording_of_round_one():
+    page, js = read("index.html"), read("simulate.js")
+    assert "afterwards" not in page and "afterwards" not in js
+    assert "It cannot be continued afterward." in page
+    assert "Standalone · runs on this machine" in page
+    assert "local only" not in page
+    assert "No problems found." in js
+    assert "% of the move · " in js
+    assert "Starting ${fmtN(snap.devices)} devices…" in js
+    assert "furthest: ${t.furthest.name}, ${t.furthest.percent}% of route" in js
+    assert "connect again" not in js
+
+
+def test_no_formatter_returns_blank_for_an_unknown_value():
+    js = without_comments(read("simulate.js"))
+    # the table formatters give an en dash for null; only the feed's own time column
+    # (blank on the runner's lines, which have no time) may be empty
+    blanks = re.findall(r"const (\w+) = v => \(v == null \? '' :", js)
+    assert blanks == ["feedMs"]
+    assert "const ms = v => (v == null ? DASH :" in js
+
+
+def test_errors_from_a_proxy_count_as_not_answering():
+    js = without_comments(read("simulate.js"))
+    assert "res.status >= 500" in js
+    assert "Date.now() - lastOpen < RETRY_MS" in js      # a closed stream reopens slowly
+    assert "if (mine < appliedSeq) return;" in js        # no older state over a newer one
