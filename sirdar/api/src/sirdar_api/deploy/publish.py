@@ -1294,7 +1294,9 @@ async def remove_switchyard(ctx: PublishContext, out: Output, *, transport) -> N
 async def run_smoke(ctx: PublishContext, out: Output, *, transport,
                     sleep: Callable[[float], Awaitable[None]], attempts: int,
                     delay: float) -> None:
-    results = await smoke.run([(s.service, s.hostname) for s in ctx.services], ctx.proxy_ip,
+    # Switchyard: the public names (its LAN address isn't the environment's proxy IP).
+    via = None if ctx.proxy == "switchyard" else ctx.proxy_ip
+    results = await smoke.run([(s.service, s.hostname) for s in ctx.services], via,
                               transport=transport, sleep=sleep, attempts=attempts, delay=delay,
                               out=out)
     for r in results:

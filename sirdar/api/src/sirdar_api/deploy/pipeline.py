@@ -334,10 +334,10 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     Raises NotSupportedOnDigitalOcean for Reset, Restore backup, Roll back
     and Restore VM snapshot there.
 
-    first_admin: its plan has step 11 Create the first admin (an Update that
+    first_admin: its plan has step 19 Create the first admin (an Update that
     starts empty or restores a recipe-built seed). Dropped when the
     environment's first admin is already done (or gone), so a retry after
-    step 11 succeeded doesn't plan it again.
+    step 19 succeeded doesn't plan it again.
 
     bluegreen: a LAN Blue/Green environment's deployment (it must match
     lan_slots.is_bluegreen, except a publish job: the ordinary 12–14). Slots
@@ -717,7 +717,7 @@ class _Context:
     publishing: publish.PublishContext | None = field(default=None, repr=False)
     # Steps 0 and 15 of a VM environment: its VM and the host's credentials.
     vm: vmsteps.VmContext | None = field(default=None, repr=False)
-    # The values `redactor` hides: step 11 adds the first admin's password.
+    # The values `redactor` hides: step 19 adds the first admin's password.
     redact_values: tuple[str, ...] = field(default=(), repr=False)
     # LAN Blue/Green Update: step 7 runs on the data VM with its own .env
     # (and step 6 starts there: _data_hba_request).
@@ -955,7 +955,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
 
 async def _with_first_admin(db: AsyncSession, settings: Settings, env_id: uuid.UUID,
                             ctx: _Context) -> _Context:
-    """Step 11's vars (the typed password only there) and a redactor that
+    """Step 19's vars (the typed password only there) and a redactor that
     hides that password too. vault errors propagate."""
     admin_vars, admin_secrets = await first_admins.step_vars(db, settings, env_id)
     values = (*ctx.redact_values, *_redaction_values(admin_secrets))
@@ -964,7 +964,7 @@ async def _with_first_admin(db: AsyncSession, settings: Settings, env_id: uuid.U
 
 
 def _without_first_admin(ctx: _Context, kept_values: tuple[str, ...]) -> _Context:
-    """Step 11 is over: its vars and the plaintext in the redaction list go.
+    """Step 19 is over: its vars and the plaintext in the redaction list go.
     The compiled redactor stays as it is, so it still masks the password in
     anything a later step prints."""
     return replace(ctx, step_vars={k: v for k, v in ctx.step_vars.items()
@@ -1496,7 +1496,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             continue
                         # Read when the step starts: a retry uses the record as
                         # the last PUT …/first-admin left it (the route refuses
-                        # a PUT while a deployment runs). A canceled step 11 may
+                        # a PUT while a deployment runs). A canceled step 19 may
                         # leave bootstrap-admin running on the host; a retry
                         # then sees exit 10 (it finished) or 6, never a second
                         # account.
@@ -1512,6 +1512,11 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             return
                         await db.commit()
                     if runs_on == "python":
+                        if ctx.publishing is not None:
+                            # Step 0 may have moved the services to the new VM's
+                            # address since the context was built.
+                            ctx = replace(ctx, publishing=replace(
+                                ctx.publishing, services=await publish.service_plans(db, env)))
                         result = await _run_python_step(publisher, ctx, step)
                     elif runs_on == "vm":
                         result = await _run_vm_step(

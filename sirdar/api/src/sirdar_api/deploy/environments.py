@@ -202,7 +202,8 @@ async def list_all(db: AsyncSession) -> list[Environment]:
 
 async def services_of(db: AsyncSession, env_id) -> list[EnvironmentService]:
     rows = await db.scalars(select(EnvironmentService)
-                            .where(EnvironmentService.environment_id == env_id))
+                            .where(EnvironmentService.environment_id == env_id)
+                            .execution_options(populate_existing=True))
     order = {s: i for i, s in enumerate(home.SERVICE_ORDER)}
     return sorted(rows, key=lambda r: order.get(r.service, len(order)))
 
@@ -339,7 +340,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     for DHCP until step 0 reads it), and its VM row records it as Sirdar's.
     On DigitalOcean ("digitalocean"), `do` picks the account, slots and
     sizes (see do_envs.check_spec); production lives only there.
-    first_admin: the first super admin step 11 of the first deploy creates
+    first_admin: the first super admin step 19 of the first deploy creates
     (never with a snapshot). With `vm.slots: 2` (ESXi or Proxmox) the
     environment is LAN Blue/Green: a data VM and two app VMs (orange,
     purple), static addresses, its proxy as the switch.
@@ -371,7 +372,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     if first_admin is not None:
         if snapshot_id is not None:
             # A seed already has its users; a recipe-built one is the exception
-            # (its users are only what the recipe kept, so step 11 may add one).
+            # (its users are only what the recipe kept, so step 19 may add one).
             origin = await db.scalar(select(Snapshot.origin).where(Snapshot.id == snapshot_id))
             if origin != "recipe":
                 raise EnvError("first_admin_with_seed")

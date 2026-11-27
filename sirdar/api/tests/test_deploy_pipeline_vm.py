@@ -10,6 +10,7 @@ from sirdar_api.db.models import Deployment, Environment, EsxiVm, ProxmoxVm
 from sirdar_api.deploy import (
     do_provision,
     envfile,
+    environments,
     esxi_provision,
     pipeline,
     provision,
@@ -29,7 +30,7 @@ from .deploy_factories import (  # noqa: F401
     stop_pipeline,
     trust_fake,
 )
-from .integration_helpers import PX_TOKEN_SECRET, configure_esxi, configure_proxmox
+from .integration_helpers import PX_TOKEN_SECRET, configure, configure_esxi, configure_proxmox
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import deploy_env  # noqa: F401
 from .test_deploy_pipeline import OLD, SHA, UPDATE_KEYS, _load
@@ -85,6 +86,35 @@ async def test_step_0_builds_the_vm_then_the_host_steps_run_on_it(db, vm_env, fa
     render = next(r for r in fake_runner.requests if r.step == "render")
     env_file = base64.b64decode(render.extravars["env_file_b64"]).decode()
     assert f"STACK_IMAGE_TAG={envfile.image_tag(SHA)}\n" in env_file   # step 0's commit
+
+
+async def test_publishing_after_step_0_goes_to_the_new_vm_s_address(db, vm_env, fake_runner,
+                                                                    fake_provisioner,
+                                                                    fake_publisher, monkeypatch):
+    """The first deploy of a VM environment: step 0 gives the VM its address
+    and points the services at it, so 12-14 must use that address, not the
+    one the services had when the deployment started (0.0.0.0 on DHCP)."""
+    await configure(db)
+    env = await make_vm_environment(db, name="uat4", ip_mode="dhcp", ip_cidr="", gateway="")
+    assert {s.host_ip for s in await environments.services_of(db, env.id)} == {"0.0.0.0"}
+    async def dhcp_up(ctx) -> None:
+        """A real step 0 on DHCP: records the address it got and moves the services."""
+        await _vm_up(ctx)
+        await vmcommon.record_address(get_settings(), ProxmoxVm, ctx.env_id, None, "127.0.0.1",
+                                      host_label="the VM")
+    monkeypatch.setattr(vms, "ALLOW_LOOPBACK", True)
+
+    async def free(*args, **kwargs) -> bool:
+        return False
+    monkeypatch.setattr(vms, "address_in_use", free)
+    fake_provisioner.effects["provision"] = dhcp_up
+    fake_provisioner.outcomes["provision"] = VmOutcome(sha=SHA)
+    dep_id = await _start(db, env, sha="", publish=True)
+    dep, _, _ = await _load(dep_id)
+    assert dep.status == "succeeded", dep.error
+    assert fake_publisher.calls == ["dns", "proxy", "smoke"]
+    for ctx in fake_publisher.contexts:
+        assert {s.host_ip for s in ctx.services} == {"127.0.0.1"}
 
 
 async def test_step_0_commands_and_step_1_share_one_ssh_connection(db, vm_env, fake_runner,

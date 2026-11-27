@@ -307,7 +307,9 @@ host per service (http to the service's host and port, WebSockets, Block
 common exploits, HTTP/2, Force SSL, a Let's Encrypt certificate by HTTP
 challenge, reused while it has more than 30 days left), and a smoke test that
 asks every public URL through NPM's LAN IP (`proxy_ip`) with the public name
-as SNI and Host. A **publish** deployment runs only those three.
+as SNI and Host. A Switchyard environment's smoke test asks each public name
+as DNS resolves it instead, the way visitors reach it, since Sirdar doesn't
+know Switchyard's LAN address. A **publish** deployment runs only those three.
 Every environment that isn't production also answers on its bare base domain
 (`demo.serversherpa.com`): a `home` row (hostname = the base domain, the
 portal's host and port) gets an A record, a proxy host with its own
@@ -1030,13 +1032,14 @@ admin's name and email and how they sign in:
 - **Invite:** no password; the email carries a set-password link valid for
   4 hours.
 
-No password is ever put in an email. Step 11 "Create the first admin" runs
-right after Start services on the first deploy only; the typed password reaches
+No password is ever put in an email. Step 19 "Create the first admin" runs
+on the first deploy only, after the environment is published and its smoke
+test passed, so the email never points at a site that isn't up yet; the typed password reaches
 `serversherpa bootstrap-admin` on stdin, is redacted from every log, and is
 cleared from Sirdar once the account exists. If the environment refuses the
 details (for example a password shorter than its policy, or an email the
 portal can't sign in with), fix them in the **First admin** card on the
-Settings tab and retry from step 11. A production environment that starts
+Settings tab and retry from step 19. A production environment that starts
 empty must use SMTP, so the link doesn't sit in Mailpit. Mail goes out through
 the environment's own mail settings: on dev and UAT that's usually Mailpit.
 
