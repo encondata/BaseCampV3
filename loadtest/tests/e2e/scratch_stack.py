@@ -308,17 +308,28 @@ def pid_file(name: str) -> Path:
     return SCRATCH / f"{name}.pid"
 
 
+def _ps(field: str, pid: int) -> str | None:
+    done = subprocess.run(["ps", "-o", f"{field}=", "-p", str(pid)],
+                          capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
 def started_pid(name: str) -> int | None:
-    """The pid this script started for `name`, if that process still runs it."""
+    """The pid this script started for `name`, if that process still runs it: the same
+    pid, a command line with the process's signature, and the start time recorded beside
+    the pid (a dev worker run from the same virtualenv has the signature too, but never
+    that start time). A pid file from before start times were kept is checked by its
+    signature only."""
     path = pid_file(name)
     if not path.exists():
         return None
-    pid = int(path.read_text().strip())
-    done = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
-                          capture_output=True, text=True)
-    command = done.stdout.strip()
-    if done.returncode != 0 or not all(part in command for part in SIGNATURES[name]):
+    lines = path.read_text().splitlines()
+    pid = int(lines[0].strip())
+    command = _ps("command", pid)
+    if command is None or not all(part in command for part in SIGNATURES[name]):
         return None         # gone, or the pid now belongs to something else
+    if len(lines) > 1 and lines[1].strip() and _ps("lstart", pid) != lines[1].strip():
+        return None         # the pid was reused by another process
     return pid
 
 
@@ -330,7 +341,7 @@ def start(name: str, env: dict[str, str]) -> int:
     log = open(SCRATCH / f"{name}.log", "ab")
     proc = subprocess.Popen(PROCESSES[name], cwd=SCRATCH, env=env, stdin=subprocess.DEVNULL,
                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    pid_file(name).write_text(f"{proc.pid}\n")
+    pid_file(name).write_text(f"{proc.pid}\n{_ps('lstart', proc.pid) or ''}\n")
     say(f"  {name}: started (pid {proc.pid}, log {SCRATCH / (name + '.log')})")
     return proc.pid
 
