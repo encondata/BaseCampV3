@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from conftest import FAKE_BASE_URL
 
@@ -15,6 +16,8 @@ from loadtest.client.portal import (
     TruckInfo,
 )
 from loadtest.http import CallFailed
+from loadtest.metrics import Metrics
+from loadtest.profile import RetrySpec
 
 EMAIL = "ops@example.com"
 PASSWORD = "portal-pass-1"
@@ -418,3 +421,24 @@ async def test_close_forgets_the_email_password_and_token(fake, clock, portal):
     assert p._password == PASSWORD and p._token
     await p.close()
     assert (p._email, p._password, p._challenge, p._token) == (None, None, None, None)
+
+
+@pytest.mark.parametrize("behind", [0, 30, -90])
+async def test_clock_offset_reads_the_servers_date_header(fake, clock, portal, behind):
+    from conftest import Skewed
+    fake.clock = Skewed(clock, behind)
+    await clock.run(clock.sleep(0.25))        # a fraction of a second into a second
+    offset = await clock.run(portal().clock_offset())
+    assert abs(offset - (-behind)) <= 0.5
+
+
+async def test_clock_offset_without_a_date_header_is_none(fake, clock, portal):
+    class NoDate(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, json={})
+    p = PortalClient(base_url=FAKE_BASE_URL, metrics=Metrics(), clock=clock,
+                     retry=RetrySpec(1, (1,)), timeout=5.0, transport=NoDate())
+    assert await clock.run(p.clock_offset()) is None
+    fake.down(True)
+    assert await clock.run(portal().clock_offset()) is None
+    await p.close()

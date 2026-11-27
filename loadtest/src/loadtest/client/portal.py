@@ -16,7 +16,8 @@ import asyncio
 import contextvars
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Literal
 
 import httpx
@@ -348,6 +349,23 @@ class PortalClient:
         background = body.get("background") or {}
         return SystemStatus(bool(body.get("read_only")), int(background.get("running") or 0),
                             int(background.get("total") or 0))
+
+    async def clock_offset(self) -> float | None:
+        """Seconds the server's clock is ahead of this machine's (negative: behind), from
+        the Date header of one public read, good to about a second. None when no usable
+        Date came back; never raises (but a cancel)."""
+        try:
+            before = self.clock.now()
+            response = await self._client.get("/system/status")
+            after = self.clock.now()
+            stamp = parsedate_to_datetime(response.headers["date"])
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+        except Exception:  # noqa: BLE001 - no clock reading is never a failure
+            return None
+        # the header is the server's time cut to the whole second: on average half a
+        # second behind
+        return stamp.timestamp() + 0.5 - (before + after) / 2
 
     # ── truck calls ────────────────────────────────────────────────────
 

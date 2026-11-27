@@ -91,6 +91,7 @@ def start_entry(state: RunState) -> dict:
         "destination_site_id": state.destination_site_id,
         "route": [[lat, lng] for lat, lng in state.route],
         "started_at": state.started_at,
+        "clock_offset": state.clock_offset,
         "servers": [{"id": s.id, "serial": s.serial, "tag": s.tag} for s in state.servers.values()],
         "containers": [{"id": c.id, "name": c.name} for c in state.containers.values()],
         "trucks": [{"id": t.id, "name": t.name} for t in state.trucks.values()],
@@ -112,6 +113,7 @@ def _state_from_start(e: dict) -> RunState:
         servers={s["id"]: Server(s["id"], s["serial"], s["tag"]) for s in e["servers"]},
         containers={c["id"]: Container(c["id"], c["name"]) for c in e["containers"]},
         trucks={t["id"]: Truck(t["id"], t["name"]) for t in e["trucks"]},
+        clock_offset=e.get("clock_offset"),
     )
 
 

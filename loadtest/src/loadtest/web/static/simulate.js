@@ -868,6 +868,15 @@
     $('sim-calls').replaceChildren(head, body);
   }
 
+  // The server's clock minus this machine's, as the readiness check measured it.
+  function clockDifference(seconds) {
+    if (seconds == null) return 'Not measured; scan delay uses this machine’s clock';
+    const n = Math.round(Math.abs(seconds));
+    if (n === 0) return 'Under 1 second';
+    return `The server’s clock is ${plural(n, 'second', 'seconds')} ` +
+      `${seconds < 0 ? 'behind' : 'ahead of'} this machine’s`;
+  }
+
   function facts(r) {
     const run = r.run;
     const rows = [
@@ -879,6 +888,7 @@
       ['Ended', when(run.ended_at)],
       ['Duration', clock((Date.parse(run.ended_at) - Date.parse(run.started_at)) / 1000)],
       ['Database health', DB_HEALTH[r.db_health] || DASH],
+      ['Clock difference', clockDifference(r.clock_offset_seconds)],
     ];
     const breaks = run.interruptions || [];
     if (breaks.length) {

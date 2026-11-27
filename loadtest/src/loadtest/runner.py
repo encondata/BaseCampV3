@@ -247,7 +247,8 @@ class Runner:
             servers={r.asset_id: Server(r.asset_id, r.serial or "", tag)
                      for r, tag in zip(roster, tags)},
             containers={c.id: Container(c.id, c.name) for c in crates},
-            trucks={t.id: Truck(t.id, t.name) for t in trucks})
+            trucks={t.id: Truck(t.id, t.name) for t in trucks},
+            clock_offset=report.clock_offset)
 
     def _new_run_dir(self) -> Path:
         stamp = datetime.fromtimestamp(self.clock.now(), UTC).strftime("%Y-%m-%d_%H-%M-%SZ")

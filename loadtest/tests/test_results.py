@@ -46,7 +46,9 @@ def test_build_results_has_every_section():
     state.interruptions = [(STARTED + 60, STARTED + 120), (STARTED + 600, None)]
     out = build(state)
     assert set(out) == {"run", "verdict", "findings", "calls", "counters", "scans",
-                        "scan_delay_ms", "backlog", "series", "db_health", "redactions"}
+                        "scan_delay_ms", "backlog", "series", "db_health", "redactions",
+                        "clock_offset_seconds"}
+    assert out["clock_offset_seconds"] is None          # not measured
     run = out["run"]
     assert run["server_url"] == "http://localhost:8000"
     assert (run["move_id"], run["move_name"]) == ("move-1", "Load test move")

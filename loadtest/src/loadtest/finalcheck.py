@@ -34,6 +34,12 @@ CLOCK_SKEW_SECONDS = 60.0   # a history row this long before the run started sti
 SHOWN = 3                   # serials or names listed in a finding before "and N more"
 SERVER_KINDS = ("each", "cart", "pack", "unpack")
 TRUCK_DONE = "at_destination"
+# Scans whose `scanned_at` the server stamps itself; the others carry the device's (this
+# machine's) clock, while `processed_at` is always the server's.
+SERVER_STAMPED = ("enroll", "pack", "unpack")
+# A measured clock difference smaller than this is within the measurement's own error
+# (the server's Date header has whole seconds), so it is not applied.
+CLOCK_NOISE_SECONDS = 2.0
 STOPPED = "Run was stopped before it finished."
 
 
@@ -147,18 +153,31 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
             return await _read(portal.asset_scans(server.id))
 
     histories = await asyncio.gather(*(history(s) for s in servers))
-    since = state.started_at - CLOCK_SKEW_SECONDS
+    since = state.started_at - CLOCK_SKEW_SECONDS          # on this machine's clock
+    offset = state.clock_offset or 0.0                     # the server's clock minus ours
+    shift = offset if abs(offset) >= CLOCK_NOISE_SECONDS else 0.0
+    on_server = {spec.checkpoint for spec in stages if spec.action in SERVER_STAMPED}
     unread: list[Server] = []
     # checkpoint -> [(server, scans missing)], one entry per server short of that checkpoint
     missing: dict[str, list[tuple[Server, int]]] = {}
     sent = processed = twice = 0
     delays: list[float] = []
+
+    def scanned_here(r: AssetScan) -> float:
+        """When the scan was made, on this machine's clock."""
+        return r.scanned_at.timestamp() - (shift if r.status in on_server else 0.0)
+
+    def delay_ms(r: AssetScan) -> float:
+        """Scanned to processed; where the two clocks mix, less their difference. A
+        measured difference a little off must never make a delay negative."""
+        mixed = 0.0 if r.status in on_server else shift
+        return max(0.0, ((r.processed_at - r.scanned_at).total_seconds() - mixed) * 1000)
+
     for server, (ok, rows) in zip(servers, histories):
         try:
             ours = [r for r in rows if r.device_id.startswith(DEVICE_PREFIX)
-                    and r.scanned_at.timestamp() >= since] if ok else None
-            row_delays = [(r.processed_at - r.scanned_at).total_seconds() * 1000
-                          for r in ours or ()]
+                    and scanned_here(r) >= since] if ok else None
+            row_delays = [delay_ms(r) for r in ours or ()]
         except (AttributeError, TypeError, ValueError):   # a malformed history row
             ours = None
         if ours is None:

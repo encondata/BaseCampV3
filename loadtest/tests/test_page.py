@@ -271,3 +271,10 @@ def test_the_tools_own_internal_error_shows_its_message_in_the_notice():
     js = read("simulate.js")
     assert "toolSilent(ours && data.code === 'internal' && data.message ? data.message : OFFLINE);" in js
     assert "stateDown ? downMessage : OFFLINE" in js
+
+
+def test_run_facts_show_the_clock_difference():
+    js = read("simulate.js")
+    assert "['Clock difference', clockDifference(r.clock_offset_seconds)]," in js
+    assert "'Not measured; scan delay uses this machine’s clock'" in js
+    assert "${seconds < 0 ? 'behind' : 'ahead of'} this machine’s" in js

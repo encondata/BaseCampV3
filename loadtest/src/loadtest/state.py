@@ -60,6 +60,9 @@ class RunState:
     trucks: dict[str, Truck]
     interruptions: list[tuple[float, float | None]] = field(default_factory=list)
     finished: str | None = None  # None | "completed" | "stopped"
+    # the server's clock minus this machine's, in seconds, measured by the readiness check;
+    # None when it was not measured (or the journal predates it): then taken as 0
+    clock_offset: float | None = None
 
     def apply(self, entry: dict) -> None:
         """Fold one journal entry into the state.

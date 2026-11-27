@@ -13,6 +13,19 @@ _SERIAL_PREFIX = {"handheld": "ENROLL", "rfid_station": "RFID", "label_station":
 _NAME = {"handheld": "Enroll", "rfid_station": "RFID", "label_station": "Label"}
 
 
+class Skewed:
+    """A server clock `behind` seconds behind the runner's `clock` (negative: ahead)."""
+
+    def __init__(self, clock, behind: float) -> None:
+        self.clock, self.behind = clock, behind
+
+    def now(self) -> float:
+        return self.clock.now() - self.behind
+
+    async def sleep(self, seconds: float) -> None:
+        await self.clock.sleep(seconds)
+
+
 @pytest.fixture
 def clock():
     return FakeClock()

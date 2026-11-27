@@ -138,6 +138,20 @@ def test_truck_steps_without_ok_count_as_landed():
     assert not (truck.depart_failed or truck.arrive_failed or truck.failed_locations)
 
 
+def test_the_clock_offset_round_trips_and_older_journals_have_none(tmp_path):
+    state = make_state()
+    state.clock_offset = -31.5
+    path = tmp_path / JOURNAL_NAME
+    write(path, state, [])
+    assert load_state(path).clock_offset == -31.5
+    entry = start_entry(make_state())
+    del entry["clock_offset"]                    # a journal from before the clock check
+    j = Journal(tmp_path / "old.jsonl")
+    j.append(entry)
+    j.close()
+    assert load_state(tmp_path / "old.jsonl").clock_offset is None
+
+
 def test_location_skipped_without_through_still_loads():
     state = make_state()
     state.apply({"t": "location_skipped", "at": 1.0, "truck": "t1", "count": 4})

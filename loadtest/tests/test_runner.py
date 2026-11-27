@@ -850,6 +850,33 @@ async def test_a_call_in_flight_at_the_interruption_counts_once(fake, clock, tmp
             await asyncio.gather(*w.tickers, return_exceptions=True)
 
 
+async def test_a_server_clock_30_seconds_behind_still_passes(clock, tmp_path):
+    from conftest import Skewed
+    fake = FakeBaseCamp(Skewed(clock, 30))
+    world = World(fake, clock, tmp_path)
+    try:
+        runner = world.runner()
+        await world.ready(runner)
+        clock_line = next(c for c in runner._report.checks if c.key == "clock")
+        assert clock_line.status == "warn"
+        await runner.start()
+        world.process_scans(duplicate_on_replay=False)
+        await clock.run(runner.wait())
+        result = runner.result()
+        assert result["verdict"] == "Pass", result["findings"]
+        assert abs(result["clock_offset_seconds"] + 30) <= 0.5
+        delay = result["scan_delay_ms"]
+        assert 0 <= delay["median"] < 5_000 and delay["max"] < 60_000
+        [run_dir] = run_dirs(world)
+        assert abs(journal_entries(run_dir)[0]["clock_offset"] + 30) <= 0.5
+    finally:
+        for r in world.runners:
+            await r.shutdown()
+        for t in world.tickers:
+            t.cancel()
+        await asyncio.gather(*world.tickers, return_exceptions=True)
+
+
 class TickingClock(FakeClock):
     """Virtual time whose `now()` moves on a little with every reading, like a real one."""
 

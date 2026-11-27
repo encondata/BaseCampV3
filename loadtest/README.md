@@ -238,6 +238,9 @@ The reasons are listed under the verdict, under **Findings**.
 - **Scan delay**: for each scan, the time from when it was scanned to when
   the server finished processing it. Median, 95th percentile (95 out of 100
   scans were faster) and slowest. This is how far behind the server ran.
+  Most scans are stamped with this machine's clock and processed on the
+  server's, so the readiness check compares the two clocks and the figures
+  allow for any difference (Run facts shows it as **Clock difference**).
 - **Backlog**: the most scans that were waiting at once (peak), and how
   long the server took to finish them after the run's last step
   (catch-up time).

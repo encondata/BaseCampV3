@@ -102,6 +102,9 @@ def build_results(*, state: RunState, profile: Profile, metrics: Metrics,
         "backlog": {"peak": max(waiting, default=0), "catch_up_seconds": catch_up_seconds},
         "series": metrics.series(),
         "db_health": db_health,
+        # the server's clock minus this machine's; None: not measured, this machine's used
+        "clock_offset_seconds": (None if state.clock_offset is None
+                                 else round(state.clock_offset, 1)),
         "redactions": redact.count,
     }
     return result

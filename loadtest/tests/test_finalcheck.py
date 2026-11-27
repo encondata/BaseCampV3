@@ -401,3 +401,31 @@ async def test_extra_findings_count_toward_the_verdict(fake, clock, metrics, mov
         rule_checkpoints=m.rules, stopped_early=False, extra_findings=extra))
     assert report.verdict == "Pass with warnings"
     assert report.findings == extra
+
+
+async def test_a_server_clock_behind_the_runner_is_allowed_for(fake, clock, metrics, move):
+    """Enroll, pack and unpack rows carry the server's clock, the other scans this
+    machine's; processed_at is always the server's. With the measured difference the
+    history filter keeps every row and no scan delay is negative."""
+    from conftest import Skewed
+    fake.clock = Skewed(clock, 120)
+    m = await move()
+    unmeasured = await check(clock, metrics, m)
+    assert unmeasured.verdict == "Fail" and unmeasured.scans_missing > 0
+    m.state.clock_offset = -120.0
+    report = await check(clock, metrics, m)
+    assert report.verdict == "Pass", report.findings
+    assert report.scans_processed == SERVER_SCANS
+    assert 0 < report.delay_ms["median"] <= report.delay_ms["max"]
+    assert report.delay_ms["median"] < unmeasured.delay_ms["median"] + 120_000
+
+
+async def test_scan_delay_is_never_negative(fake, clock, metrics, move):
+    """A measured difference a little larger than the real one must not show a negative
+    delay: each corrected delay stops at zero."""
+    from conftest import Skewed
+    fake.clock = Skewed(clock, 30)
+    m = await move()
+    m.state.clock_offset = -40.0
+    report = await check(clock, metrics, m)
+    assert report.delay_ms["median"] >= 0 and report.delay_ms["p95"] >= 0

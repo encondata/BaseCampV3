@@ -44,6 +44,11 @@ HTTPS_ONLY = "This server only keeps sign-ins over https, and this address is ht
 # What a server answer that is not what the tool expects raises while it is read.
 BAD_ANSWER = (CallFailed, ValueError, KeyError, TypeError)
 NOT_UNDERSTOOD = "the server sent an answer this tool does not understand"
+CLOCKS_AGREE_SECONDS = 5      # a difference up to this passes
+CLOCKS_FAIL_SECONDS = 60      # this much or more fails: the history check allows 60 s
+CLOCKS = "This machine's clock and the server's"
+NO_SERVER_CLOCK = ("The server did not say what time it is, so the clocks were not compared. "
+                   "Scan delay figures use this machine's clock.")
 
 SIGN_IN_FAILURES = {
     "invalid_move_password": "The move password was not accepted.",
@@ -73,6 +78,7 @@ class CheckReport:
     containers: list[ContainerInfo]
     trucks: list[TruckInfo]
     route: list[tuple[float, float]]    # trip.updates points, empty when not found
+    clock_offset: float | None = None   # server minus this machine, seconds; None: unread
 
 
 def _n(count: int, word: str) -> str:
@@ -463,6 +469,22 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
                 f"{status.workers_running:,} of {status.workers_total:,} background workers "
                 "running; not read-only.")
 
+    # ── clock ──
+    label = "Clocks agree"
+    offset = await portal.clock_offset()
+    if offset is None:
+        add("clock", label, "warn", NO_SERVER_CLOCK)
+    else:
+        apart = round(abs(offset))
+        if apart <= CLOCKS_AGREE_SECONDS:
+            add("clock", label, "pass", f"{CLOCKS} agree.")
+        elif apart < CLOCKS_FAIL_SECONDS:
+            add("clock", label, "warn", f"{CLOCKS} differ by {apart:,} seconds. Scan delay "
+                                        "figures allow for it.")
+        else:
+            add("clock", label, "fail", f"{CLOCKS} differ by {apart:,} seconds. Set this "
+                                        "machine's clock, then check again.")
+
     # ── rules ──
     label = "Status rules"
     ruled, exc = await _read(portal.rule_checkpoints())
@@ -483,4 +505,5 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
     return CheckReport(
         checks=checks, can_start=all(c.status != "fail" for c in checks),
         move=None if move_error is not None else move,
-        roster=roster, containers=containers, trucks=trucks, route=route)
+        roster=roster, containers=containers, trucks=trucks, route=route,
+        clock_offset=offset)

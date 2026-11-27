@@ -19,11 +19,13 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 import re
 import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from email.utils import formatdate
 from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
 
@@ -330,6 +332,30 @@ class _FailureMiddleware:
         await reply(scope, receive, send)
 
 
+class _DateHeader:
+    """Pure ASGI, outermost: every answer carries a Date header from the fake's clock, as
+    uvicorn adds one from the real server's."""
+
+    def __init__(self, app, fake: FakeBaseCamp) -> None:
+        self.app = app
+        self.fake = fake
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def dated(message):
+            if message["type"] == "http.response.start":
+                stamp = formatdate(math.floor(self.fake.clock.now()), usegmt=True)
+                message = {**message, "headers": [
+                    *[(k, v) for k, v in message.get("headers", []) if k.lower() != b"date"],
+                    (b"date", stamp.encode())]}
+            await send(message)
+
+        await self.app(scope, receive, dated)
+
+
 class _DownTransport(httpx.AsyncBaseTransport):
     def __init__(self, fake: FakeBaseCamp) -> None:
         self._fake = fake
@@ -379,6 +405,7 @@ class FakeBaseCamp:
         self._legacy_seq = itertools.count(1001)
         self.app = FastAPI()
         self.app.add_middleware(_FailureMiddleware, fake=self)
+        self.app.add_middleware(_DateHeader, fake=self)      # outermost
         self._register_auth_routes()
         self._register_kiosk_setup_routes()
         self._register_sync_routes()

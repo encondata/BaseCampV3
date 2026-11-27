@@ -6,7 +6,7 @@ from conftest import FAKE_BASE_URL
 from test_portal_client import EMAIL, PASSWORD, portal  # noqa: F401  (the portal fixture)
 
 from loadtest.http import CallFailed
-from loadtest.preflight import NOT_CHECKED, NOTIFICATIONS_DETAIL, run_checks
+from loadtest.preflight import NO_SERVER_CLOCK, NOT_CHECKED, NOTIFICATIONS_DETAIL, run_checks
 from loadtest.profile import load_profile, profile_path
 
 MOVE_PASSWORD = "move-pass-1"
@@ -107,7 +107,7 @@ def only_failure(report, key):
 
 
 KEYS = ["portal_access", "move_password", "sign_in_cookies", "move_status", "servers",
-        "containers", "trucks", "route", "checkpoints", "server_ready", "rules",
+        "containers", "trucks", "route", "checkpoints", "server_ready", "clock", "rules",
         "notifications"]
 
 
@@ -127,6 +127,8 @@ async def test_all_good(setup):
         in got["route"].detail
     assert got["server_ready"].detail == "2 of 2 background workers running; not read-only."
     assert got["containers"].detail == "3 needed, 3 found, all empty."
+    assert got["clock"].detail == "This machine's clock and the server's agree."
+    assert abs(report.clock_offset) <= 0.5
 
 
 async def test_labels_are_exact(setup):
@@ -142,6 +144,7 @@ async def test_labels_are_exact(setup):
         "route": "Road route between the sites",
         "checkpoints": "Every checkpoint is an active status",
         "server_ready": "Workers running, not read-only",
+        "clock": "Clocks agree",
         "rules": "Status rules",
         "notifications": "Notifications"}
 
@@ -582,3 +585,38 @@ async def test_a_server_error_says_check_the_server(setup):
     assert by_key(await setup.check())["server_ready"].detail == (
         "Could not read the server's status: the server answered 500. Check the server, "
         "then check again.")
+
+
+@pytest.mark.parametrize("behind, status, detail", [
+    (4, "pass", "This machine's clock and the server's agree."),
+    (-30, "warn", "This machine's clock and the server's differ by 30 seconds. Scan delay "
+                  "figures allow for it."),
+    (120, "fail", "This machine's clock and the server's differ by 120 seconds. Set this "
+                  "machine's clock, then check again."),
+])
+async def test_clock_difference(setup, behind, status, detail):
+    from conftest import Skewed
+    setup.fake.clock = Skewed(setup.clock, behind)
+    await setup.clock.run(setup.clock.sleep(0.25))
+    report = await setup.check()
+    got = by_key(report)["clock"]
+    assert (got.status, got.detail) == (status, detail)
+    assert abs(report.clock_offset + behind) <= 0.5
+    assert report.can_start is (status != "fail")
+
+
+async def test_no_date_header_leaves_the_clocks_unchecked_but_never_fails(setup):
+    class NoDate(httpx.AsyncBaseTransport):
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def handle_async_request(self, request):
+            response = await self.inner.handle_async_request(request)
+            body = await response.aread()
+            headers = [(k, v) for k, v in response.headers.raw if k.lower() != b"date"]
+            return httpx.Response(response.status_code, headers=headers, content=body)
+
+    report = await setup.check(transport=NoDate(setup.fake.transport()))
+    got = by_key(report)["clock"]
+    assert (got.status, got.detail) == ("warn", NO_SERVER_CLOCK)
+    assert report.clock_offset is None and report.can_start
