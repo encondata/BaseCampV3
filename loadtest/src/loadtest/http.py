@@ -72,9 +72,14 @@ async def timed_call(
             if status == 401:
                 raise TokenExpired(name)
             if not _retryable(status):
-                if status < 400:
+                if status < 300:
                     metrics.record(name, ms, True, retries)
                     return response
+                if status < 400:
+                    # httpx does not follow redirects: treating one as success would hide a
+                    # wrong address behind calls that do nothing.
+                    metrics.record(name, ms, False, retries)
+                    raise CallFailed(name, status, "redirected", retries)
                 if retries > 0 and already_done is not None and already_done(response):
                     metrics.record(name, ms, True, retries)
                     return response

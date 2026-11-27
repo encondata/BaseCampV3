@@ -61,3 +61,12 @@ def test_counters_and_series_are_sorted_plain_json():
     assert m.series() == {"backlog": [[100.0, 5], [160.0, {"a": 1}]]}
     assert list(m.calls()) == ["aa", "zz"]
     json.dumps([m.calls(), m.counters(), m.series()])
+
+
+def test_sample_keeps_a_copy_of_a_dict_value():
+    m = Metrics()
+    value = {"a": {"n": 1}}
+    m.sample("backlog", 1.0, value)
+    value["a"]["n"] = 99
+    value["b"] = 2
+    assert m.series()["backlog"] == [[1.0, {"a": {"n": 1}}]]

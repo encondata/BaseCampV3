@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 
 # Calls that run in the background of a move; their failures are listed per call
@@ -41,7 +42,7 @@ class Metrics:
         self._counters[name] = self._counters.get(name, 0) + n
 
     def sample(self, series: str, at: float, value: float | dict) -> None:
-        self._series.setdefault(series, []).append([at, value])
+        self._series.setdefault(series, []).append([at, copy.deepcopy(value)])
 
     def calls(self) -> dict[str, dict]:
         out: dict[str, dict] = {}

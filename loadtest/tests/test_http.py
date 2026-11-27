@@ -1,3 +1,6 @@
+import asyncio
+import types
+
 import httpx
 import pytest
 
@@ -132,11 +135,64 @@ async def test_exception_text_never_carries_request_secrets():
         assert isinstance(r, CallFailed)
         assert "SECRET" not in str(r) and "SECRET" not in repr(r)
         assert r.__cause__ is None
+        assert r.__context__ is None
 
 
-async def test_recorded_ms_is_the_last_attempt_real_time():
-    r, m, _, _ = await call([httpx.Response(503), httpx.Response(200)])
-    assert 0 <= m.calls()["pack"]["max_ms"] < 1000
+async def test_recorded_ms_is_the_last_attempt_real_time(monkeypatch):
+    ticks = iter([0.0, 0.5, 10.0, 10.02])
+    monkeypatch.setattr("loadtest.http.time", types.SimpleNamespace(perf_counter=lambda: next(ticks)))
+    r, m, clock, _ = await call([httpx.Response(503), httpx.Response(200)])
+    assert r.status_code == 200
+    assert clock.sleeps == [1]
+    assert m.calls()["pack"]["max_ms"] == 20.0
+
+
+async def test_redirect_is_a_final_failure():
+    r, m, clock, seen = await call([httpx.Response(301, headers={"Location": "https://t/x"})])
+    assert isinstance(r, CallFailed)
+    assert (r.status, r.code, r.retries) == (301, "redirected", 0)
+    assert clock.sleeps == [] and len(seen) == 1
+    row = m.calls()["pack"]
+    assert (row["count"], row["failures"]) == (1, 1)
+
+
+async def test_cancel_during_backoff_sleep_records_nothing():
+    client, _ = make([httpx.Response(503), httpx.Response(200)])
+    clock, metrics = FakeClock(), Metrics()
+    task = asyncio.ensure_future(
+        timed_call(client, "POST", "/x", name="pack", metrics=metrics, clock=clock, retry=RETRY)
+    )
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if clock.sleeps:
+            break
+    assert clock.sleeps == [1]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.aclose()
+    assert metrics.calls() == {}
+
+
+async def test_cancel_during_request_records_nothing():
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        started.set()
+        await gate.wait()
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://t")
+    clock, metrics = FakeClock(), Metrics()
+    task = asyncio.ensure_future(
+        timed_call(client, "POST", "/x", name="pack", metrics=metrics, clock=clock, retry=RETRY)
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.aclose()
+    assert metrics.calls() == {}
 
 
 def test_error_code_parses_the_server_shape():
