@@ -37,23 +37,50 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 1. **On a test server, take a snapshot first.** In the portal, open
    Developer › Database › Testing and take a snapshot. After the run you
    can revert to it. See "What a run leaves on the server".
-2. **Make the From-To list.** Start the tool (see "Start"), open the page,
-   and use **Generate**. Pick the number of servers. The summary tells you
-   how many containers and trucks the move needs (20 servers per
-   container, 15 containers per truck).
-3. **Create the move** in the portal: Bulk Actions › Create a move in steps.
-   Upload the From-To list. Enter the container and truck counts the page
-   showed. The move needs an origin site and a destination site, and both
-   need a latitude and longitude.
-4. **Set the move In progress.** Status rules only change a move's servers
-   while the move is In progress.
-5. **Set a move password** on the move (at least 8 characters). The
-   simulated devices sign in with it.
-6. **Check the asset statuses.** Every checkpoint the run uses must be an
+2. **Create the move with Generate.** Start the tool (see "Start"), open
+   the page and choose **Generate**:
+   1. **Sign in** to the server (the same sign-in Simulate uses; one
+      sign-in serves both).
+   2. **Create the move.** Enter the move name, pick the origin and
+      destination sites from the server's sites, and enter the number of
+      servers. Containers and trucks fill in from the servers (20 servers
+      per container, 15 containers per truck); you can raise them, never
+      lower them. The move password is filled in with a random value; you
+      can change it, and the server's own rules judge it. Choose
+      **Create**.
+
+   Both sites need a latitude and longitude (the trucks need a road route
+   between them), and they must differ. The tool does what the portal's
+   Bulk Actions › Create a move in steps does, through the same server
+   routes: it makes a draft, sends a generated From-To list and waits for
+   the server to check it, adds the containers and trucks, creates the
+   move (the server's import worker does this; a big move takes a while),
+   checks that the move has every server, then sets the move password and
+   In progress. The page shows which step it is on; you can close it and
+   open it again. If a step fails, the page says how far it got.
+
+   On the server this leaves a move In progress with its move password,
+   the servers (serial `LT{TAG}00001` onward, no RFID tags), 24 servers to
+   a rack on racks named after each site's code, and the containers
+   (`CRT-{TAG}-001` onward) and trucks (`TRK-{TAG}-01` onward). `{TAG}` is
+   six random characters that keep each move's names apart.
+
+   When it finishes, Simulate opens with the new move picked and its move
+   password filled in. Nothing more is started: choose **Check server**
+   when you are ready. The page keeps that password only while it is
+   open, so copy it from the Generate form if you need it later.
+
+   The portal account needs to be an admin that can add moves, containers
+   and trucks. Creating a move is only possible while no run is in
+   progress or interrupted.
+3. **Check the asset statuses.** Every checkpoint the run uses must be an
    active asset status. On a fresh server built from the starter data,
    four are not: `in_container`, `on_truck`, `received` and `un_pack`. The
    readiness check names them. Turn them on in the portal's asset statuses
-   before the run (changing statuses needs the developer role).
+   before the run (changing statuses needs the developer role). Generate
+   does not change them, nor the status rules: checkpoints with no enabled
+   status rule are recorded but change no status, and the readiness check
+   notes them.
 
 Use the portal account you will run with. It needs to change trucks and
 read scans and the move. If it uses 2FA, keep your authenticator handy.
@@ -417,7 +444,9 @@ The tool does not clean up after itself. A run leaves:
 
 A move can only be run once: the readiness check needs servers with no RFID
 tag, empty containers and trucks that have not left. Make a new move for
-the next run, or revert the snapshot.
+the next run with Generate, or revert the snapshot. A move Generate made
+(with its servers, containers and trucks) stays on the server too; the
+snapshot revert removes it.
 
 ## Keeping the runner machine awake
 
