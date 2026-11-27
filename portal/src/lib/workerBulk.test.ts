@@ -25,3 +25,8 @@ it('maps every error code the bulk endpoints can raise', () => {
     'unsupported_file',
   ]);
 });
+
+it('says a hand-edited JSON file must be a list of rows', () => {
+  expect(WORKER_BULK_ERRORS.invalid_json)
+    .toBe('That JSON file could not be read — it must be a list of rows.');
+});

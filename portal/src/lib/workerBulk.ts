@@ -49,7 +49,7 @@ export const WORKER_BULK_ERRORS: Record<string, string> = {
   unknown_columns: 'The file has columns that are not in the template.',
   too_many_rows: 'Too many rows — the limit is 1,000 per upload.',
   file_too_large: 'File too large — the limit is 5 MB.',
-  invalid_json: 'The server could not read the rows — preview again.',
+  invalid_json: 'That JSON file could not be read — it must be a list of rows.',
   invalid_csv: 'That CSV could not be read.',
   invalid_xlsx: 'That spreadsheet could not be read.',
   unsupported_file: 'Unsupported file type — use .csv, .xlsx or .json.',
