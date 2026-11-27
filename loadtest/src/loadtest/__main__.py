@@ -23,6 +23,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="address to listen on (default 0.0.0.0, every network)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"port to listen on (default {DEFAULT_PORT})")
+    parser.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                        help="another name the page may be opened by, such as a reverse "
+                             "proxy's (repeatable)")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR,
                         help="folder for run results (default: the runs folder next to the "
                              "tool)")
@@ -37,6 +40,32 @@ def lan_address() -> str:
             return s.getsockname()[0]
     except OSError:
         return "127.0.0.1"
+
+
+WILDCARD = ("0.0.0.0", "::", "")
+
+
+def is_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    import ipaddress
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def allowed_hosts(host: str, lan: str, extra: list[str]) -> list[str]:
+    """Every name the page may be opened by: this machine's names and addresses."""
+    names = ["localhost", "127.0.0.1", "::1", lan]
+    hostname = socket.gethostname().lower()
+    if hostname:
+        base = hostname.removesuffix(".local")
+        names += [base, base + ".local", hostname]
+    if host not in WILDCARD:
+        names.append(host)
+    names += extra
+    return list(dict.fromkeys(n for n in names if n))
 
 
 def bind(host: str, port: int) -> socket.socket:
@@ -60,6 +89,7 @@ def main(argv: list[str] | None = None) -> None:
     sock = bind(args.host, args.port)
 
     import logging
+    import secrets
 
     import uvicorn
 
@@ -70,10 +100,14 @@ def main(argv: list[str] | None = None) -> None:
     runs_dir.mkdir(parents=True, exist_ok=True)
     runner = Runner(runs_dir=runs_dir,
                     router_url=os.environ.get("LOADTEST_ROUTER_URL") or DEFAULT_ROUTER_URL)
-    app = create_app(runner)
+    lan = lan_address()
+    access_key = None if is_loopback(args.host) else secrets.token_urlsafe(24)
+    app = create_app(runner, allowed_hosts=allowed_hosts(args.host, lan, args.allow_host),
+                     access_key=access_key)
 
     class _PathOnly(logging.Filter):
-        """The access log shows the method and path, never a query string."""
+        """The access log shows the method and path, never a query string (the printed
+        link's `?key=` would otherwise be logged on its first use)."""
 
         def filter(self, record: logging.LogRecord) -> bool:
             if isinstance(record.args, tuple) and len(record.args) >= 3:
@@ -99,9 +133,13 @@ def main(argv: list[str] | None = None) -> None:
     server = _Server(config)
     logging.getLogger("uvicorn.access").addFilter(_PathOnly())
 
-    shown = lan_address() if args.host in ("0.0.0.0", "::") else args.host
-    print(f"Move load test: http://{shown}:{args.port}", flush=True)
-    print(f"On this machine: http://localhost:{args.port}", flush=True)
+    if access_key is not None:
+        shown = lan if args.host in WILDCARD else args.host
+        if ":" in shown:
+            shown = f"[{shown}]"
+        print(f"Move load test: http://{shown}:{args.port}/?key={access_key}", flush=True)
+    if args.host in WILDCARD or is_loopback(args.host):
+        print(f"On this machine: http://localhost:{args.port}", flush=True)
     server.run(sockets=[sock])
 
 

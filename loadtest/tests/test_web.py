@@ -94,7 +94,7 @@ def stub():
 @pytest.fixture
 async def client(stub):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(stub)),
-                                 base_url="http://tool.test") as c:
+                                 base_url="http://localhost") as c:
         yield c
 
 
@@ -265,6 +265,157 @@ async def test_shutdown_hook_interrupts_the_run(stub):
     assert stub.shut_down
 
 
+# ── who may reach the tool ─────────────────────────────────────────────
+
+KEY = "k3y-" + "A" * 28
+LAN = ("192.168.1.50", 12345)
+
+
+def tool(stub, *, client=("127.0.0.1", 123), base="http://localhost:8795", **kwargs):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(create_app(stub, **kwargs),
+                                                           client=client),
+                             base_url=base)
+
+
+async def test_a_wrong_host_is_refused(stub):
+    async with tool(stub, base="http://evil.example:8795") as c:
+        for got in (await c.get("/"), await c.get("/api/state"),
+                    await c.post("/api/start", headers=PAGE)):
+            assert got.status_code == 400
+            assert got.text == ("This address is not allowed. Use the link printed when the "
+                                "tool started.")
+    assert stub.calls == []
+
+
+@pytest.mark.parametrize("base", ["http://localhost:8795", "http://LOCALHOST",
+                                  "http://127.0.0.1:1", "http://[::1]:8795",
+                                  "http://tool.lan:8795", "http://TOOL.lan"])
+async def test_allowed_hosts_ignore_case_and_port(stub, base):
+    async with tool(stub, base=base, allowed_hosts=["tool.lan"]) as c:
+        assert (await c.get("/api/state")).status_code == 200
+
+
+async def test_only_localhost_names_by_default(stub):
+    async with tool(stub, base="http://tool.lan") as c:
+        assert (await c.get("/api/state")).status_code == 400
+
+
+async def test_a_lan_client_needs_the_key(stub):
+    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
+                    allowed_hosts=["192.168.1.10"], access_key=KEY) as c:
+        need = "Open the link printed when the tool started. It includes a key."
+        for path in ("/api/state", "/api/events", "/api/result"):
+            got = await c.get(path)
+            assert got.status_code == 403
+            assert got.json() == {"code": "forbidden", "message": need}
+        for path in ("/", "/static/index.html"):
+            got = await c.get(path)
+            assert got.status_code == 403
+            assert got.headers["content-type"].startswith("text/html")
+            assert need in got.text
+        got = await c.post("/api/start", headers=PAGE)
+        assert got.status_code == 403
+        assert stub.calls == []
+
+
+async def test_a_wrong_key_sets_no_cookie(stub):
+    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
+                    allowed_hosts=["192.168.1.10"], access_key=KEY) as c:
+        for wrong in ("nope", KEY[:-1], "é" * 5, ""):
+            got = await c.get("/", params={"key": wrong})
+            assert got.status_code == 403
+            assert "set-cookie" not in got.headers
+        c.cookies.set("loadtest_key", "nope")
+        assert (await c.get("/api/state")).status_code == 403
+
+
+async def test_the_key_link_sets_a_cookie_and_clears_the_address(stub, capsys, caplog):
+    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
+                    allowed_hosts=["192.168.1.10"], access_key=KEY) as c:
+        got = await c.get("/", params={"key": KEY})
+        assert got.status_code == 303 and got.headers["location"] == "/"
+        cookie = got.headers["set-cookie"]
+        assert cookie.startswith(f"loadtest_key={KEY};")
+        parts = {p.strip().lower() for p in cookie.split(";")}
+        assert {"httponly", "samesite=strict", "path=/"} <= parts
+        assert not any(p.startswith(("secure", "max-age", "expires")) for p in parts)
+        bodies = [got.text]
+        got = await c.get("/", params={"key": KEY}, follow_redirects=True)
+        assert got.status_code == 200 and got.url.path == "/" and not got.url.query
+        bodies.append(got.text)
+        for path in ("/api/state", "/static/index.html", "/api/result"):
+            got = await c.get(path)
+            assert got.status_code in (200, 404) and got.status_code != 403
+            bodies.append(got.text)
+        got = await c.post("/api/start", headers=PAGE)
+        assert got.status_code == 202
+    assert all(KEY not in b for b in bodies)
+    out = capsys.readouterr()
+    assert KEY not in out.out + out.err + caplog.text
+
+
+async def test_the_key_cookie_opens_the_event_stream(stub):
+    """Read at ASGI level: the stream never ends on its own."""
+    app = create_app(stub, allowed_hosts=["192.168.1.10"], access_key=KEY)
+    sent: list[dict] = []
+    started = asyncio.Event()
+    disconnect = asyncio.Event()
+
+    async def receive():
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            started.set()
+
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+             "method": "GET", "scheme": "http", "path": "/api/events",
+             "raw_path": b"/api/events", "query_string": b"", "root_path": "",
+             "headers": [(b"host", b"192.168.1.10:8795"),
+                         (b"cookie", f"loadtest_key={KEY}".encode())],
+             "client": LAN, "server": ("192.168.1.10", 8795)}
+    task = asyncio.create_task(app(scope, receive, send))
+    await asyncio.wait_for(started.wait(), 2)
+    disconnect.set()
+    await asyncio.wait_for(task, 2)
+    assert sent[0]["status"] == 200
+
+
+async def test_this_machine_needs_no_key(stub):
+    for client in (("127.0.0.1", 5), ("::1", 5)):
+        async with tool(stub, client=client, access_key=KEY) as c:
+            assert (await c.get("/")).status_code == 200
+            assert (await c.get("/api/state")).status_code == 200
+            assert (await c.post("/api/start", headers=PAGE)).status_code == 202
+            assert (await c.post("/api/start")).status_code == 403     # header still needed
+
+
+async def test_a_foreign_origin_is_refused(stub):
+    async with tool(stub) as c:
+        got = await c.post("/api/start", headers={**PAGE, "Origin": "http://evil.example"})
+        assert got.status_code == 403
+        assert got.json() == {"code": "forbidden",
+                              "message": "This request did not come from the load test page."}
+        for origin in ("http://localhost:9999", "null", "http://localhost.evil.example:8795"):
+            got = await c.post("/api/start", headers={**PAGE, "Origin": origin})
+            assert got.status_code == 403
+        assert (await c.get("/api/state",
+                            headers={"Origin": "http://evil.example"})).status_code == 403
+        assert stub.calls == []
+        got = await c.post("/api/start", headers={**PAGE, "Origin": "http://localhost:8795"})
+        assert got.status_code == 202
+        got = await c.post("/api/start", headers={**PAGE, "Origin": "http://LocalHost:8795"})
+        assert got.status_code == 202
+
+
+async def test_default_port_origin_matches_a_host_without_port(stub):
+    async with tool(stub, base="http://localhost") as c:
+        got = await c.post("/api/start", headers={**PAGE, "Origin": "http://localhost"})
+        assert got.status_code == 202
+
+
 # ── the event stream ───────────────────────────────────────────────────
 
 
@@ -427,8 +578,8 @@ async def test_events_route_headers(stub):
 
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
              "method": "GET", "scheme": "http", "path": "/api/events", "raw_path": b"/api/events",
-             "query_string": b"", "root_path": "", "headers": [(b"host", b"tool.test")],
-             "client": ("127.0.0.1", 1), "server": ("tool.test", 80)}
+             "query_string": b"", "root_path": "", "headers": [(b"host", b"localhost:8795")],
+             "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 8795)}
     task = asyncio.create_task(app(scope, receive, send))
     await asyncio.wait_for(started.wait(), 2)
     disconnect.set()
@@ -466,7 +617,7 @@ async def test_a_whole_run_through_the_routes(fake, clock, tmp_path):
     ticker = None
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(runner)),
-                                     base_url="http://tool.test") as c:
+                                     base_url="http://localhost") as c:
             state = (await c.get("/api/state")).json()
             assert state["phase"] == "idle"
             assert (await c.get("/api/result")).status_code == 404
@@ -545,3 +696,36 @@ def test_port_in_use_is_one_line(tmp_path):
     out = (got.stdout + got.stderr).strip()
     assert len(out.splitlines()) == 1 and str(port) in out
     assert "Traceback" not in out
+
+
+def test_allowed_names_and_loopback(monkeypatch):
+    from loadtest import __main__ as cli
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "Jimmys-Mac.local")
+    names = cli.allowed_hosts("0.0.0.0", "192.168.1.10", ["proxy.example"])
+    assert set(names) == {"localhost", "127.0.0.1", "::1", "192.168.1.10", "jimmys-mac",
+                          "jimmys-mac.local", "proxy.example"}
+    assert "10.0.0.5" in cli.allowed_hosts("10.0.0.5", "192.168.1.10", [])
+    assert "0.0.0.0" not in names
+    assert all(cli.is_loopback(h) for h in ("127.0.0.1", "::1", "localhost", "[::1]"))
+    assert not any(cli.is_loopback(h) for h in ("0.0.0.0", "::", "192.168.1.10", "tool.lan"))
+
+
+def test_loopback_start_prints_one_line_and_no_key(tmp_path):
+    import signal
+    import socket
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    proc = subprocess.Popen([sys.executable, "-m", "loadtest", "--host", "127.0.0.1",
+                             "--port", str(port), "--runs-dir", str(tmp_path / "runs")],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        first = proc.stdout.readline()
+        assert first == f"On this machine: http://localhost:{port}\n"
+    finally:
+        proc.send_signal(signal.SIGINT)
+        out, err = proc.communicate(timeout=20)
+    assert "key" not in first + out
+    assert "Move load test" not in out
+    assert (tmp_path / "runs").is_dir()

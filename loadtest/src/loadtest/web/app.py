@@ -7,6 +7,8 @@ No run logic lives here.
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import sys
 import time
@@ -16,12 +18,21 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import cookie_parser
 
 from ..events import FeedLine
 from ..runner import ACTIVE, RunnerError
@@ -136,6 +147,23 @@ def _log_internal(scope: dict, exc: BaseException) -> None:
           f"{type(exc).__name__}\n{frames}", file=sys.stderr, end="")
 
 
+def _host_port(host: str, port: int | None, scheme: str) -> tuple[str, int | None]:
+    return host, port if port is not None else {"http": 80, "https": 443}.get(scheme)
+
+
+def _same_origin(origin: str, host_header: str) -> bool:
+    """The Origin's host and port equal the Host header's (default ports filled in)."""
+    try:
+        o = urlsplit(origin.strip().lower())
+        h = urlsplit("http://" + host_header.strip().lower())
+        if not o.hostname or not h.hostname:
+            return False
+        return (_host_port(o.hostname, o.port, o.scheme)
+                == _host_port(h.hostname, h.port, "http"))
+    except ValueError:
+        return False
+
+
 class _Guard:
     """Every POST /api/* must carry `X-Loadtest: 1` (a cross-site page cannot add it
     without a CORS preflight, and the app answers none). Any unexpected exception becomes
@@ -148,8 +176,14 @@ class _Guard:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        headers = dict(scope["headers"])
+        if scope["path"].startswith("/api/") and b"origin" in headers:
+            if not _same_origin(headers[b"origin"].decode("latin-1"),
+                                headers.get(b"host", b"").decode("latin-1")):
+                await JSONResponse(FORBIDDEN, status_code=403)(scope, receive, send)
+                return
         if scope["method"] == "POST" and scope["path"].startswith("/api/"):
-            if dict(scope["headers"]).get(PAGE_HEADER) != b"1":
+            if headers.get(PAGE_HEADER) != b"1":
                 await JSONResponse(FORBIDDEN, status_code=403)(scope, receive, send)
                 return
         started = False
@@ -166,6 +200,80 @@ class _Guard:
             _log_internal(scope, exc)
             if not started:
                 await JSONResponse(INTERNAL, status_code=500)(scope, receive, send)
+
+
+LOCAL_NAMES = ("localhost", "127.0.0.1", "::1")
+KEY_COOKIE = "loadtest_key"
+BAD_HOST = "This address is not allowed. Use the link printed when the tool started."
+NEED_KEY = "Open the link printed when the tool started. It includes a key."
+NEED_KEY_PAGE = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+                 "<title>Move load test</title></head><body><p>" + NEED_KEY + "</p></body></html>")
+
+
+def _host_name(value: str) -> str:
+    """The host part of a Host header or a name, lower case, without port or brackets."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value[1:value.find("]")] if "]" in value else value[1:]
+    if value.count(":") == 1:
+        return value.split(":", 1)[0]
+    return value
+
+
+def _is_loopback(host: str | None) -> bool:
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
+
+
+class _Access:
+    """Outermost: the Host header must name this machine (stops DNS rebinding), and when
+    an access key is set, a client that is not this machine needs the key's cookie. The
+    printed link `/?key=<key>` sets that cookie and redirects to `/`."""
+
+    def __init__(self, app, *, allowed_hosts: set[str], access_key: str | None) -> None:
+        self.app = app
+        self.allowed = allowed_hosts
+        self.key = access_key
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope["headers"])
+        host = _host_name(headers.get(b"host", b"").decode("latin-1"))
+        if not host or host not in self.allowed:
+            await PlainTextResponse(BAD_HOST, status_code=400)(scope, receive, send)
+            return
+        if self.key is None:
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"]
+        if scope["method"] == "GET" and path == "/":
+            given = parse_qs(scope.get("query_string", b"").decode("latin-1")).get("key")
+            if given and self._matches(given[-1]):
+                response = RedirectResponse("/", status_code=303)
+                response.set_cookie(KEY_COOKIE, self.key, path="/", httponly=True,
+                                    samesite="strict")
+                await response(scope, receive, send)
+                return
+        client = scope.get("client")
+        cookie = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get(KEY_COOKIE)
+        if _is_loopback(client[0] if client else None) or (cookie and self._matches(cookie)):
+            await self.app(scope, receive, send)
+            return
+        if path.startswith("/api/"):
+            refused = JSONResponse({"code": "forbidden", "message": NEED_KEY}, status_code=403)
+        else:
+            refused = HTMLResponse(NEED_KEY_PAGE, status_code=403)
+        refused.headers.update(NO_STORE)
+        await refused(scope, receive, send)
+
+    def _matches(self, given: str) -> bool:
+        return hmac.compare_digest(given.encode("utf-8", "replace"), self.key.encode("utf-8"))
 
 
 def _field_names(exc: RequestValidationError) -> list[str]:
@@ -188,8 +296,12 @@ class _NoStoreFiles(StaticFiles):
 # ── the app ────────────────────────────────────────────────────────────
 
 
-def create_app(runner) -> FastAPI:
+def create_app(runner, *, allowed_hosts: list[str] | None = None,
+               access_key: str | None = None) -> FastAPI:
+    """`allowed_hosts`: Host names accepted besides this machine's localhost names.
+    `access_key`: when set, clients other than this machine need it (see `_Access`)."""
     stopping = asyncio.Event()
+    allowed = {_host_name(h) for h in (*LOCAL_NAMES, *(allowed_hosts or ()))}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -203,6 +315,7 @@ def create_app(runner) -> FastAPI:
                   openapi_url=None)
     app.state.stopping = stopping
     app.add_middleware(_Guard)
+    app.add_middleware(_Access, allowed_hosts=allowed, access_key=access_key)  # outermost
 
     @app.exception_handler(RunnerError)
     async def runner_error(request: Request, exc: RunnerError) -> JSONResponse:
