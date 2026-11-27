@@ -70,3 +70,17 @@ def test_sample_keeps_a_copy_of_a_dict_value():
     value["a"]["n"] = 99
     value["b"] = 2
     assert m.series()["backlog"] == [[1.0, {"a": {"n": 1}}]]
+
+
+def test_untimed_failure_counts_without_a_latency_sample():
+    m = Metrics()
+    m.record("scans", 40, True)
+    m.record("scans", None, False)
+    row = m.calls()["scans"]
+    assert (row["count"], row["failures"]) == (2, 1)
+    assert (row["median_ms"], row["p95_ms"], row["max_ms"]) == (40.0, 40.0, 40.0)
+    m.record("enroll", None, False)
+    row = m.calls()["enroll"]
+    assert (row["count"], row["failures"]) == (1, 1)
+    assert (row["median_ms"], row["p95_ms"], row["max_ms"]) == (None, None, None)
+    assert m.failed_calls() == 2

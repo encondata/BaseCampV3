@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -405,3 +406,184 @@ async def test_move_inactive_mid_run_returns_short_count(fake, clock, device, me
     fake.moves[move_id]["status"] = "in_progress"       # a later sign-in that works clears it
     assert await clock.run(d.send_scans([scan])) == 1
     assert d.last_sign_in_error is None
+
+
+# ── follow-up 2 ───────────────────────────────────────────────────────
+
+
+async def test_retries_before_a_401_carry_into_the_redo(fake, clock, device, metrics):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="un_pack")
+    asset = assets_of(fake, move_id)[0]
+    crate = next(c for c in fake.containers.values() if c["initiative_id"] == move_id)
+    fake.container_of[asset["id"]] = crate["id"]
+    path = r"/kiosk/containers/.*/assets"
+    fake.fail("POST", path, after_effect=True)          # lands, answer lost
+    fake.fail("POST", path, status=401)                   # then the token is refused
+    scan = make_scan(clock, move_id, site_id, asset["serial_number"], "un_pack", "barcode")
+    assert await clock.run(d.unpack(container_id=crate["id"], asset_id=asset["id"],
+                                    scan=scan)) is True
+    assert count(fake, "POST", "/auth/refresh") == 1
+    assert count(fake, "POST", f"/kiosk/containers/{crate['id']}/assets") == 3
+    row = metrics.calls()["unpack"]
+    assert (row["count"], row["retries"], row["failures"]) == (1, 1, 0)
+    assert d.retried_scan_ids == {scan.client_scan_id}
+    assert metrics.counters()["scans_retried"] == 1
+
+
+async def test_plain_401_redo_is_not_a_retry(fake, clock, device, metrics):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    fake.fail("POST", r"/kiosk/scans", status=401)
+    scan = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
+    assert await clock.run(d.send_scans([scan])) == 1
+    assert d.retried_scan_ids == set()
+    assert metrics.calls()["scans"]["retries"] == 0
+
+
+async def test_station_without_key_sends_nothing(fake, clock, device, metrics):
+    d = device("rfid_station")
+    move_id = fake.add_move(servers=1, containers=1, trucks=1)
+    site_id = fake.moves[move_id]["origin_site_id"]
+    await clock.run(d.sign_in(PASSWORD))
+    fake.fail("POST", r"/kiosk/station-key", status=409)
+    try:
+        await clock.run(d.setup(initiative_id=move_id, site_id=site_id,
+                                scan_status="rfid_1_cage_exit"))
+    except CallFailed as exc:
+        assert exc.call == "station-key"
+    else:
+        raise AssertionError("expected CallFailed")
+    assert not d.has_key
+    tags = [make_scan(clock, move_id, site_id, f"{i:024d}", "rfid_1_cage_exit")
+            for i in range(3)]
+    assert await clock.run(d.send_scans(tags)) == 0
+    assert metrics.counters()["scans_not_sent"] == 3
+    assert ("POST", "/kiosk/scans") not in fake.requests
+    assert ("POST", "/kiosk/station/scans") not in fake.requests
+
+
+async def test_station_heartbeat_carries_the_reader_snapshot(fake, clock, device):
+    d = device("rfid_station", n=3)
+    await ready(fake, clock, d, status="rfid_1_cage_exit")
+    await clock.run(d.heartbeat())
+    reader = fake.fixed_readers["LOADTEST-READER-3"]
+    assert (reader["make"], reader["model"], reader["ip"]) == ("Zebra", "FX9600", "10.254.0.3")
+    assert (reader["antennas_connected"], reader["antennas_total"]) == (4, 4)
+    assert reader["reading"] is True and reader["reachable"] is True
+    assert reader["tags_24h"] == 0 and reader["via_kiosk_serial"] == d.serial
+    assert fake.dropped_reader_reports == 0
+
+
+async def test_fake_drops_a_bad_reader_report_without_failing_the_beat(fake, clock, device):
+    d = device("rfid_station")
+    await ready(fake, clock, d, status="rfid_1_cage_exit")
+    r = await clock.run(d._client.post(
+        "/kiosk/station/heartbeat", headers=d._station(),
+        json={"serial": d.serial, "reader": {"serial": "LOADTEST-READER-1", "ip": "nope"}}))
+    assert r.status_code == 200
+    assert fake.fixed_readers == {} and fake.dropped_reader_reports == 1
+
+
+async def test_failed_sync_download_raises_call_failed(fake, clock, device):
+    d = device("handheld")
+    move_id, _ = await ready(fake, clock, d)
+    fake.fail("GET", r"/kiosk/sync/trucks", status=404)
+    try:
+        await clock.run(d.sync(move_id))
+    except CallFailed as exc:
+        assert (exc.call, exc.status) == ("sync", 404)
+    else:
+        raise AssertionError("expected CallFailed")
+    assert ("GET", "/kiosk/sync/label-templates") not in fake.requests
+
+
+async def test_failed_sign_in_adds_no_latency_sample(fake, clock, device, metrics):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    await clock.run(clock.sleep(25 * 3600))
+    fake.down(True)
+    scan = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
+    assert await clock.run(d.send_scans([scan])) == 0
+    row = metrics.calls()["scans"]
+    assert (row["count"], row["failures"], row["median_ms"]) == (1, 1, None)
+
+
+async def test_two_calls_racing_an_expiring_token_refresh_once(fake, clock, device):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    await clock.run(clock.sleep(20 * 60))
+    a, b = (make_scan(clock, move_id, site_id, f"SN{i}", "qa", "barcode") for i in range(2))
+
+    async def both():
+        return await asyncio.gather(d.send_scans([a]), d.send_scans([b]))
+
+    assert await clock.run(both()) == [1, 1]
+    assert count(fake, "POST", "/auth/refresh") == 1
+    assert count(fake, "POST", "/kiosk/move-login") == 1
+
+
+async def test_refresh_margin_is_sixty_seconds(fake, clock, device):
+    fake.token_seconds = 900
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    await clock.run(clock.sleep(900 - 61))            # 61 s left: no refresh
+    assert await clock.run(d.send_scans([make_scan(clock, move_id, site_id, "SN1", "qa",
+                                                   "barcode")])) == 1
+    assert count(fake, "POST", "/auth/refresh") == 0
+    await clock.run(clock.sleep(2))                   # 59 s left: refresh first
+    assert await clock.run(d.send_scans([make_scan(clock, move_id, site_id, "SN2", "qa",
+                                                   "barcode")])) == 1
+    assert count(fake, "POST", "/auth/refresh") == 1
+    assert fake.requests[-2:] == [("POST", "/auth/refresh"), ("POST", "/kiosk/scans")]
+
+
+async def test_process_scans_replay_duplicates_or_not(fake, clock, device):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    serials = [a["serial_number"] for a in assets_of(fake, move_id)]
+    first = make_scan(clock, move_id, site_id, serials[0], "qa", "barcode")
+    second = make_scan(clock, move_id, site_id, serials[1], "qa", "barcode")
+    for scan, duplicate in ((first, True), (second, False)):
+        assert await clock.run(d.send_scans([scan])) == 1
+        assert await clock.run(d.send_scans([scan])) == 1      # raw row still there: no-op
+        assert sum(r["client_scan_id"] == str(scan.client_scan_id) for r in fake.raw_scans) == 1
+        fake.process_scans(duplicate_on_replay=duplicate)
+        assert await clock.run(d.send_scans([scan])) == 1      # replay after processing
+        fake.process_scans(duplicate_on_replay=duplicate)
+    rows = [p["client_scan_id"] for p in fake.processed_scans]
+    assert rows.count(str(first.client_scan_id)) == 2
+    assert rows.count(str(second.client_scan_id)) == 1
+    assert fake.assets[fake.processed_scans[0]["asset_id"]]["asset_status"] == "qa"
+
+
+async def test_person_scans_ignore_move_inactive_station_scans_do_not(fake, clock, device):
+    hand, station = device("handheld"), device("rfid_station")
+    move_id, site_id = await ready(fake, clock, hand, status="qa")
+    await clock.run(station.sign_in(PASSWORD))
+    await clock.run(station.setup(initiative_id=move_id, site_id=site_id,
+                                  scan_status="rfid_1_cage_exit"))
+    fake.moves[move_id]["status"] = "completed"
+    assert await clock.run(hand.send_scans([make_scan(clock, move_id, site_id, "SN1", "qa",
+                                                      "barcode")])) == 1
+    tag = make_scan(clock, move_id, site_id, "0" * 24, "rfid_1_cage_exit")
+    r = await clock.run(station._client.post(
+        "/kiosk/station/scans", headers=station._station(),
+        json={"serial": station.serial, "scans": [station._scan_row(tag)]}))
+    assert r.json()["rejected"] == [{"client_scan_id": str(tag.client_scan_id),
+                                     "code": "move_inactive"}]
+
+
+async def test_off_move_kept_for_rfid_station_only(fake, clock, device):
+    rfid, label = device("rfid_station"), device("label_station")
+    move_id, site_id = await ready(fake, clock, rfid, status="rfid_1_cage_exit")
+    await clock.run(label.sign_in(PASSWORD))
+    await clock.run(label.setup(initiative_id=move_id, site_id=site_id, scan_status="labeled"))
+    for d, value, kind in ((rfid, "1" * 24, "rfid"), (label, "SN-OFF", "barcode")):
+        row = {**d._scan_row(make_scan(clock, move_id, site_id, value, "labeled", kind)),
+               "off_move": True}
+        r = await clock.run(d._client.post("/kiosk/station/scans", headers=d._station(),
+                                           json={"serial": d.serial, "scans": [row]}))
+        assert len(r.json()["accepted"]) == 1
+    by_value = {r["scanned_value"]: r["off_move"] for r in fake.raw_scans}
+    assert by_value == {"1" * 24: True, "SN-OFF": False}

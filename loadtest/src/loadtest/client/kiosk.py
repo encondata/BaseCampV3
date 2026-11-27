@@ -16,7 +16,7 @@ import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
@@ -174,7 +174,7 @@ class KioskDevice:
                 metrics=self.metrics, clock=self.clock, retry=self.retry,
                 headers=self._bearer(), json=self._heartbeat_body(sign_in=True))
         except TokenExpired:
-            self.metrics.record("heartbeat", 0.0, False)
+            self.metrics.record("heartbeat", None, False)
             raise CallFailed("heartbeat", 401, None, 0) from None
 
     def _take_session(self, response: httpx.Response) -> None:
@@ -193,7 +193,7 @@ class KioskDevice:
                 metrics=self.metrics, clock=self.clock, retry=NO_RETRY,
                 params={"client": "kiosk"})
         except TokenExpired:
-            self.metrics.record("refresh", 0.0, False)
+            self.metrics.record("refresh", None, False)
         except CallFailed:
             pass
         else:
@@ -254,36 +254,46 @@ class KioskDevice:
         try:
             await self._ensure_token()
         except CallFailed as exc:
-            self.metrics.record(name, 0.0, False)
+            self.metrics.record(name, None, False)
             raise CallFailed(name, exc.status, exc.code, 0) from None
         used = self._token
         try:
             return await self._timed(method, url, name=name, headers=self._bearer(),
                                      already_done=already_done, **kwargs)
-        except TokenExpired:
-            pass
+        except TokenExpired as exc:
+            # every request before the 401 was a retryable failure that may have landed
+            landed = exc.attempts - 1
         try:
             await self._renew_after_401(used)
         except CallFailed as exc:
-            self.metrics.record(name, 0.0, False)
-            raise CallFailed(name, exc.status, exc.code, 0) from None
-        try:
-            return await self._timed(method, url, name=name, headers=self._bearer(),
-                                     already_done=already_done, **kwargs)
-        except TokenExpired as exc:
-            self.metrics.record(name, 0.0, False)
-            failed = CallFailed(name, 401, None, 0)
-            failed.attempts = exc.attempts
+            self.metrics.record(name, None, False, landed)
+            failed = CallFailed(name, exc.status, exc.code, landed)
+            failed.attempts = landed
             raise failed from None
+        try:
+            response, sent = await self._timed(
+                method, url, name=name, headers=self._bearer(), already_done=already_done,
+                prior_attempts=landed, **kwargs)
+        except CallFailed as exc:
+            exc.attempts += landed
+            raise
+        except TokenExpired as exc:
+            landed += exc.attempts - 1
+            self.metrics.record(name, None, False, landed)
+            failed = CallFailed(name, 401, None, landed)
+            failed.attempts = landed
+            raise failed from None
+        return response, sent + landed
 
     async def _station_call(self, url: str, *, name: str, json: dict) -> tuple[httpx.Response, int]:
         """A station-key call. A 401 means the key is gone; it is a plain failure."""
         try:
             return await self._timed("POST", url, name=name, headers=self._station(), json=json)
         except TokenExpired as exc:
-            self.metrics.record(name, 0.0, False)
-            failed = CallFailed(name, 401, "station_key_invalid", 0)
-            failed.attempts = exc.attempts
+            landed = exc.attempts - 1
+            self.metrics.record(name, None, False, landed)
+            failed = CallFailed(name, 401, "station_key_invalid", landed)
+            failed.attempts = landed
             raise failed from None
 
     # ── setup and sync ─────────────────────────────────────────────────
@@ -301,10 +311,9 @@ class KioskDevice:
         body: dict = {"serial": self.serial, "initiative_id": initiative_id,
                       "site_id": site_id, "scan_status": scan_status}
         if self.kind == "rfid_station":
-            n = _number(self.serial)
+            ip, serial, model = self._reader()
             body["station_type"] = "rfid"
-            body["reader"] = {"ip": f"10.254.0.{n}", "serial": f"LOADTEST-READER-{n}",
-                              "model": "FX9600", "versions": {}}
+            body["reader"] = {"ip": ip, "serial": serial, "model": model, "versions": {}}
         elif self.kind == "label_station":
             body["station_type"] = "label"
         response, _ = await self._bearer_call("POST", "/kiosk/setup", name="setup", json=body)
@@ -313,27 +322,55 @@ class KioskDevice:
         self.site_id = site_id
         self.scan_status = answer.get("scan_status") or scan_status
         if self.is_station:
+            # a failed key call raises: a station never falls back to the person routes
+            self._key = None
             response, _ = await self._bearer_call("POST", "/kiosk/station-key",
                                                   name="station-key",
                                                   json={"serial": self.serial})
             self._key = response.json()["key"]
 
+    def _reader(self) -> tuple[str, str, str]:
+        """This RFID Station's made-up FX9600: ip, serial, model."""
+        n = _number(self.serial)
+        return f"10.254.0.{n}", f"LOADTEST-READER-{n}", "FX9600"
+
+    def _reader_snapshot(self) -> dict:
+        """The reader report the edge attaches to the station heartbeat
+        (kiosk_laptop edge rfid/reader_report.py), with fixed values: reachable,
+        reading, four of four antennas connected. Fields the edge leaves out when
+        the reader does not report them (name, firmware, mac, uptime) are left out."""
+        ip, serial, model = self._reader()
+        return {"serial": serial, "make": "Zebra", "model": model, "ip": ip,
+                "antennas_connected": 4, "antennas_total": 4, "reading": True,
+                "reachable": True, "tags_24h": 0,
+                "taken_at": datetime.fromtimestamp(self.clock.now(), UTC).isoformat()}
+
     async def sync(self, initiative_id: str) -> SyncData:
         """Every call runSync makes: the four move downloads together, then the
-        label templates as a soft step (a failure there is recorded, not raised)."""
+        label templates as a soft step (a failure there is recorded, not raised).
+        One failed download cancels the other three and raises its CallFailed."""
         q = {"initiative_id": initiative_id}
-        assets, _people, containers, trucks = await asyncio.gather(
-            self._bearer_call("GET", "/kiosk/sync/assets", name="sync", params=q),
-            self._bearer_call("GET", "/kiosk/sync/people", name="sync"),
-            self._bearer_call("GET", "/kiosk/sync/containers", name="sync", params=q),
-            self._bearer_call("GET", "/kiosk/sync/trucks", name="sync", params=q))
+        try:
+            async with asyncio.TaskGroup() as group:
+                assets = group.create_task(
+                    self._bearer_call("GET", "/kiosk/sync/assets", name="sync", params=q))
+                group.create_task(self._bearer_call("GET", "/kiosk/sync/people", name="sync"))
+                containers = group.create_task(
+                    self._bearer_call("GET", "/kiosk/sync/containers", name="sync", params=q))
+                trucks = group.create_task(
+                    self._bearer_call("GET", "/kiosk/sync/trucks", name="sync", params=q))
+        except BaseExceptionGroup as group_error:
+            failed = [e for e in group_error.exceptions if isinstance(e, CallFailed)]
+            if failed and len(failed) == len(group_error.exceptions):
+                raise failed[0] from None
+            raise
         try:
             await self._bearer_call("GET", "/kiosk/sync/label-templates", name="sync", params=q)
         except CallFailed:
             pass
-        return SyncData(assets=assets[0].json()["assets"],
-                        containers=containers[0].json()["containers"],
-                        trucks=trucks[0].json()["trucks"])
+        return SyncData(assets=assets.result()[0].json()["assets"],
+                        containers=containers.result()[0].json()["containers"],
+                        trucks=trucks.result()[0].json()["trucks"])
 
     async def heartbeat(self) -> None:
         """The 60-second beat. Never raises CallFailed: the outcome is in the metrics."""
@@ -342,7 +379,8 @@ class KioskDevice:
                 if self.kind == "rfid_station":
                     await self._station_call("/kiosk/station/heartbeat",
                                              name="station-heartbeat",
-                                             json={"serial": self.serial, "version": VERSION})
+                                             json={"serial": self.serial, "version": VERSION,
+                                                   "reader": self._reader_snapshot()})
                 return                      # a keyed Label Station sends no heartbeat
             await self._bearer_call("POST", "/kiosk/heartbeat", name="heartbeat",
                                     json=self._heartbeat_body(sign_in=False))
@@ -379,7 +417,12 @@ class KioskDevice:
                 "scan_status": scan.scan_status}
 
     async def send_scans(self, scans: list[ScanOut]) -> int:
-        """Upload scans in batches the route allows; returns how many the server took."""
+        """Upload scans in batches the route allows; returns how many the server took.
+        A station with no key sends nothing (counted as `scans_not_sent`): it never
+        falls back to the person route."""
+        if self.is_station and self._key is None:
+            self.metrics.count("scans_not_sent", len(scans))
+            return 0
         station = self._key is not None
         url, name, size = (("/kiosk/station/scans", "station-scans", STATION_BATCH) if station
                            else ("/kiosk/scans", "scans", HANDHELD_BATCH))

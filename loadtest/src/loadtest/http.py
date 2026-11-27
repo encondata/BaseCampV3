@@ -13,7 +13,15 @@ from .profile import RetrySpec
 
 
 class TokenExpired(Exception):
-    """The server answered 401: the caller must refresh or sign in again."""
+    """The server answered 401: the caller must refresh or sign in again.
+
+    `attempts` is how many requests the call sent, the 401 included; every one before
+    the 401 was a retryable failure whose work may have landed."""
+
+    def __init__(self, call: str, attempts: int = 1) -> None:
+        super().__init__(call, attempts)
+        self.call = call
+        self.attempts = attempts
 
 
 class CallFailed(Exception):
@@ -62,14 +70,19 @@ async def timed_call(
     retry: RetrySpec,
     already_done: Callable[[httpx.Response], bool] | None = None,
     token_call: bool = True,
+    prior_attempts: int = 0,
     **request_kwargs,
 ) -> httpx.Response:
     """`token_call=False` is for a call that is itself a sign-in: a 401 there means the
     credentials were refused, so it is a final failure carrying the server's code
-    instead of a `TokenExpired` for the caller to renew."""
+    instead of a `TokenExpired` for the caller to renew.
+
+    `prior_attempts` is for a redo after a 401: the requests of the first try that may
+    have landed (its attempts before the 401). They count toward the recorded
+    retries, and `already_done` applies from the redo's first answer."""
     attempts = max(1, retry.attempts)
     for attempt in range(attempts):
-        retries = attempt
+        retries = attempt + prior_attempts
         started = time.perf_counter()
         response: httpx.Response | None = None
         try:
@@ -81,7 +94,7 @@ async def timed_call(
         if response is not None:
             status = response.status_code
             if status == 401 and token_call:
-                raise TokenExpired(name)
+                raise TokenExpired(name, attempt + 1)
             if not _retryable(status):
                 if status < 300:
                     metrics.record(name, ms, True, retries)

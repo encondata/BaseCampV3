@@ -26,14 +26,21 @@ class Metrics:
     def __init__(self, background: frozenset[str] = DEFAULT_BACKGROUND) -> None:
         self._background = background
         self._times: dict[str, list[float]] = {}
+        self._counts: dict[str, int] = {}
         self._retries: dict[str, int] = {}
         self._failures: dict[str, int] = {}
         self._counters: dict[str, int] = {}
         self._series: dict[str, list[list]] = {}
 
-    def record(self, call: str, ms: float, ok: bool, retries: int = 0) -> None:
-        """One logical call: its last attempt's time, whether it ended well, retries used."""
-        self._times.setdefault(call, []).append(float(ms))
+    def record(self, call: str, ms: float | None, ok: bool, retries: int = 0) -> None:
+        """One logical call: its last attempt's time, whether it ended well, retries used.
+
+        `ms=None` is a call that never got an answer to time (its sign-in step failed
+        first): it counts as a call, and its failure, but adds no latency sample."""
+        self._counts[call] = self._counts.get(call, 0) + 1
+        samples = self._times.setdefault(call, [])
+        if ms is not None:
+            samples.append(float(ms))
         self._retries[call] = self._retries.get(call, 0) + retries
         if not ok:
             self._failures[call] = self._failures.get(call, 0) + 1
@@ -49,12 +56,13 @@ class Metrics:
         for name in sorted(self._times):
             ordered = sorted(self._times[name])
             out[name] = {
-                "count": len(ordered),
+                "count": self._counts[name],
                 "retries": self._retries.get(name, 0),
                 "failures": self._failures.get(name, 0),
-                "median_ms": round(_percentile(ordered, 0.5), 1),
-                "p95_ms": round(_percentile(ordered, 0.95), 1),
-                "max_ms": round(ordered[-1], 1),
+                # null when no attempt of this call was ever timed
+                "median_ms": round(_percentile(ordered, 0.5), 1) if ordered else None,
+                "p95_ms": round(_percentile(ordered, 0.95), 1) if ordered else None,
+                "max_ms": round(ordered[-1], 1) if ordered else None,
             }
         return out
 

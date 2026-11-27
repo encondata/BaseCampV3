@@ -31,7 +31,14 @@ import httpx
 from fakeserver_portal import register_portal_routes
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
 from loadtest.clock import Clock
 
@@ -171,6 +178,34 @@ class KioskStationHeartbeatIn(BaseModel):
     config: dict[str, Any] | None = None
     config_changed_at: datetime | None = None
     config_applied_version: int | None = Field(default=None, ge=0)
+
+
+_Str64 = Annotated[str, StringConstraints(max_length=64)]
+_Count = Annotated[int, Field(ge=0)]
+
+
+class KioskReaderReport(BaseModel):
+    """services/fixed_readers.py: validated inside the route, so a bad one never
+    fails the heartbeat."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    serial: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    make: _Str64 | None = None
+    model: _Str64 | None = None
+    name: _Str64 | None = None
+    firmware: _Str64 | None = None
+    mac: Annotated[str, StringConstraints(
+        strip_whitespace=True,
+        pattern=r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")] | None = None
+    ip: IPv4Address | None = None
+    uptime_seconds: _Count | None = None
+    antennas_connected: _Count | None = None
+    antennas_total: _Count | None = None
+    tags_24h: _Count | None = None
+    reading: bool | None = None
+    reachable: bool | None = None
+    taken_at: datetime | None = None
 
 
 class KioskRfidEnrollIn(BaseModel):
@@ -331,6 +366,9 @@ class FakeBaseCamp:
         # (method, path, "Bearer" | "Station" | None): the scheme only, never the secret
         self.auth_schemes: list[tuple[str, str, str | None]] = []
         self.portal_users: dict[str, _PortalUser] = {}
+        # reader serial -> what the RFID Stations' heartbeats reported about it
+        self.fixed_readers: dict[str, dict] = {}
+        self.dropped_reader_reports = 0
         self._failures: list[_Failure] = []
         self._down = False
         self._refresh: dict[str, _Refresh] = {}
@@ -805,7 +843,12 @@ class FakeBaseCamp:
                           operator_id: str | None, locked: str | None,
                           allowed_moves: set[str] | None, allowed_sites: set[str] | None,
                           rfid_only: bool = False, barcode_only: bool = False,
-                          forced_status: str | None = None) -> dict:
+                          forced_status: str | None = None, check_inactive: bool = False,
+                          off_move_allowed: bool = False) -> dict:
+        """The real `_store_scan_batch`. `check_inactive` is the station route's
+        `inactive_moves` (the person route passes an empty set, so it never rejects
+        `move_inactive`); `off_move_allowed` is `not label` on the station route and
+        False on the person route."""
         accepted: list[str] = []
         rejected: list[dict] = []
         for scan in scans:
@@ -825,7 +868,8 @@ class FakeBaseCamp:
                 code = "move_locked"
             elif allowed_moves is not None and move not in allowed_moves:
                 code = "move_locked"
-            elif move in self.moves and self.moves[move]["status"] in HISTORICAL_INITIATIVE_STATUSES:
+            elif (check_inactive and move in self.moves
+                    and self.moves[move]["status"] in HISTORICAL_INITIATIVE_STATUSES):
                 code = "move_inactive"
             elif allowed_sites is not None and (site_id or device["site_id"]) not in allowed_sites:
                 code = "bad_site"
@@ -839,7 +883,7 @@ class FakeBaseCamp:
                 "scanned_value": scan.scanned_value, "scan_type": scan.scan_type,
                 "status": checkpoint, "scan_status": checkpoint,
                 "scanned_at": scan.scanned_at.isoformat(), "device_id": device["name"],
-                "operator_id": operator_id, "off_move": scan.off_move and operator_id is None,
+                "operator_id": operator_id, "off_move": scan.off_move and off_move_allowed,
                 "site_id": site_id or device["site_id"], "initiative_id": move,
                 "source": "kiosk", "client_scan_id": str(scan.client_scan_id),
                 "kiosk_asset_id": _sid(scan.asset_id),
@@ -913,7 +957,8 @@ class FakeBaseCamp:
                 device, body.scans, operator_id=None, locked=None,
                 allowed_moves={move_id} if move_id else set(), allowed_sites=sites,
                 rfid_only=not label, barcode_only=label,
-                forced_status=LABEL_STATION_SCAN_STATUS if label else None)
+                forced_status=LABEL_STATION_SCAN_STATUS if label else None,
+                check_inactive=True, off_move_allowed=not label)
             return {**out, "clear_setup": None}
 
         @app.post("/kiosk/station/heartbeat")
@@ -926,12 +971,35 @@ class FakeBaseCamp:
             device["last_seen_at"] = now
             if body.version is not None:
                 device["version"] = body.version
+            if body.reader is not None:
+                self._apply_reader_report(device, body.reader)
             return {"registration": self._registration(device),
                     "token_expires_at": self._iso(device["token_expires_at"]),
                     "clear_setup": None, "server_time": self._iso(now),
                     "config_version": 0, "config": None,
                     "scan_status": device["scan_status"],
                     "scan_status_label": ASSET_STATUSES.get(device["scan_status"] or "")}
+
+    def _apply_reader_report(self, kiosk: dict, report: dict) -> None:
+        """services/fixed_readers.apply_reader_report: a valid report for the kiosk's
+        paired reader upserts one fixed reader by serial; anything else is dropped
+        and never fails the beat."""
+        try:
+            parsed = KioskReaderReport.model_validate(report)
+        except ValidationError:
+            self.dropped_reader_reports += 1
+            return
+        if (kiosk["station_type"] not in READER_STATION_TYPES
+                or not kiosk.get("rfid_reader_serial")
+                or parsed.serial.lower() != kiosk["rfid_reader_serial"].lower()):
+            self.dropped_reader_reports += 1
+            return
+        reader = self.fixed_readers.setdefault(parsed.serial, {"serial": parsed.serial})
+        reader.update({k: v for k, v in parsed.model_dump(mode="json").items()
+                       if k in parsed.model_fields_set and v is not None})
+        reader.update(via_kiosk_serial=kiosk["serial"], site_id=kiosk["site_id"],
+                      current_initiative_id=kiosk["current_initiative_id"],
+                      reachable=parsed.reachable)
 
     # ── pack / unpack, load / unload ───────────────────────────────────
 

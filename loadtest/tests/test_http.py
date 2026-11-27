@@ -215,3 +215,20 @@ def test_error_code_parses_the_server_shape():
     assert error_code(httpx.Response(400, json={"detail": "plain"})) is None
     assert error_code(httpx.Response(400, json=["x"])) is None
     assert error_code(httpx.Response(400, json={"detail": {"code": 5}})) is None
+
+
+async def test_token_expired_carries_attempts():
+    r, m, _, seen = await call([httpx.Response(503), httpx.Response(401)])
+    assert isinstance(r, TokenExpired)
+    assert r.attempts == 2 and len(seen) == 2
+    assert m.calls() == {}
+
+
+async def test_prior_attempts_count_as_retries_and_allow_already_done():
+    r, m, _, seen = await call([err(409, "not_in_container")], already_done=done,
+                               prior_attempts=1)
+    assert r.status_code == 409 and len(seen) == 1
+    row = m.calls()["pack"]
+    assert (row["count"], row["retries"], row["failures"]) == (1, 1, 0)
+    r, m, _, _ = await call([err(409, "not_in_container")], already_done=done)
+    assert isinstance(r, CallFailed)          # no prior attempts: a first answer is final
