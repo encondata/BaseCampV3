@@ -11,6 +11,7 @@ from pathlib import Path
 
 DEFAULT_PORT = 8795
 DEFAULT_ROUTER_URL = "https://router.project-osrm.org"
+# assumes an editable install or a source checkout: loadtest/runs next to src/
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
 
 
@@ -72,7 +73,8 @@ def bind(host: str, port: int) -> socket.socket:
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name != "nt":     # on Windows it would let a second server share the port
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         sock.listen(128)
     except OSError as exc:
@@ -88,7 +90,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     sock = bind(args.host, args.port)
 
-    import logging
     import secrets
 
     import uvicorn
@@ -101,20 +102,11 @@ def main(argv: list[str] | None = None) -> None:
     runner = Runner(runs_dir=runs_dir,
                     router_url=os.environ.get("LOADTEST_ROUTER_URL") or DEFAULT_ROUTER_URL)
     lan = lan_address()
-    access_key = None if is_loopback(args.host) else secrets.token_urlsafe(24)
+    # a proxy makes everyone arrive from loopback, so --allow-host also needs the key
+    keyed = not is_loopback(args.host) or bool(args.allow_host)
+    access_key = secrets.token_urlsafe(24) if keyed else None
     app = create_app(runner, allowed_hosts=allowed_hosts(args.host, lan, args.allow_host),
-                     access_key=access_key)
-
-    class _PathOnly(logging.Filter):
-        """The access log shows the method and path, never a query string (the printed
-        link's `?key=` would otherwise be logged on its first use)."""
-
-        def filter(self, record: logging.LogRecord) -> bool:
-            if isinstance(record.args, tuple) and len(record.args) >= 3:
-                args = list(record.args)
-                args[2] = str(args[2]).split("?", 1)[0]
-                record.args = tuple(args)
-            return True
+                     access_key=access_key, cookie_name=f"loadtest_key_{args.port}")
 
     class _Server(uvicorn.Server):
         def handle_exit(self, sig, frame) -> None:
@@ -129,9 +121,11 @@ def main(argv: list[str] | None = None) -> None:
             self._loop = asyncio.get_running_loop()
             await super().serve(sockets=sockets)
 
-    config = uvicorn.Config(app, log_level="info", timeout_graceful_shutdown=5)
+    # no access log: the printed link's ?key= must never be logged. No proxy headers:
+    # the client address is the real peer, never one a request claims.
+    config = uvicorn.Config(app, log_level="info", timeout_graceful_shutdown=5,
+                            access_log=False, proxy_headers=False)
     server = _Server(config)
-    logging.getLogger("uvicorn.access").addFilter(_PathOnly())
 
     if access_key is not None:
         shown = lan if args.host in WILDCARD else args.host

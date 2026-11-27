@@ -35,6 +35,8 @@ class StubRunner:
         self.report: CheckReport | None = None
         self._result: dict | None = None
         self.shut_down = False
+        self.stop_gate: asyncio.Event | None = None
+        self.stop_fail: BaseException | None = None
 
     def _call(self, name, *args):
         self.calls.append((name, *args))
@@ -69,6 +71,10 @@ class StubRunner:
 
     async def stop(self):
         self._call("stop")
+        if self.stop_gate is not None:
+            await self.stop_gate.wait()
+        if self.stop_fail is not None:
+            raise self.stop_fail
 
     async def continue_run(self, password, move_password, email, totp_code=None):
         self._call("continue", password, move_password, email, totp_code)
@@ -105,7 +111,7 @@ async def test_state_is_the_snapshot_and_not_cached(client, stub):
     stub.snap = {"phase": "idle", "check": None, "move": None}
     got = await client.get("/api/state")
     assert got.status_code == 200
-    assert got.json() == {"phase": "idle", "check": None, "move": None}
+    assert got.json() == {"phase": "idle", "check": None, "move": None, "stopping": False}
     assert got.headers["cache-control"] == "no-store"
 
 
@@ -166,7 +172,7 @@ async def test_bad_body_names_fields_without_echoing_values(client, stub):
     ("/api/connect", {"server": "x" * 301, "email": EMAIL, "password": "p"}, "server"),
     ("/api/connect", {"server": "s", "email": EMAIL, "password": "SECRET-X" * 30}, "password"),
     ("/api/connect", {"server": "s", "email": EMAIL, "password": "p", "token": "SECRET-X"},
-     "token"),
+     "(unknown field)"),
     ("/api/check", {"move_id": "m", "move_password": "SECRET-X", "speed": "slow"}, "speed"),
     ("/api/continue", {"email": EMAIL, "password": "p", "move_password": "m",
                        "totp_code": "SECRET-X12345"}, "totp_code"),
@@ -214,8 +220,11 @@ async def test_check_answers_checks_and_summary(client, stub):
 async def test_start_stop_discard_continue(client, stub):
     got = await client.post("/api/start", headers=PAGE)
     assert (got.status_code, got.json()) == (202, {})
+    stub.phase = "running"
     got = await client.post("/api/stop", headers=PAGE)
     assert (got.status_code, got.json()) == (202, {})
+    await asyncio.sleep(0)
+    stub.phase = "idle"
     got = await client.post("/api/discard", headers=PAGE)
     assert (got.status_code, got.json()) == (200, {})
     stub.answer = {"status": "totp_required"}
@@ -414,6 +423,301 @@ async def test_default_port_origin_matches_a_host_without_port(stub):
     async with tool(stub, base="http://localhost") as c:
         got = await c.post("/api/start", headers={**PAGE, "Origin": "http://localhost"})
         assert got.status_code == 202
+
+
+# ── fix round 1 ────────────────────────────────────────────────────────
+
+
+async def test_passwords_reach_the_runner_unchanged(client, stub):
+    await client.post("/api/connect", headers=PAGE, json={
+        "server": " s ", "email": " a@b.c ", "password": "  pw  ", "totp_code": " 1 "})
+    assert stub.calls[-1] == ("connect", "s", "a@b.c", "  pw  ", "1")
+    stub.report = CheckReport(checks=[], can_start=False, move=None, roster=[], containers=[],
+                              trucks=[], route=[])
+    stub.snap = {"check": {"servers": 0, "containers_found": 0, "trucks_found": 0,
+                           "containers_needed": 0, "trucks_needed": 0}}
+    await client.post("/api/check", headers=PAGE, json={
+        "move_id": " m ", "move_password": "  mp  ", "speed": "fast"})
+    assert stub.calls[-1] == ("check", "m", "  mp  ", "fast")
+    await client.post("/api/continue", headers=PAGE, json={
+        "email": EMAIL, "password": "  pw  ", "move_password": " mp", "totp_code": None})
+    assert stub.calls[-1] == ("continue", "  pw  ", " mp", EMAIL, None)
+
+
+async def test_unknown_field_names_are_never_echoed(client):
+    got = await client.post("/api/connect", headers=PAGE, json={
+        "server": "s", "email": "e", "password": "p", "<script>SECRET-N": 1, "x": 2})
+    assert got.status_code == 422
+    assert got.json()["fields"] == ["(unknown field)"]
+    assert "SECRET-N" not in got.text and '"x"' not in got.text
+
+
+async def test_check_without_a_snapshot_check_is_a_500(client, stub, capsys):
+    stub.report = CheckReport(checks=[], can_start=True, move=None, roster=[], containers=[],
+                              trucks=[], route=[])
+    stub.snap = {"check": None}
+    got = await client.post("/api/check", headers=PAGE, json={
+        "move_id": "m", "move_password": "mp", "speed": "fast"})
+    assert got.status_code == 500
+    assert "TypeError" in capsys.readouterr().err
+
+
+async def test_stop_answers_at_once_and_runs_on(client, stub):
+    stub.phase = "running"
+    stub.stop_gate = asyncio.Event()
+    got = await client.post("/api/stop", headers=PAGE)
+    assert (got.status_code, got.json()) == (202, {})
+    assert (await client.get("/api/state")).json()["stopping"] is True
+    again = await client.post("/api/stop", headers=PAGE)
+    assert again.status_code == 202
+    await asyncio.sleep(0.01)
+    assert [c for c in stub.calls if c[0] == "stop"] == [("stop",)]     # one stop task
+    stub.stop_gate.set()
+    stub.phase = "stopped"
+    for _ in range(50):
+        if not (await client.get("/api/state")).json()["stopping"]:
+            break
+        await asyncio.sleep(0.01)
+    assert (await client.get("/api/state")).json()["stopping"] is False
+
+
+async def test_stop_snapshot_event_says_stopping(stub):
+    app = create_app(stub)
+    stub.phase = "running"
+    stub.stop_gate = asyncio.Event()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                 base_url="http://localhost") as c:
+        assert (await c.post("/api/stop", headers=PAGE)).status_code == 202
+    sent: list[dict] = []
+    started = asyncio.Event()
+    disconnect = asyncio.Event()
+
+    async def receive():
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            started.set()
+
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+             "method": "GET", "scheme": "http", "path": "/api/events",
+             "raw_path": b"/api/events", "query_string": b"", "root_path": "",
+             "headers": [(b"host", b"localhost")], "client": ("127.0.0.1", 1),
+             "server": ("127.0.0.1", 80)}
+    task = asyncio.create_task(app(scope, receive, send))
+    await asyncio.wait_for(started.wait(), 2)
+    disconnect.set()
+    await asyncio.wait_for(task, 2)
+    name, data = parse(sent[1]["body"].decode())
+    assert name == "snapshot" and data["stopping"] is True
+    stub.stop_gate.set()
+    await asyncio.gather(app.state.stop_task)
+
+
+async def test_stop_with_nothing_to_stop_is_409(client, stub):
+    for phase in ("idle", "connected", "checked", "done", "stopped", "error"):
+        stub.phase = phase
+        got = await client.post("/api/stop", headers=PAGE)
+        assert got.status_code == 409
+        assert got.json() == {"code": "bad_phase", "message": "That cannot be done right now."}
+    assert stub.calls == []
+
+
+@pytest.mark.parametrize("fail", [RunnerError("bad_phase"), ValueError("SECRET-S")])
+async def test_a_failed_background_stop_is_logged_by_type(client, stub, capsys, fail):
+    stub.phase = "running"
+    stub.stop_fail = fail
+    assert (await client.post("/api/stop", headers=PAGE)).status_code == 202
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if not (await client.get("/api/state")).json()["stopping"]:
+            break
+    err = capsys.readouterr().err
+    assert type(fail).__name__ in err and "/api/stop" in err
+    assert "SECRET-S" not in err
+
+
+async def test_shutdown_waits_for_a_stop_in_flight(stub):
+    app = create_app(stub)
+    stub.phase = "running"
+    stub.stop_gate = asyncio.Event()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                     base_url="http://localhost") as c:
+            assert (await c.post("/api/stop", headers=PAGE)).status_code == 202
+        stub.stop_gate.set()
+    assert app.state.stop_task.done() and stub.shut_down
+
+
+async def test_tls_proxy_origin_matches_a_host_without_port(stub):
+    async with tool(stub, base="http://proxy.example", allowed_hosts=["proxy.example"]) as c:
+        for origin, ok in (("https://proxy.example", True), ("http://proxy.example", True),
+                           ("https://proxy.example:443", True),
+                           ("https://proxy.example:8443", False),
+                           ("https://other.example", False), ("ftp://proxy.example", False)):
+            got = await c.post("/api/start", headers={**PAGE, "Origin": origin})
+            assert (got.status_code == 202) is ok, origin
+    async with tool(stub, base="http://proxy.example:8443",
+                    allowed_hosts=["proxy.example"]) as c:
+        got = await c.post("/api/start", headers={**PAGE, "Origin": "https://proxy.example"})
+        assert got.status_code == 403
+
+
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "Forwarded", "X-Real-IP"])
+async def test_a_forwarded_loopback_request_needs_the_key(stub, header):
+    async with tool(stub, access_key=KEY) as c:
+        got = await c.get("/api/state", headers={header: "1.2.3.4"})
+        assert got.status_code == 403
+        c.cookies.set("loadtest_key", KEY)
+        got = await c.get("/api/state", headers={header: "1.2.3.4"})
+        assert got.status_code == 200
+
+
+async def test_loopback_under_another_name_needs_the_key(stub):
+    hosts = ["192.168.1.10", "proxy.example", "jimmys-mac.local"]
+    for base in ("http://192.168.1.10:8795", "http://proxy.example", "http://jimmys-mac.local"):
+        async with tool(stub, base=base, allowed_hosts=hosts, access_key=KEY) as c:
+            assert (await c.get("/api/state")).status_code == 403
+            assert (await c.get("/")).status_code == 403
+            c.cookies.set("loadtest_key", KEY)
+            assert (await c.get("/api/state")).status_code == 200
+    for base in ("http://localhost:8795", "http://127.0.0.1:8795", "http://[::1]:8795"):
+        async with tool(stub, base=base, allowed_hosts=hosts, access_key=KEY) as c:
+            assert (await c.get("/api/state")).status_code == 200
+
+
+async def test_the_cookie_name_is_per_port(stub):
+    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
+                    allowed_hosts=["192.168.1.10"], access_key=KEY,
+                    cookie_name="loadtest_key_8795") as c:
+        got = await c.get("/", params={"key": KEY})
+        assert got.headers["set-cookie"].startswith(f"loadtest_key_8795={KEY};")
+        assert (await c.get("/api/state")).status_code == 200
+        c.cookies.clear()
+        c.cookies.set("loadtest_key", KEY)
+        assert (await c.get("/api/state")).status_code == 403
+
+
+@pytest.mark.parametrize("host", ["[::1]evil.com", "[::1]:80x", "[::1", "localhost:abc",
+                                  "localhost:", "localhost:80:80", ""])
+async def test_malformed_hosts_are_refused(stub, host):
+    async with tool(stub) as c:
+        got = await c.get("/api/state", headers={"Host": host})
+        assert got.status_code == 400
+
+
+async def test_websocket_and_other_scopes_are_refused(stub):
+    app = create_app(stub)
+    sent = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    await app({"type": "websocket", "path": "/api/events", "headers": [(b"host", b"localhost")],
+               "client": ("127.0.0.1", 1), "query_string": b"", "root_path": ""},
+              receive, send)
+    assert sent == [{"type": "websocket.close", "code": 1008}]
+    sent.clear()
+    await app({"type": "other"}, receive, send)
+    assert sent == []
+
+
+class Flaky(StubRunner):
+    def __init__(self):
+        super().__init__()
+        self.bad_snapshots = 0
+        self.bad_recent = True
+
+    def snapshot(self):
+        if self.bad_snapshots:
+            self.bad_snapshots -= 1
+            raise KeyError("SEC" + "RET-K")
+        return super().snapshot()
+
+    def recent(self):
+        if self.bad_recent:
+            raise OSError("SEC" + "RET-R")
+        return super().recent()
+
+
+async def test_a_failing_read_does_not_end_the_stream(capsys):
+    flaky = Flaky()
+    flaky.bad_snapshots = 3
+    flaky.phase = "running"
+    s = Stream(flaky, active_every=0.02, idle_every=10, keep_alive=10)
+    await asyncio.sleep(0.1)
+    flaky.events.feed(line(7))
+    await until(lambda: s.names().count("snapshot") >= 2 and s.feed_subjects())
+    assert s.feed_subjects() == ["SN LOADTEST-7"]
+    assert flaky.bad_snapshots == 0       # the first snapshot and the next two failed
+    await s.close()
+    assert flaky.events._subscribers == []
+    err = capsys.readouterr().err
+    assert err.count("/api/events: KeyError") == 1          # logged once per stream
+    assert err.count("/api/events: OSError") == 1
+    assert "SECRET" not in err
+
+
+def test_no_access_log_and_no_proxy_headers(monkeypatch, tmp_path):
+    """main() configures uvicorn without an access log and without proxy headers."""
+    import socket
+
+    import uvicorn
+
+    from loadtest import __main__ as cli
+    seen = {}
+
+    class Fake(uvicorn.Server):
+        def run(self, sockets=None):
+            seen["config"] = self.config
+            for s in sockets or ():
+                s.close()
+
+    monkeypatch.setattr(uvicorn, "Server", Fake)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    cli.main(["--host", "127.0.0.1", "--port", str(port), "--allow-host", "proxy.example",
+              "--runs-dir", str(tmp_path / "runs")])
+    config = seen["config"]
+    assert config.access_log is False and config.proxy_headers is False
+
+
+def test_allow_host_on_loopback_prints_a_keyed_link(monkeypatch, tmp_path, capsys):
+    import socket
+
+    import uvicorn
+
+    from loadtest import __main__ as cli
+    apps = []
+
+    class Fake(uvicorn.Server):
+        def run(self, sockets=None):
+            apps.append(self.config.app)
+            for s in sockets or ():
+                s.close()
+
+    monkeypatch.setattr(uvicorn, "Server", Fake)
+    for extra, keyed in (([], False), (["--allow-host", "proxy.example"], True)):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        cli.main(["--host", "127.0.0.1", "--port", str(port), *extra,
+                  "--runs-dir", str(tmp_path / "runs")])
+        out = capsys.readouterr().out.splitlines()
+        if keyed:
+            assert out[0].startswith(f"Move load test: http://127.0.0.1:{port}/?key=")
+            assert len(out[0].rsplit("=", 1)[1]) >= 32
+            assert out[1] == f"On this machine: http://localhost:{port}"
+        else:
+            assert out == [f"On this machine: http://localhost:{port}"]
 
 
 # ── the event stream ───────────────────────────────────────────────────

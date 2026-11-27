@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, Request
@@ -31,11 +31,11 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.requests import cookie_parser
 
 from ..events import FeedLine
-from ..runner import ACTIVE, RunnerError
+from ..runner import ACTIVE, MESSAGES, RunnerError
 
 STATIC = Path(__file__).parent / "static"
 NO_STORE = {"Cache-Control": "no-store"}
@@ -50,28 +50,41 @@ KEEP_ALIVE = ": keep-alive\n\n"
 # ── request bodies ─────────────────────────────────────────────────────
 
 
+def _text(max_length: int):
+    """A string field, stripped of surrounding spaces."""
+    return Annotated[str, StringConstraints(strip_whitespace=True, max_length=max_length)]
+
+
+Password = Annotated[str, Field(max_length=200)]    # never altered: spaces may be part of it
+
+
 class _Body(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class ConnectBody(_Body):
-    server: str = Field(max_length=300)
-    email: str = Field(max_length=200)
-    password: str = Field(max_length=200)
-    totp_code: str | None = Field(default=None, max_length=12)
+    server: _text(300)
+    email: _text(200)
+    password: Password
+    totp_code: _text(12) | None = None
 
 
 class CheckBody(_Body):
-    move_id: str = Field(max_length=64)
-    move_password: str = Field(max_length=200)
+    move_id: _text(64)
+    move_password: Password
     speed: Literal["real-time", "fast"]
 
 
 class ContinueBody(_Body):
-    email: str = Field(max_length=200)
-    password: str = Field(max_length=200)
-    move_password: str = Field(max_length=200)
-    totp_code: str | None = Field(default=None, max_length=12)
+    email: _text(200)
+    password: Password
+    move_password: Password
+    totp_code: _text(12) | None = None
+
+
+FIELD_NAMES = {name for model in (ConnectBody, CheckBody, ContinueBody)
+               for name in model.model_fields}
+UNKNOWN_FIELD = "(unknown field)"
 
 
 # ── the event stream ───────────────────────────────────────────────────
@@ -88,19 +101,37 @@ def _event(name: str, data: object) -> str:
 
 
 async def event_stream(runner, is_disconnected: Callable[[], Awaitable[bool]], *,
-                       stopping: asyncio.Event | None = None, active_every: float = 1.0,
+                       stopping: asyncio.Event | None = None,
+                       snapshot: Callable[[], dict] | None = None, active_every: float = 1.0,
                        idle_every: float = 5.0, keep_alive: float = 15.0) -> AsyncIterator[str]:
     """A `snapshot` event, then one `feed` event per buffered line, then live `feed` events,
     a `snapshot` every `active_every` s while a run is active (every `idle_every` s
     otherwise) and a keep-alive comment every `keep_alive` s. Ends when the client goes or
-    `stopping` is set. Pacing is real time, not the run's clock."""
+    `stopping` is set. Pacing is real time, not the run's clock. A snapshot or ring read
+    that fails is skipped (its type logged once per stream); the stream carries on."""
+    take_snapshot = snapshot or runner.snapshot
+    logged: set[str] = set()
+
+    def safely(read: Callable[[], object], default):
+        try:
+            return read()
+        except Exception as exc:  # noqa: BLE001 - one bad read must not end the stream
+            if type(exc).__name__ not in logged:
+                logged.add(type(exc).__name__)
+                _log_internal({"method": "GET", "path": "/api/events"}, exc)
+            return default
+
+    def snapshot_event() -> list[str]:
+        snap = safely(take_snapshot, None)
+        return [] if snap is None else [_event("snapshot", snap)]
+
     queue = runner.subscribe()
     getter: asyncio.Future | None = None
     stopper: asyncio.Future | None = None
     try:
         # no await between subscribing and reading the ring: no line is lost or doubled
-        first = [_event("snapshot", runner.snapshot())]
-        first += [_event("feed", feed_event(line)) for line in runner.recent()]
+        first = snapshot_event()
+        first += [_event("feed", feed_event(line)) for line in safely(runner.recent, [])]
         loop = asyncio.get_running_loop()
         last_snapshot = last_comment = loop.time()
         for chunk in first:
@@ -112,7 +143,8 @@ async def event_stream(runner, is_disconnected: Callable[[], Awaitable[bool]], *
             every = active_every if runner.phase in ACTIVE else idle_every
             if now - last_snapshot >= every:
                 last_snapshot = now
-                yield _event("snapshot", runner.snapshot())
+                for chunk in snapshot_event():
+                    yield chunk
                 continue
             if now - last_comment >= keep_alive:
                 last_comment = now
@@ -147,19 +179,20 @@ def _log_internal(scope: dict, exc: BaseException) -> None:
           f"{type(exc).__name__}\n{frames}", file=sys.stderr, end="")
 
 
-def _host_port(host: str, port: int | None, scheme: str) -> tuple[str, int | None]:
-    return host, port if port is not None else {"http": 80, "https": 443}.get(scheme)
+DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _same_origin(origin: str, host_header: str) -> bool:
-    """The Origin's host and port equal the Host header's (default ports filled in)."""
+    """The Origin's host and port equal the Host header's. A missing port is the Origin
+    scheme's default on both sides, so `Host: proxy.example` matches
+    `Origin: https://proxy.example` behind a TLS-terminating proxy."""
     try:
         o = urlsplit(origin.strip().lower())
-        h = urlsplit("http://" + host_header.strip().lower())
-        if not o.hostname or not h.hostname:
+        h = urlsplit("//" + host_header.strip().lower())
+        default = DEFAULT_PORTS.get(o.scheme)
+        if not o.hostname or not h.hostname or default is None:
             return False
-        return (_host_port(o.hostname, o.port, o.scheme)
-                == _host_port(h.hostname, h.port, "http"))
+        return (o.hostname, o.port or default) == (h.hostname, h.port or default)
     except ValueError:
         return False
 
@@ -173,7 +206,7 @@ class _Guard:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] != "http":     # _Access lets only lifespan through
             await self.app(scope, receive, send)
             return
         headers = dict(scope["headers"])
@@ -204,6 +237,7 @@ class _Guard:
 
 LOCAL_NAMES = ("localhost", "127.0.0.1", "::1")
 KEY_COOKIE = "loadtest_key"
+PROXY_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip")
 BAD_HOST = "This address is not allowed. Use the link printed when the tool started."
 NEED_KEY = "Open the link printed when the tool started. It includes a key."
 NEED_KEY_PAGE = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -211,13 +245,20 @@ NEED_KEY_PAGE = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"
 
 
 def _host_name(value: str) -> str:
-    """The host part of a Host header or a name, lower case, without port or brackets."""
+    """The host part of a Host header or a name, lower case, without port or brackets;
+    "" when anything but `:<digits>` follows the host."""
     value = value.strip().lower()
     if value.startswith("["):
-        return value[1:value.find("]")] if "]" in value else value[1:]
+        host, bracket, rest = value[1:].partition("]")
+        return host if bracket and _port_part(rest) else ""
     if value.count(":") == 1:
-        return value.split(":", 1)[0]
+        host, _, port = value.partition(":")
+        return host if port.isdigit() else ""
     return value
+
+
+def _port_part(rest: str) -> bool:
+    return rest == "" or (rest.startswith(":") and rest[1:].isdigit())
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -234,14 +275,20 @@ class _Access:
     an access key is set, a client that is not this machine needs the key's cookie. The
     printed link `/?key=<key>` sets that cookie and redirects to `/`."""
 
-    def __init__(self, app, *, allowed_hosts: set[str], access_key: str | None) -> None:
+    def __init__(self, app, *, allowed_hosts: set[str], access_key: str | None,
+                 cookie_name: str) -> None:
         self.app = app
         self.allowed = allowed_hosts
         self.key = access_key
+        self.cookie = cookie_name
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] == "lifespan":
             await self.app(scope, receive, send)
+            return
+        if scope["type"] != "http":     # no websocket or other routes: refuse, fail closed
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
             return
         headers = dict(scope["headers"])
         host = _host_name(headers.get(b"host", b"").decode("latin-1"))
@@ -256,13 +303,17 @@ class _Access:
             given = parse_qs(scope.get("query_string", b"").decode("latin-1")).get("key")
             if given and self._matches(given[-1]):
                 response = RedirectResponse("/", status_code=303)
-                response.set_cookie(KEY_COOKIE, self.key, path="/", httponly=True,
+                response.set_cookie(self.cookie, self.key, path="/", httponly=True,
                                     samesite="strict")
                 await response(scope, receive, send)
                 return
         client = scope.get("client")
-        cookie = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get(KEY_COOKIE)
-        if _is_loopback(client[0] if client else None) or (cookie and self._matches(cookie)):
+        # this machine: a loopback client, not forwarded by a proxy, under a local name
+        here = (_is_loopback(client[0] if client else None)
+                and not any(h in headers for h in PROXY_HEADERS)
+                and host in LOCAL_NAMES)
+        cookie = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get(self.cookie)
+        if here or (cookie and self._matches(cookie)):
             await self.app(scope, receive, send)
             return
         if path.startswith("/api/"):
@@ -279,8 +330,13 @@ class _Access:
 def _field_names(exc: RequestValidationError) -> list[str]:
     names: list[str] = []
     for err in exc.errors():
-        loc = [str(p) for p in err.get("loc", ()) if isinstance(p, str) and p != "body"]
-        name = ".".join(loc) or "body"
+        loc = [p for p in err.get("loc", ()) if isinstance(p, str) and p != "body"]
+        if not loc:
+            name = "body"
+        elif err.get("type") == "extra_forbidden" or loc[0] not in FIELD_NAMES:
+            name = UNKNOWN_FIELD        # never echo a name the client chose
+        else:
+            name = loc[0]
         if name not in names:
             names.append(name)
     return names
@@ -297,9 +353,10 @@ class _NoStoreFiles(StaticFiles):
 
 
 def create_app(runner, *, allowed_hosts: list[str] | None = None,
-               access_key: str | None = None) -> FastAPI:
+               access_key: str | None = None, cookie_name: str = KEY_COOKIE) -> FastAPI:
     """`allowed_hosts`: Host names accepted besides this machine's localhost names.
-    `access_key`: when set, clients other than this machine need it (see `_Access`)."""
+    `access_key`: when set, clients other than this machine need it (see `_Access`).
+    `cookie_name`: the key's cookie (one per port, since cookies ignore ports)."""
     stopping = asyncio.Event()
     allowed = {_host_name(h) for h in (*LOCAL_NAMES, *(allowed_hosts or ()))}
 
@@ -310,12 +367,28 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
         finally:            # Ctrl-C interrupts a run so it can be continued, never lost
             stopping.set()
             await runner.shutdown()
+            if app.state.stop_task is not None:
+                await asyncio.gather(app.state.stop_task, return_exceptions=True)
 
     app = FastAPI(title="Move load test", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
     app.state.stopping = stopping
+    app.state.stop_task = None          # the stop in flight, kept so it is never lost
     app.add_middleware(_Guard)
-    app.add_middleware(_Access, allowed_hosts=allowed, access_key=access_key)  # outermost
+    app.add_middleware(_Access, allowed_hosts=allowed, access_key=access_key,
+                       cookie_name=cookie_name)  # outermost
+
+    def stop_in_flight() -> bool:
+        return app.state.stop_task is not None and not app.state.stop_task.done()
+
+    def snapshot() -> dict:
+        return {**runner.snapshot(), "stopping": stop_in_flight()}
+
+    async def run_stop() -> None:
+        try:
+            await runner.stop()
+        except Exception as exc:  # noqa: BLE001 - logged by type; the page reads the phase
+            _log_internal({"method": "POST", "path": "/api/stop"}, exc)
 
     @app.exception_handler(RunnerError)
     async def runner_error(request: Request, exc: RunnerError) -> JSONResponse:
@@ -331,7 +404,7 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
 
     @app.get("/api/state")
     async def state() -> JSONResponse:
-        return JSONResponse(runner.snapshot(), headers=NO_STORE)
+        return JSONResponse(snapshot(), headers=NO_STORE)
 
     @app.post("/api/connect")
     async def connect(body: ConnectBody) -> dict:
@@ -341,15 +414,15 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
     @app.post("/api/check")
     async def check(body: CheckBody) -> dict:
         report = await runner.check(body.move_id, body.move_password, body.speed)
-        last = runner.snapshot().get("check") or {}
+        last = runner.snapshot()["check"]      # absent after a check is a bug: a 500
         return {
             "checks": [asdict(c) for c in report.checks],
             "can_start": report.can_start,
-            "summary": {"servers": last.get("servers", len(report.roster)),
-                        "containers": last.get("containers_found", len(report.containers)),
-                        "trucks": last.get("trucks_found", len(report.trucks)),
-                        "containers_needed": last.get("containers_needed"),
-                        "trucks_needed": last.get("trucks_needed")},
+            "summary": {"servers": last["servers"],
+                        "containers": last["containers_found"],
+                        "trucks": last["trucks_found"],
+                        "containers_needed": last["containers_needed"],
+                        "trucks_needed": last["trucks_needed"]},
         }
 
     @app.post("/api/start", status_code=202)
@@ -359,7 +432,11 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
 
     @app.post("/api/stop", status_code=202)
     async def stop() -> dict:
-        await runner.stop()
+        """Answers at once; the stop runs on. The snapshot says `stopping` meanwhile."""
+        if not stop_in_flight():
+            if runner.phase not in ACTIVE:
+                raise RunnerError("bad_phase", MESSAGES["bad_phase"])
+            app.state.stop_task = asyncio.create_task(run_stop())
         return {}
 
     @app.post("/api/continue")
@@ -382,7 +459,8 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
     @app.get("/api/events")
     async def events(request: Request) -> StreamingResponse:
         return StreamingResponse(
-            event_stream(runner, request.is_disconnected, stopping=stopping),
+            event_stream(runner, request.is_disconnected, stopping=stopping,
+                         snapshot=snapshot),
             media_type="text/event-stream",
             headers={**NO_STORE, "X-Accel-Buffering": "no"})
 
