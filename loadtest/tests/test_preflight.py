@@ -1,3 +1,4 @@
+import re
 from dataclasses import replace
 
 import httpx
@@ -123,8 +124,9 @@ async def test_all_good(setup):
     got = by_key(report)
     assert got["notifications"].detail == NOTIFICATIONS_DETAIL
     assert got["route"].detail.startswith("Found a ")
-    assert "km road route from Origin 1 to Destination 1 (asked router.example.test)." \
-        in got["route"].detail
+    # miles, rounded, with a thousands separator
+    assert re.fullmatch(r"Found an? [\d,]+-mile road route from Origin 1 to Destination 1 "
+                        r"\(asked router\.example\.test\)\.", got["route"].detail)
     assert got["server_ready"].detail == "2 of 2 background workers running; not read-only."
     assert got["containers"].detail == "3 needed, 3 found, all empty."
     assert got["clock"].detail == "This machine's clock and the server's agree."
@@ -628,3 +630,11 @@ async def test_no_date_header_leaves_the_clocks_unchecked_but_never_fails(setup)
     got = by_key(report)["clock"]
     assert (got.status, got.detail) == ("warn", NO_SERVER_CLOCK)
     assert report.clock_offset is None and report.can_start
+
+
+@pytest.mark.parametrize("miles, words", [(168, "a 168-mile"), (8, "an 8-mile"),
+                                          (11, "an 11-mile"), (1094, "a 1,094-mile"),
+                                          (18400, "an 18,400-mile"), (110, "a 110-mile")])
+def test_route_length_reads_well(miles, words):
+    from loadtest.preflight import route_length
+    assert route_length(miles) == words

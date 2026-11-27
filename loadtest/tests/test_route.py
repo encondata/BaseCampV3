@@ -4,7 +4,7 @@ import math
 import httpx
 import pytest
 
-from loadtest.route import NoRoute, RouteError, fetch_route, line_km, points_along
+from loadtest.route import NoRoute, RouteError, fetch_route, line_km, line_miles, points_along
 
 DALLAS = (32.7, -96.8)
 ATLANTA = (33.7, -84.4)
@@ -74,6 +74,11 @@ def test_points_along_rejects_bad_input():
         points_along([(0, 0), (0, 1)], 0)
     with pytest.raises(ValueError):
         points_along([(0, 0)], 3)
+
+
+def test_line_miles_is_the_length_in_miles():
+    line = [(32.7767, -96.7970), (33.7490, -84.3880)]
+    assert line_miles(line) == pytest.approx(line_km(line) / 1.609344)
 
 
 def test_line_km_sums_the_segments():

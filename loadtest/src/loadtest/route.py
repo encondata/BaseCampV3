@@ -14,6 +14,7 @@ import httpx
 
 DEFAULT_ROUTER = "https://router.project-osrm.org"
 EARTH_RADIUS_KM = 6371.0088
+KM_PER_MILE = 1.609344
 ATTEMPTS = 3            # one attempt plus two retries on transport errors
 TIMEOUT_SECONDS = 30.0
 
@@ -86,6 +87,11 @@ def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
 def line_km(line: list[tuple[float, float]]) -> float:
     """The line's length in kilometers (haversine, summed over its segments)."""
     return sum(_km(a, b) for a, b in itertools.pairwise(line))
+
+
+def line_miles(line: list[tuple[float, float]]) -> float:
+    """The line's length in miles."""
+    return line_km(line) / KM_PER_MILE
 
 
 def points_along(line: list[tuple[float, float]], count: int) -> list[tuple[float, float]]:

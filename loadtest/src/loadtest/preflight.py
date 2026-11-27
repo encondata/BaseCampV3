@@ -28,7 +28,7 @@ from .clock import Clock
 from .http import CallFailed
 from .metrics import Metrics
 from .profile import Profile, containers_needed, trucks_needed
-from .route import NoRoute, RouteError, fetch_route, line_km, points_along
+from .route import NoRoute, RouteError, fetch_route, line_miles, points_along
 
 Status = Literal["pass", "fail", "warn"]
 
@@ -136,6 +136,13 @@ def _coordinates(site: SiteInfo | None) -> tuple[float, float] | None:
     if site is None or site.lat is None or site.lng is None:
         return None
     return (site.lat, site.lng)
+
+
+def route_length(miles: int) -> str:
+    """"a 168-mile", "an 8-mile", "an 11-mile", "a 1,094-mile": a or an as it is said."""
+    digits = str(miles)
+    vowel = digits.startswith("8") or (digits[:2] in ("11", "18") and len(digits) in (2, 5))
+    return f"{'an' if vowel else 'a'} {miles:,}-mile"
 
 
 def sign_in_failure(exc: Exception, then: str = "check again") -> str:
@@ -418,7 +425,8 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
             else:
                 route = points_along(line, profile.trip.updates)
                 add("route", label, "pass",
-                    f"Found a {line_km(line):,.0f} km road route from {move.origin.name} to "
+                    f"Found {route_length(round(line_miles(line)))} road route from "
+                    f"{move.origin.name} to "
                     f"{move.destination.name} (asked {host}).")
 
     # ── checkpoints ──
