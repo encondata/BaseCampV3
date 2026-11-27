@@ -163,3 +163,81 @@ def test_retry_attempts_at_least_one(tmp_path):
 def test_retry_needs_a_backoff_value(tmp_path):
     _expect(tmp_path, lambda t: t.replace("backoff_seconds = [1, 2, 5, 10, 30]",
                                           "backoff_seconds = []"), "backoff_seconds")
+
+
+def test_invalid_toml_names_line(tmp_path):
+    path = tmp_path / "bad.toml"
+    path.write_text('container_size = 20\nbroken = = 1\n')
+    with pytest.raises(ProfileError) as err:
+        load_profile(path)
+    assert "line 2" in str(err.value)
+
+
+@pytest.mark.parametrize("old,new,words", [
+    ("crews = 5", 'crews = "x"', ("enroll", "crews")),
+    ("[15, 15]", '"15"', ("enroll", "seconds")),
+    ("[15, 15]", "[15]", ("enroll", "seconds")),
+    ("[15, 15]", '[15, "x"]', ("enroll", "seconds")),
+    ("hours = 17", 'hours = "17"', ("hours",)),
+    ("backoff_seconds = [1, 2, 5, 10, 30]", "backoff_seconds = 5", ("backoff_seconds",)),
+    ("backoff_seconds = [1, 2, 5, 10, 30]", 'backoff_seconds = [1, "x"]', ("backoff_seconds",)),
+    ("attempts = 5", "attempts = true", ("attempts",)),
+    ("pause_seconds = [900, 900]", "pause_seconds = 900", ("pause_seconds",)),
+    ('label = "RFID enroll"', "label = 3", ("enroll", "label")),
+])
+def test_wrong_type_is_a_profile_error(tmp_path, old, new, words):
+    _expect(tmp_path, lambda t: t.replace(old, new, 1), *words)
+
+
+def test_stage_not_a_list_of_tables(tmp_path):
+    def edit(text):
+        return text[: text.index("[[stage]]")].replace("[retry]", "stage = 5\n\n[retry]", 1)
+    # "stage = 5" placed before [retry] is a top-level key
+    _expect(tmp_path, edit, "stage")
+
+
+def test_retry_not_a_table(tmp_path):
+    def edit(text):
+        block = "[retry]\nattempts = 5\nbackoff_seconds = [1, 2, 5, 10, 30]\n"
+        assert block in text
+        return "retry = 5\n" + text.replace(block, "")
+    _expect(tmp_path, edit, "retry")
+
+
+@pytest.mark.parametrize("field", ["container_size", "containers_per_truck"])
+@pytest.mark.parametrize("value", ["0", "2.5", '"20"'])
+def test_size_fields_are_whole_and_positive(tmp_path, field, value):
+    _expect(tmp_path, lambda t: re.sub(rf"^{field} = .*$", f"{field} = {value}", t, flags=re.M),
+            field)
+
+
+@pytest.mark.parametrize("field", ["heartbeat_seconds", "sample_seconds",
+                                   "request_timeout_seconds"])
+@pytest.mark.parametrize("value", ["0", "-1", '"x"'])
+def test_second_fields_are_positive(tmp_path, field, value):
+    _expect(tmp_path, lambda t: re.sub(rf"^{field} = .*$", f"{field} = {value}", t, flags=re.M),
+            field)
+
+
+@pytest.mark.parametrize("value", ['""', "3"])
+def test_final_status_non_empty_string(tmp_path, value):
+    _expect(tmp_path, lambda t: t.replace('final_status = "complete"',
+                                          f"final_status = {value}"), "final_status")
+
+
+@pytest.mark.parametrize("old,new,field", [
+    ("devices = 0", "devices = 1", "devices"),
+    ("crews = 0", "crews = 1", "crews"),
+    ("devices = 0", 'devices = 0\ndevice = "handheld"', "device"),
+    ("devices = 0", 'devices = 0\ncheckpoint = "qa"', "checkpoint"),
+])
+def test_trip_stage_has_no_devices_crews_device_or_checkpoint(tmp_path, old, new, field):
+    _expect(tmp_path, _stage_edit("trip", old, new), "trip", field)
+
+
+def test_site_outside_origin_destination(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'site = "destination"', 'site = "moon"'), "qa", "site")
+
+
+def test_missing_stage_key(tmp_path):
+    _expect(tmp_path, _stage_edit("qa", 'label = "QA"\n', ""), "qa", "label")

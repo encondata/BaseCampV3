@@ -99,6 +99,41 @@ def profile_path(name: str) -> Path:
     return Path(__file__).resolve().parents[2] / "profiles" / f"{name}.toml"
 
 
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _whole(where: str, field: str, v, minimum: int = 0) -> int:
+    ok = isinstance(v, int) and not isinstance(v, bool)
+    if not ok and isinstance(v, float) and v == int(v):
+        ok, v = True, int(v)
+    if not ok:
+        raise ProfileError(f"{where}: {field} must be a whole number")
+    if v < minimum:
+        raise ProfileError(f"{where}: {field} must be at least {minimum}")
+    return int(v)
+
+
+def _number(where: str, field: str, v, positive: bool = False) -> float:
+    if not _is_num(v):
+        raise ProfileError(f"{where}: {field} must be a number")
+    if positive and v <= 0:
+        raise ProfileError(f"{where}: {field} must be greater than 0")
+    return float(v)
+
+
+def _text(where: str, field: str, v, required: bool = True) -> str:
+    if not isinstance(v, str) or (required and not v.strip()):
+        raise ProfileError(f"{where}: {field} must be a non-empty string")
+    return v
+
+
+def _table(where: str, v) -> dict:
+    if not isinstance(v, dict):
+        raise ProfileError(f"{where}: must be a table")
+    return v
+
+
 def _check_keys(where: str, table: dict, allowed: set[str], required: set[str] | None = None):
     for k in table:
         if k not in allowed:
@@ -109,8 +144,8 @@ def _check_keys(where: str, table: dict, allowed: set[str], required: set[str] |
 
 
 def _pair(where: str, field: str, value) -> tuple[float, float]:
-    if not isinstance(value, list) or len(value) != 2:
-        raise ProfileError(f"{where}: {field} must be [min, max]")
+    if not isinstance(value, list) or len(value) != 2 or not all(_is_num(x) for x in value):
+        raise ProfileError(f"{where}: {field} must be two numbers, [min, max]")
     lo, hi = float(value[0]), float(value[1])
     if lo < 0 or hi < 0:
         raise ProfileError(f"{where}: {field} must not be negative")
@@ -120,9 +155,15 @@ def _pair(where: str, field: str, value) -> tuple[float, float]:
 
 
 def _stage(raw: dict) -> StageSpec:
+    raw = _table("stage", raw)
     key = raw.get("key", "?")
     where = f"stage {key!r}"
     _check_keys(where, raw, _STAGE_KEYS, _STAGE_REQUIRED)
+    for field in ("key", "label", "site", "kind", "action", "per"):
+        _text(where, field, raw[field])
+    for field in ("checkpoint", "device"):
+        if field in raw:
+            _text(where, field, raw[field])
     if raw["site"] not in ("origin", "destination"):
         raise ProfileError(f"{where}: site must be 'origin' or 'destination'")
     if (raw["kind"], raw["action"]) not in _PAIRS:
@@ -130,9 +171,17 @@ def _stage(raw: dict) -> StageSpec:
             f"{where}: action {raw['action']!r} is not valid for kind {raw['kind']!r}"
         )
     seconds = _pair(where, "seconds", raw["seconds"])
-    if raw["kind"] != "trip":
-        for field in ("crews", "devices", "batch"):
-            if int(raw[field]) < 1:
+    counts = {f: _whole(where, f, raw[f]) for f in ("crews", "devices", "batch")}
+    if raw["kind"] == "trip":
+        for field in ("devices", "crews"):
+            if counts[field] != 0:
+                raise ProfileError(f"{where}: {field} must be 0 on the trip stage")
+        for field in ("device", "checkpoint"):
+            if field in raw:
+                raise ProfileError(f"{where}: the trip stage has no {field}")
+    else:
+        for field, n in counts.items():
+            if n < 1:
                 raise ProfileError(f"{where}: {field} must be at least 1")
         want = _DEVICE_FOR[raw["action"]]
         if raw.get("device") != want:
@@ -150,7 +199,7 @@ def _stage(raw: dict) -> StageSpec:
     return StageSpec(
         key=raw["key"], label=raw["label"], site=raw["site"], kind=raw["kind"],
         action=raw["action"], checkpoint=raw.get("checkpoint"), device=raw.get("device"),
-        devices=int(raw["devices"]), crews=int(raw["crews"]), batch=int(raw["batch"]),
+        devices=counts["devices"], crews=counts["crews"], batch=counts["batch"],
         seconds=seconds, per=raw["per"],
     )
 
@@ -188,37 +237,53 @@ def load_profile(path: Path) -> Profile:
     except tomllib.TOMLDecodeError as err:
         raise ProfileError(f"{path.name}: {err}") from err
     _check_keys("profile", raw, _TOP_KEYS)
-    _check_keys("retry", raw["retry"], _RETRY_KEYS)
-    _check_keys("trip", raw["trip"], _TRIP_KEYS)
+    retry = _table("retry", raw["retry"])
+    t = _table("trip", raw["trip"])
+    _check_keys("retry", retry, _RETRY_KEYS)
+    _check_keys("trip", t, _TRIP_KEYS)
 
-    retry = raw["retry"]
-    backoff = tuple(float(x) for x in retry["backoff_seconds"])
-    if int(retry["attempts"]) < 1:
-        raise ProfileError("retry: attempts must be at least 1")
+    container_size = _whole("profile", "container_size", raw["container_size"], 1)
+    per_truck = _whole("profile", "containers_per_truck", raw["containers_per_truck"], 1)
+    final_status = _text("profile", "final_status", raw["final_status"])
+    heartbeat = _number("profile", "heartbeat_seconds", raw["heartbeat_seconds"], True)
+    sample = _number("profile", "sample_seconds", raw["sample_seconds"], True)
+    timeout = _number("profile", "request_timeout_seconds", raw["request_timeout_seconds"], True)
+
+    attempts = _whole("retry", "attempts", retry["attempts"], 1)
+    raw_backoff = retry["backoff_seconds"]
+    if not isinstance(raw_backoff, list):
+        raise ProfileError("retry: backoff_seconds must be a list of numbers")
+    backoff = tuple(_number("retry", "backoff_seconds", x) for x in raw_backoff)
     if not backoff:
         raise ProfileError("retry: backoff_seconds needs at least one value")
-    t = raw["trip"]
-    updates = float(t["hours"]) * 60 / float(t["update_minutes"])
+    if any(x < 0 for x in backoff):
+        raise ProfileError("retry: backoff_seconds must not be negative")
+    hours = _number("trip", "hours", t["hours"], True)
+    minutes = _number("trip", "update_minutes", t["update_minutes"], True)
+    updates = hours * 60 / minutes
     if updates < 1 or abs(updates - round(updates)) > 1e-9:
         raise ProfileError(
             "trip: hours * 60 / update_minutes must be a whole number of at least 1 "
             "(check hours and update_minutes)"
         )
     trip = TripSpec(
-        hours=float(t["hours"]), update_minutes=float(t["update_minutes"]),
+        hours=hours, update_minutes=minutes,
         pause_seconds=_pair("trip", "pause_seconds", t["pause_seconds"]),
     )
-    stages = tuple(_stage(s) for s in raw["stage"])
+    raw_stages = raw["stage"]
+    if not isinstance(raw_stages, list) or not all(isinstance(s, dict) for s in raw_stages):
+        raise ProfileError("stage: must be a list of [[stage]] tables")
+    stages = tuple(_stage(s) for s in raw_stages)
     _validate_layout(stages)
     return Profile(
         name=path.stem,
-        container_size=int(raw["container_size"]),
-        containers_per_truck=int(raw["containers_per_truck"]),
-        final_status=str(raw["final_status"]),
-        heartbeat_seconds=float(raw["heartbeat_seconds"]),
-        sample_seconds=float(raw["sample_seconds"]),
-        request_timeout_seconds=float(raw["request_timeout_seconds"]),
-        retry=RetrySpec(attempts=int(retry["attempts"]), backoff_seconds=backoff),
+        container_size=container_size,
+        containers_per_truck=per_truck,
+        final_status=final_status,
+        heartbeat_seconds=heartbeat,
+        sample_seconds=sample,
+        request_timeout_seconds=timeout,
+        retry=RetrySpec(attempts=attempts, backoff_seconds=backoff),
         trip=trip, stages=stages, raw=raw,
     )
 
