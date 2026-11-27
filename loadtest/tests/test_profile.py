@@ -291,3 +291,22 @@ def test_non_utf8_file_is_a_profile_error(tmp_path):
     with pytest.raises(ProfileError) as err:
         load_profile(path)
     assert "latin.toml" in str(err.value) and "UTF-8" in str(err.value)
+
+
+@pytest.mark.parametrize("name", ["real-time", "fast"])
+def test_profile_from_raw_rebuilds_the_bundled_profiles(name):
+    from loadtest.profile import profile_from_raw
+
+    path = profile_path(name)
+    assert profile_from_raw(load_profile(path).raw, name=path.stem) == load_profile(path)
+
+
+def test_profile_from_raw_validates_like_load_profile():
+    from loadtest.profile import profile_from_raw
+
+    raw = dict(load_profile(profile_path("fast")).raw)
+    raw["container_size"] = 0
+    with pytest.raises(ProfileError, match="container_size must be at least 1"):
+        profile_from_raw(raw)
+    with pytest.raises(ProfileError, match="unknown key 'extra'"):
+        profile_from_raw({**raw, "extra": 1})

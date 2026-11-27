@@ -246,6 +246,13 @@ def load_profile(path: Path) -> Profile:
         raise ProfileError(f"{path}: profile file is not valid UTF-8") from err
     except tomllib.TOMLDecodeError as err:
         raise ProfileError(f"{path.name}: {err}") from err
+    return profile_from_raw(raw, name=path.stem)
+
+
+def profile_from_raw(raw: dict, *, name: str = "custom") -> Profile:
+    """A profile from its parsed TOML (a run's `profile_raw`), with the same checks and
+    errors as load_profile. `name` is what load_profile takes from the file name."""
+    _table("profile", raw)
     _check_keys("profile", raw, _TOP_KEYS)
     retry = _table("retry", raw["retry"])
     t = _table("trip", raw["trip"])
@@ -288,7 +295,7 @@ def load_profile(path: Path) -> Profile:
     stages = tuple(_stage(s) for s in raw_stages)
     _validate_layout(stages)
     return Profile(
-        name=path.stem,
+        name=name,
         container_size=container_size,
         containers_per_truck=per_truck,
         final_status=final_status,
