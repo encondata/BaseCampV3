@@ -14,6 +14,7 @@ from .metrics import Metrics
 
 T = TypeVar("T")
 CATCH_UP_POLL_SECONDS = 1.0
+HEALTH_FLAG = "db_health"
 
 
 async def _read(call: Awaitable[T]) -> tuple[bool, T | None]:
@@ -32,9 +33,13 @@ class Sampler:
         self.metrics = metrics
         self.clock = clock
         self.every = every
-        # A failed read leaves its value as it was.
-        self.latest: dict = {"waiting": None, "waiting_peak": 0, "workers": None, "totals": {}}
-        self._health: str = "not_sampled"
+        # A failed read leaves its value as it was. A continued run starts from the peak
+        # and the database-health state its metrics replayed.
+        self.latest: dict = {"waiting": None,
+                             "waiting_peak": max(metrics.values("waiting"), default=0),
+                             "workers": None, "totals": {}}
+        self._health: str = metrics.flags().get(
+            HEALTH_FLAG, "sampled" if metrics.values("db_health") else "not_sampled")
 
     @property
     def db_health_state(self) -> str:
@@ -96,7 +101,9 @@ class Sampler:
             ok, health = await _read(self.portal.db_health())
             if ok and health is None:
                 self._health = "not_available"
+                self.metrics.flag(HEALTH_FLAG, self._health)
             elif ok:
                 self._health = "sampled"
+                self.metrics.flag(HEALTH_FLAG, self._health)
                 self.metrics.sample("db_health", self.clock.now(), health)
 

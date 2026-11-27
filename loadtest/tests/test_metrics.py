@@ -1,6 +1,7 @@
 import json
 
-from loadtest.metrics import DEFAULT_BACKGROUND, Metrics
+from loadtest import metrics as metrics_mod
+from loadtest.metrics import DEFAULT_BACKGROUND, METRICS_NAME, Metrics
 
 
 def test_percentiles_use_linear_interpolation():
@@ -94,3 +95,89 @@ def test_untimed_failure_counts_without_a_latency_sample():
     assert (row["count"], row["failures"]) == (1, 1)
     assert (row["median_ms"], row["p95_ms"], row["max_ms"]) == (None, None, None)
     assert m.failed_calls() == 2
+
+
+# ── the run folder's metrics.jsonl ─────────────────────────────────────
+
+
+def fill(m: Metrics) -> None:
+    m.record("pack", 12.5, True, retries=1)
+    m.record("truck-location", None, False)
+    m.count("locations_retried", 2)
+    m.sample("waiting", 100.0, 7)
+    m.sample("db_health", 101.0, {"latency_ms": 1.5, "groups": [{"n": 1}]})
+    m.flag("db_health", "sampled")
+
+
+def same(a: Metrics, b: Metrics) -> None:
+    assert (a.calls(), a.counters(), a.series(), a.flags(), a.failed_calls()) == (
+        b.calls(), b.counters(), b.series(), b.flags(), b.failed_calls())
+
+
+def test_a_reopened_log_gives_back_every_statistic(tmp_path):
+    path = tmp_path / METRICS_NAME
+    first = Metrics()
+    first.open_log(path)
+    fill(first)
+    first.close_log()
+    again = Metrics()
+    again.open_log(path)
+    same(again, first)
+    assert again.flags() == {"db_health": "sampled"}
+    again.record("pack", 20.0, True)            # later records add to the replayed ones
+    again.close_log()
+    third = Metrics()
+    third.open_log(path)
+    assert third.calls()["pack"]["count"] == 2
+    third.close_log()
+
+
+def test_every_record_is_flushed_as_it_is_written(tmp_path):
+    """A copy of the folder taken at any instant (a kill -9) holds every record so far."""
+    path = tmp_path / METRICS_NAME
+    m = Metrics()
+    m.open_log(path)
+    fill(m)
+    lines = path.read_text().splitlines()
+    assert len(lines) == 6 and all(json.loads(line)["k"] for line in lines)
+    m.close_log()
+
+
+def test_a_torn_last_line_is_ignored_and_repaired(tmp_path):
+    path = tmp_path / METRICS_NAME
+    m = Metrics()
+    m.open_log(path)
+    fill(m)
+    m.close_log()
+    with open(path, "ab") as fh:
+        fh.write(b'{"k":"r","c":"pack","ms":1')
+    again = Metrics()
+    again.open_log(path)
+    same(again, m)
+    again.count("scans_retried")                 # not glued onto the torn line
+    again.close_log()
+    third = Metrics()
+    third.open_log(path)
+    assert third.counters()["scans_retried"] == 1
+    third.close_log()
+
+
+def test_fsync_is_throttled_and_close_syncs(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(metrics_mod.os, "fsync", lambda fd: synced.append(fd))
+    m = Metrics()
+    m.open_log(tmp_path / METRICS_NAME)
+    for i in range(50):
+        m.record("pack", 1.0, True)
+    assert len(synced) <= 1
+    m.close_log()
+    assert len(synced) >= 1
+    m.record("pack", 1.0, True)                  # after close: kept in memory only
+    assert m.calls()["pack"]["count"] == 51
+
+
+def test_without_a_log_nothing_is_written(tmp_path):
+    m = Metrics()
+    fill(m)
+    m.close_log()
+    assert list(tmp_path.iterdir()) == []

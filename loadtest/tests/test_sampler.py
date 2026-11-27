@@ -169,3 +169,21 @@ async def test_catch_up_gives_up_at_the_timeout(fake, clock, setup):
     start = clock.now()
     assert await clock.run(catch_up()) is None
     assert clock.now() - start == 45.0                    # the last reading inside 45 s
+
+
+@pytest.mark.parametrize("flag, series, want", [
+    (None, False, "not_sampled"), (None, True, "sampled"),
+    ("not_available", False, "not_available"), ("sampled", True, "sampled")])
+def test_a_continued_run_starts_from_the_replayed_peak_and_health(flag, series, want):
+    """A continued run's Metrics replays metrics.jsonl before its sampler starts."""
+    from loadtest.metrics import Metrics
+    metrics = Metrics()
+    for at, waiting in ((1.0, 4), (2.0, 19), (3.0, 7)):
+        metrics.sample("waiting", at, waiting)
+    if series:
+        metrics.sample("db_health", 3.0, {"latency_ms": 1.0})
+    if flag:
+        metrics.flag("db_health", flag)
+    sampler = Sampler(portal=None, move_id="m", metrics=metrics, clock=None, every=EVERY)
+    assert sampler.latest["waiting_peak"] == 19
+    assert sampler.db_health_state == want

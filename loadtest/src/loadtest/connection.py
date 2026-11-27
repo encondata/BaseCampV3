@@ -7,8 +7,6 @@ line to stderr and never an exception's text, which could quote a request.
 
 from __future__ import annotations
 
-import sys
-import traceback
 from urllib.parse import urlsplit
 
 import httpx
@@ -18,6 +16,8 @@ from .client.portal import MoveInfo, PortalClient, TotpEnrollRequired
 from .clock import Clock
 from .fleet import FleetError
 from .http import CallFailed
+from .logline import leaf as _leaf
+from .logline import log
 from .metrics import Metrics
 from .preflight import BAD_ANSWER as KIOSK_FAILURES
 from .preflight import CHECK_NAME, CHECK_SERIAL, setup_failure, sign_in_failure
@@ -93,28 +93,11 @@ def sign_in_error(exc: Exception, refused: str) -> RunnerError:
     return RunnerError("bad_answer")
 
 
-def _leaf(exc: BaseException) -> BaseException:
-    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        exc = exc.exceptions[0]
-    return exc
-
-
 def safe_error(exc: BaseException) -> str:
     leaf = _leaf(exc)
     if isinstance(leaf, FleetError):
         return str(leaf)
     return f"The run stopped because of an unexpected problem: {type(leaf).__name__}."
-
-
-def log(what: str, exc: BaseException | None = None) -> None:
-    """One line on stderr: never the exception text, which could quote a request."""
-    where = ""
-    if exc is not None:
-        leaf = _leaf(exc)
-        frames = traceback.extract_tb(leaf.__traceback__)
-        where = f" ({type(leaf).__name__} at {frames[-1].filename}:{frames[-1].lineno})" \
-            if frames else f" ({type(leaf).__name__})"
-    print(f"loadtest: {what}{where}", file=sys.stderr)
 
 
 class Connection:

@@ -285,8 +285,10 @@ On Continue:
 - The result lists each interruption: when it stopped and how long it was
   down.
 
-The Calls table after a Continue counts only the calls made since the
-Continue.
+The result covers the whole run. The calls, counters and samples are
+saved as they happen in `metrics.jsonl` in the run's folder, and a
+Continue picks them up again, so the Calls table and the backlog include
+the time before each interruption.
 
 ## What a run leaves on the server
 

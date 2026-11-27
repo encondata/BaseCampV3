@@ -16,7 +16,6 @@ serials or names.
 from __future__ import annotations
 
 import asyncio
-import math
 from collections import Counter
 from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
@@ -24,7 +23,7 @@ from typing import Literal, TypeVar
 
 from .actions import truck_label
 from .client.portal import AssetScan, PortalClient
-from .metrics import Metrics
+from .metrics import Metrics, percentile
 from .profile import Profile, StageSpec
 from .state import RunState, Server
 
@@ -85,22 +84,12 @@ def _could_not_read(what: str, check: str, plural: bool = False) -> Finding:
 # ── helpers ────────────────────────────────────────────────────────────
 
 
-def _percentile(ordered: list[float], p: float) -> float:
-    """Linear interpolation between closest ranks (as metrics.py does)."""
-    if len(ordered) == 1:
-        return ordered[0]
-    rank = p * (len(ordered) - 1)
-    lo = math.floor(rank)
-    hi = min(lo + 1, len(ordered) - 1)
-    return ordered[lo] + (ordered[hi] - ordered[lo]) * (rank - lo)
-
-
 def _delays(values: list[float]) -> dict:
     if not values:
         return {"median": None, "p95": None, "max": None}
     ordered = sorted(values)
-    return {"median": round(_percentile(ordered, 0.5), 1),
-            "p95": round(_percentile(ordered, 0.95), 1), "max": round(ordered[-1], 1)}
+    return {"median": round(percentile(ordered, 0.5), 1),
+            "p95": round(percentile(ordered, 0.95), 1), "max": round(ordered[-1], 1)}
 
 
 async def _read(call: Awaitable[T]) -> tuple[bool, T | None]:

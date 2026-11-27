@@ -24,7 +24,7 @@ from .events import Events, FeedLine
 from .finalcheck import FinalReport, Finding, final_check
 from .fleet import Fleet, FleetError
 from .journal import JOURNAL_NAME, Journal
-from .metrics import Metrics
+from .metrics import METRICS_NAME, Metrics
 from .pipeline import Pipeline, Step
 from .profile import Profile
 from .results import build_results, write_results
@@ -136,6 +136,12 @@ class RunDriver:
             journal.close()
             raise RunnerError("cannot_write") from None
         metrics = Metrics()
+        try:
+            metrics.open_log(run_dir / METRICS_NAME)     # a continued run replays it
+        except OSError:
+            journal.close()
+            events.close()
+            raise RunnerError("cannot_write") from None
         portal.metrics, portal.retry = metrics, profile.retry
         run = Run(state=state, profile=profile, move=move, run_dir=run_dir, journal=journal,
                   events=events, metrics=metrics, portal=portal, move_password=move_password,
@@ -417,6 +423,10 @@ class RunDriver:
         except OSError as exc:
             log("could not close the journal", exc)
         run.events.close()
+        try:
+            run.metrics.close_log()
+        except OSError as exc:
+            log("could not close metrics.jsonl", exc)
         # Keep only what snapshot() and result() read: nothing that holds a password.
         run.move_password, run.secrets = None, ()
         run.portal = run.fleet = run.actions = None

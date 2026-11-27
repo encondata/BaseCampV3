@@ -661,7 +661,7 @@ async def test_continue_after_a_crash_finishes_the_move(world, fake, clock):
 
 async def test_a_step_that_failed_before_a_continue_still_fails_the_run(world, fake, clock):
     """A truck location update fails for good, the tool is killed and continued: the
-    verdict still says so."""
+    verdict still says so, and so does the Calls table of the whole run."""
     first = world.runner()
     await world.ready(first)
     fake.fail("POST", r"/trucks/[^/]+/updates", status=503, times=6)   # every attempt
@@ -682,6 +682,40 @@ async def test_a_step_that_failed_before_a_continue_still_fails_the_run(world, f
     assert result["verdict"] == "Fail"
     assert f"1 truck location update failed for {truck}." in [
         f["text"] for f in result["findings"]]
+    assert "1 call failed for good (see the call table)." in [
+        f["text"] for f in result["findings"]]
+    assert result["calls"]["truck-location"]["failures"] == 1
+    assert runner.snapshot()["server"]["failed_calls"] == 1
+
+
+async def test_statistics_cover_the_whole_run_after_a_continue(world, fake, clock):
+    """Calls, counters, series, the backlog peak and the database-health state all come
+    back from metrics.jsonl when a run is continued."""
+    first = world.runner()
+    await world.ready(first)
+    await first.start()
+    world.process_scans(duplicate_on_replay=False)
+    with pytest.raises(TimeoutError):
+        await clock.run(first.wait(), limit=40)
+    before = first._driver.run.metrics
+    calls_before = before.calls()
+    first._driver.run.sampler.latest["waiting_peak"] = 0     # only the file may bring it back
+    peak = max(before.values("waiting"))
+    assert peak > 0 and calls_before["enroll"]["count"] > 0
+    await hard_crash(world, first)
+    runner = world.runner()
+    await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    after = runner._driver.run.metrics
+    assert after.calls() == calls_before            # replayed before anything new is sent
+    await clock.run(runner.wait())
+    result = runner.result()
+    assert result["verdict"] == "Pass", result["findings"]
+    assert result["calls"]["enroll"]["count"] == SERVERS      # each server once, whole run
+    assert result["calls"]["pack"]["count"] == SERVERS
+    assert result["backlog"]["peak"] >= peak
+    assert result["series"]["waiting"][0] == before.series()["waiting"][0]
+    assert result["db_health"] == "sampled"
+    assert runner._driver.run.sampler.latest["waiting_peak"] >= peak
 
 
 class TickingClock(FakeClock):
