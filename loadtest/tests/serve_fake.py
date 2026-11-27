@@ -51,7 +51,8 @@ def build(*, truck_rules: bool) -> FakeBaseCamp:
 async def main(port: int, truck_rules: bool) -> None:
     fake = build(truck_rules=truck_rules)
     server = uvicorn.Server(uvicorn.Config(fake.app, host="127.0.0.1", port=port,
-                                           log_level="warning", lifespan="off"))
+                                           log_level="warning", lifespan="off",
+                                           date_header=False))   # the fake sends its own
 
     async def tick() -> None:
         while True:
