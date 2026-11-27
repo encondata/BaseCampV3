@@ -823,6 +823,15 @@ export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
   cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', switchyard: 'Switchyard', proxmox: 'Proxmox', esxi: 'VMware ESXi',
   digitalocean: 'DigitalOcean',
 };
+/** The field behind an environment's proxy_ip. On NPM it is NPM's LAN address; Switchyard
+ *  isn't on the LAN, so there it is only the address its requests arrive from. */
+export function proxyIpField(proxy: ProxyKind | null | undefined): { label: string; hint: string } {
+  return proxy === 'switchyard'
+    ? { label: 'Forwarded-for IP',
+        hint: "The address Switchyard's requests reach this server from. The API trusts visitor addresses only from it." }
+    : { label: 'Proxy IP',
+        hint: `${INTEGRATION_LABEL[proxy ?? 'npm']}'s LAN address. The apps trust forwarded headers from it only.` };
+}
 export interface CloudflareIntegration {
   configured: boolean; zone: string | null; public_ip: string | null; token_set: boolean;
   updated_at: string | null; updated_by_name: string | null;

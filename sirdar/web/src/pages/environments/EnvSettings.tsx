@@ -14,7 +14,7 @@ import {
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
 import { FCM_KEY, FCM_REFUSED } from '../../lib/fcmKey';
 import {
-  INTEGRATION_LABEL, deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
+  INTEGRATION_LABEL, deployErrorText, errorDetail, getEnvironmentDefaults, proxyIpField, updateEnvironment,
   type DeployTarget, type Deployment, type Environment, type EnvironmentPatch, type VmDefaults,
 } from '../../lib/sirdarApi';
 
@@ -149,7 +149,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     put('ref', refProblem(form.ref));
     if (!cloud) {
       put('domain', form.domain.trim() ? '' : 'Enter a base domain.');
-      put('proxy', ipv4Problem(form.proxy, 'proxy IP'));
+      put('proxy', ipv4Problem(form.proxy, env.proxy === 'switchyard' ? 'forwarded-for IP' : 'proxy IP'));
       put('bind', ipv4Problem(form.bind, 'bind IP'));
       put('bucket', BUCKET_RE.test(form.bucket.trim()) ? ''
         : "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).");
@@ -311,8 +311,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
             <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain}
                        disabled={off} hint={'Each service is named <service>.<base domain>.'}
                        onChange={(v) => set('domain', v)} />
-            <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
-                       hint={env.proxy ? `Published through ${INTEGRATION_LABEL[env.proxy]}, chosen when it was created.` : undefined}
+            <TextField id="env-set-proxy" label={proxyIpField(env.proxy).label} value={form.proxy} error={errors.proxy}
+                       disabled={off}
+                       hint={env.proxy ? `Published through ${INTEGRATION_LABEL[env.proxy]}, chosen when it was created.`
+                         + (env.proxy === 'switchyard' ? ` ${proxyIpField(env.proxy).hint}` : '') : undefined}
                        onChange={(v) => set('proxy', v)} />
             <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={off}
                        onChange={(v) => set('bind', v)} />

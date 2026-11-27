@@ -2,7 +2,7 @@
 import { Link } from 'react-router-dom';
 
 import { parseDigests } from '../../../lib/appRules';
-import { INTEGRATION_LABEL } from '../../../lib/sirdarApi';
+import { INTEGRATION_LABEL, proxyIpField } from '../../../lib/sirdarApi';
 import { KIND_LABEL, OPTIONAL_APPS, effectiveDomain, sendsAdmin, targetChoices, targetKind } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
@@ -35,7 +35,7 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
         ) : (
           <>
             <dt>Proxy</dt><dd>{INTEGRATION_LABEL[state.proxy]}</dd>
-            <dt>Proxy IP · Bind IP</dt><dd className="mono">{`${state.proxyIp} · ${state.bindIp}`}</dd>
+            <dt>{proxyIpField(state.proxy).label} · Bind IP</dt><dd className="mono">{`${state.proxyIp} · ${state.bindIp}`}</dd>
           </>
         )}
         {(kind === 'esxi' || kind === 'proxmox') && (

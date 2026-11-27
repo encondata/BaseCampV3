@@ -19,14 +19,14 @@ describe('the proxy', () => {
   const both = flowCtx({ integrations: { ...FLOW_INTEGRATIONS, switchyard: SWITCHYARD_ON } });
   it('preselects Switchyard, and its address', () => {
     const s = initialState(both);
-    expect([s.proxy, s.proxyIp, s.publish]).toEqual(['switchyard', '10.10.48.8', true]);
+    expect([s.proxy, s.proxyIp, s.publish]).toEqual(['switchyard', '', true]);
   });
   it('preselects Nginx Proxy Manager when only it is set up', () => {
     expect(initialState(ctx).proxy).toBe('npm');
     const none = flowCtx({ integrations: { ...FLOW_INTEGRATIONS, npm: { ...FLOW_INTEGRATIONS.npm, configured: false } } });
     expect(initialState(none).proxy).toBe('switchyard');
   });
-  it('a choice moves a prefilled Proxy IP and keeps a typed one', () => {
+  it('a choice moves a prefilled proxy IP and keeps a typed one', () => {
     const s = initialState(both);
     expect(withProxy(s, both, 'npm')).toEqual({ proxy: 'npm', publish: true, proxyIp: '10.10.48.6' });
     expect(withProxy({ ...s, proxyIp: '10.0.0.9' }, both, 'npm')).toEqual({ proxy: 'npm', publish: true });
