@@ -23,7 +23,14 @@ from typing import Literal
 import httpx
 
 from ..clock import Clock
-from ..http import CallFailed, TokenExpired, renewing_call, sendable_cookie, timed_call
+from ..http import (
+    CallFailed,
+    TokenExpired,
+    error_code,
+    renewing_call,
+    sendable_cookie,
+    timed_call,
+)
 from ..metrics import Metrics
 from ..profile import RetrySpec
 
@@ -50,6 +57,16 @@ async def _count_attempt(request: httpx.Request) -> None:
 class SiteInfo:
     id: str
     name: str
+    lat: float | None
+    lng: float | None
+
+
+@dataclass(frozen=True)
+class SiteChoice:
+    """One row of the server's site list (GET /sites)."""
+    id: str
+    name: str
+    code: str | None
     lat: float | None
     lng: float | None
 
@@ -244,15 +261,16 @@ class PortalClient:
                 await self._refresh_locked()
 
     async def _timed(self, method: str, url: str, *, name: str, prior_attempts: int,
-                     **kwargs) -> tuple[httpx.Response, int]:
+                     retry: RetrySpec | None = None, **kwargs) -> tuple[httpx.Response, int]:
         """timed_call, also returning how many requests it sent. On CallFailed or
-        TokenExpired the count rides on the exception as `attempts`."""
+        TokenExpired the count rides on the exception as `attempts`. `retry` replaces
+        the sign-in's retries for this one call."""
         box = [0]
         reset = _attempts.set(box)
         try:
             response = await timed_call(
                 self._client, method, url, name=name, metrics=self.metrics, clock=self.clock,
-                retry=self.retry, headers={"Authorization": f"Bearer {self._token}"},
+                retry=retry or self.retry, headers={"Authorization": f"Bearer {self._token}"},
                 prior_attempts=prior_attempts, **kwargs)
         except (CallFailed, TokenExpired) as exc:
             exc.attempts = box[0]
@@ -372,6 +390,58 @@ class PortalClient:
         # the header is the server's time cut to the whole second: on average half a
         # second behind
         return stamp.timestamp() + 0.5 - (before + after) / 2
+
+    # ── Bulk Actions › Create a move in steps (api/routes/move_setup.py) ──
+    # The wizard's draft is one server-side record; nothing becomes a move until the
+    # create, which the server's import worker applies in one transaction. Retries:
+    # the draft is never resent (a lost answer would leave a second draft); the
+    # upload, the crates and trucks PATCH and the move PATCH are safe to resend (a
+    # new upload replaces the draft's check, the PATCHes set the same values); a
+    # resent create that finds the draft no longer editable means the first one
+    # landed, and a draft is created at most once, so it can never make two moves.
+
+    async def sites(self) -> list[SiteChoice]:
+        rows = await self._get("/sites")
+        return [SiteChoice(str(r["id"]), r["name"], r.get("code") or None, r.get("latitude"),
+                           r.get("longitude")) for r in rows]
+
+    async def start_move_draft(self, name: str, origin_site_id: str,
+                               destination_site_id: str) -> str:
+        """POST /bulk/move-setup: the draft's id."""
+        response, _ = await self._call(
+            "POST", "/bulk/move-setup", name="move-setup", retry=NO_RETRY,
+            json={"name": name, "initiative_type": "move", "origin_site_id": origin_site_id,
+                  "destination_site_id": destination_site_id})
+        return str(response.json()["id"])
+
+    async def upload_move_assets(self, draft_id: str, filename: str, content: bytes) -> None:
+        """The From-To file, with make_model_mode=force (unknown models are created)."""
+        await self._call("POST", f"/bulk/move-setup/{draft_id}/assets", name="move-setup",
+                         files={"file": (filename, content, "text/csv")},
+                         data={"make_model_mode": "force"})
+
+    async def move_assets_check(self, draft_id: str) -> dict:
+        """The draft's From-To check job (status, error, results)."""
+        return await self._get(f"/bulk/move-setup/{draft_id}/assets", name="move-setup")
+
+    async def set_move_crates_trucks(self, draft_id: str, crates: dict, trucks: dict) -> None:
+        await self._call("PATCH", f"/bulk/move-setup/{draft_id}", name="move-setup",
+                         json={"crates": crates, "trucks": trucks})
+
+    async def queue_move_create(self, draft_id: str) -> None:
+        await self._call("POST", f"/bulk/move-setup/{draft_id}/create", name="move-setup",
+                         already_done=lambda r: (r.status_code == 409
+                                                 and error_code(r) == "draft_not_editable"))
+
+    async def move_draft(self, draft_id: str) -> dict:
+        """The draft (status, error, results, initiative_id once created)."""
+        return await self._get(f"/bulk/move-setup/{draft_id}", name="move-setup")
+
+    async def activate_move(self, move_id: str, kiosk_password: str) -> None:
+        """The move's kiosk password and In progress, in one PATCH (one transaction on
+        the server: a refused password changes neither)."""
+        await self._call("PATCH", f"/initiatives/{move_id}", name="move-setup",
+                         json={"status": "in_progress", "kiosk_password": kiosk_password})
 
     # ── truck calls ────────────────────────────────────────────────────
 

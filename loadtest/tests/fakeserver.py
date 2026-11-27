@@ -297,6 +297,7 @@ class _PortalUser:
     totp: Literal["verify", "enroll"] | None
     code: str
     permissions: set[str] | None
+    rank: int = 100                     # max_rank; Bulk Actions and move passwords need 60
     person_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -464,17 +465,26 @@ class FakeBaseCamp:
                                 "end_site_id": destination}
         return move_id
 
-    def _add_site(self, name: str, lat: float, lng: float) -> str:
+    def _add_site(self, name: str, lat: float | None, lng: float | None,
+                  code: str | None = None) -> str:
         sid = str(uuid.uuid4())
-        self.sites[sid] = {"id": sid, "name": name, "latitude": lat, "longitude": lng}
+        self.sites[sid] = {"id": sid, "name": name, "code": code, "latitude": lat,
+                           "longitude": lng, "archived_at": None}
         return sid
+
+    def add_site(self, name: str, *, code: str | None = None, lat: float | None = 39.0997,
+                 lng: float | None = -94.5786) -> str:
+        """A site with no move; None coordinates make one with no location."""
+        return self._add_site(name, lat, lng, code)
 
     def add_portal_user(self, email: str, password: str, *,
                         totp: Literal["verify", "enroll"] | None = None, code: str = "123456",
-                        permissions: set[str] | None = None) -> None:
+                        permissions: set[str] | None = None, rank: int = 100) -> None:
         """`permissions` holds "resource:action" strings; None holds every one the
-        portal routes check (fakeserver_portal.PORTAL_PERMISSIONS)."""
-        self.portal_users[email.lower()] = _PortalUser(email, password, totp, code, permissions)
+        portal routes check (fakeserver_portal.PORTAL_PERMISSIONS). `rank` is the
+        account's max_rank (an admin's is 60 or more)."""
+        self.portal_users[email.lower()] = _PortalUser(email, password, totp, code, permissions,
+                                                       rank)
 
     def process_scans(self, *, duplicate_on_replay: bool = True) -> None:
         """Drain raw scans into processed scans, like the scan-matching worker.
@@ -639,7 +649,9 @@ class FakeBaseCamp:
 
         @app.post("/kiosk/move-login")
         async def move_login(body: MoveLoginIn, response: Response) -> dict:
-            move = next((m for m in self.moves.values() if m["password"] == body.password), None)
+            # services/move_password.find_initiative_by_password trims, as set_password does
+            typed = body.password.strip()
+            move = next((m for m in self.moves.values() if m["password"] == typed), None)
             if move is None:
                 raise _err(401, "invalid_move_password")
             if move["status"] in MOVE_LOGIN_BLOCKED_STATUSES:
