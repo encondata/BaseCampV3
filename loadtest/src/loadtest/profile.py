@@ -100,12 +100,18 @@ def profile_path(name: str) -> Path:
 
 
 def _is_num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    """A real, finite number (not bool, inf, nan, or an int too big for a float)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
 
 
 def _whole(where: str, field: str, v, minimum: int = 0) -> int:
-    ok = isinstance(v, int) and not isinstance(v, bool)
-    if not ok and isinstance(v, float) and v == int(v):
+    ok = False
+    if _is_num(v) and v == int(v):
         ok, v = True, int(v)
     if not ok:
         raise ProfileError(f"{where}: {field} must be a whole number")
@@ -116,7 +122,7 @@ def _whole(where: str, field: str, v, minimum: int = 0) -> int:
 
 def _number(where: str, field: str, v, positive: bool = False) -> float:
     if not _is_num(v):
-        raise ProfileError(f"{where}: {field} must be a number")
+        raise ProfileError(f"{where}: {field} must be a finite number")
     if positive and v <= 0:
         raise ProfileError(f"{where}: {field} must be greater than 0")
     return float(v)
@@ -233,7 +239,11 @@ def _validate_layout(stages: tuple[StageSpec, ...]) -> None:
 def load_profile(path: Path) -> Profile:
     path = Path(path)
     try:
-        raw = tomllib.loads(path.read_text())
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise ProfileError(f"{path}: cannot read profile file ({err.strerror or err})") from err
+    except UnicodeDecodeError as err:
+        raise ProfileError(f"{path}: profile file is not valid UTF-8") from err
     except tomllib.TOMLDecodeError as err:
         raise ProfileError(f"{path.name}: {err}") from err
     _check_keys("profile", raw, _TOP_KEYS)
@@ -261,6 +271,8 @@ def load_profile(path: Path) -> Profile:
     hours = _number("trip", "hours", t["hours"], True)
     minutes = _number("trip", "update_minutes", t["update_minutes"], True)
     updates = hours * 60 / minutes
+    if not math.isfinite(updates):
+        raise ProfileError("trip: hours or update_minutes is too large (check trip.hours)")
     if updates < 1 or abs(updates - round(updates)) > 1e-9:
         raise ProfileError(
             "trip: hours * 60 / update_minutes must be a whole number of at least 1 "

@@ -189,10 +189,11 @@ def test_wrong_type_is_a_profile_error(tmp_path, old, new, words):
     _expect(tmp_path, lambda t: t.replace(old, new, 1), *words)
 
 
-def test_stage_not_a_list_of_tables(tmp_path):
+@pytest.mark.parametrize("value", ["5", "[1]"])
+def test_stage_not_a_list_of_tables(tmp_path, value):
     def edit(text):
-        return text[: text.index("[[stage]]")].replace("[retry]", "stage = 5\n\n[retry]", 1)
-    # "stage = 5" placed before [retry] is a top-level key
+        # a top-level "stage" key placed before [retry]; the real tables are cut off
+        return text[: text.index("[[stage]]")].replace("[retry]", f"stage = {value}\n\n[retry]", 1)
     _expect(tmp_path, edit, "stage")
 
 
@@ -241,3 +242,52 @@ def test_site_outside_origin_destination(tmp_path):
 
 def test_missing_stage_key(tmp_path):
     _expect(tmp_path, _stage_edit("qa", 'label = "QA"\n', ""), "qa", "label")
+
+
+@pytest.mark.parametrize("old,new,words", [
+    ("hours = 17", "hours = inf", ("hours",)),
+    ("hours = 17", "hours = nan", ("hours",)),
+    ("hours = 17", "hours = 1e308", ("hours",)),
+    ("update_minutes = 15", "update_minutes = inf", ("update_minutes",)),
+    ("crews = 5", "crews = inf", ("enroll", "crews")),
+    ("crews = 5", "crews = nan", ("enroll", "crews")),
+    ("heartbeat_seconds = 60", "heartbeat_seconds = nan", ("heartbeat_seconds",)),
+    ("sample_seconds = 10", "sample_seconds = inf", ("sample_seconds",)),
+    ("[15, 15]", "[0, inf]", ("enroll", "seconds")),
+    ("[15, 15]", "[nan, 15]", ("enroll", "seconds")),
+    ("pause_seconds = [900, 900]", "pause_seconds = [0, inf]", ("pause_seconds",)),
+    ("backoff_seconds = [1, 2, 5, 10, 30]", "backoff_seconds = [1, inf]", ("backoff_seconds",)),
+    ("container_size = 20", "container_size = inf", ("container_size",)),
+])
+def test_non_finite_values_are_profile_errors(tmp_path, old, new, words):
+    _expect(tmp_path, lambda t: t.replace(old, new, 1), *words)
+
+
+@pytest.mark.parametrize("old,field", [
+    ("container_size = 20", "container_size"),
+    ("heartbeat_seconds = 60", "heartbeat_seconds"),
+    ("crews = 5", "crews"),
+    ("[15, 15]", "seconds"),
+])
+def test_huge_integer_literal_is_a_profile_error(tmp_path, old, field):
+    huge = "9" * 400
+    if old.startswith("["):
+        new = f"[{huge}, {huge}]"
+    else:
+        new = old.split(" = ")[0] + f" = {huge}"
+    _expect(tmp_path, lambda t: t.replace(old, new, 1), field)
+
+
+def test_missing_file_is_a_profile_error(tmp_path):
+    path = tmp_path / "nope.toml"
+    with pytest.raises(ProfileError) as err:
+        load_profile(path)
+    assert "nope.toml" in str(err.value)
+
+
+def test_non_utf8_file_is_a_profile_error(tmp_path):
+    path = tmp_path / "latin.toml"
+    path.write_bytes(b'final_status = "caf\xe9"\n')
+    with pytest.raises(ProfileError) as err:
+        load_profile(path)
+    assert "latin.toml" in str(err.value) and "UTF-8" in str(err.value)
