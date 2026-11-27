@@ -121,8 +121,8 @@ def assert_no_secrets(world, snapshot: dict) -> None:
 
 def crash(runner: Runner) -> None:
     """The process dies: every task stops where it is and nothing more is written."""
-    run = runner._run
-    for task in (*run.tasks.values(), runner._task):
+    run = runner._driver.run
+    for task in (*run.tasks.values(), runner._driver.task):
         task.cancel()
     run.journal._fh.close()
 
@@ -157,7 +157,7 @@ async def test_connect_with_2fa_asks_for_the_code_then_connects(world, fake, clo
     got = await clock.run(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD, CODE))
     assert got["status"] == "ok" and got["moves"]
     assert runner.snapshot()["needs_totp"] is False
-    assert runner._used_totp is True
+    assert runner._conn.used_totp is True
 
 
 async def test_connect_for_an_account_without_2fa_set_up(world, fake, clock):
@@ -283,7 +283,7 @@ async def test_a_whole_run_passes(world, fake, clock):
     assert queue.qsize() > 0
     assert runner.unfinished() is None
     assert runner.snapshot()["connected"] is None      # the portal closes with the run
-    assert runner._password is None and runner._move_password is None
+    assert runner._conn.password is None and runner._move_password is None
 
 
 async def test_stop_mid_run(world, clock):
@@ -304,7 +304,7 @@ async def test_stop_mid_run(world, clock):
     with pytest.raises(RunnerError) as err:
         await runner.stop()
     assert err.value.code == "bad_phase"
-    assert all(t.done() for t in runner._run.tasks.values())
+    assert all(t.done() for t in runner._driver.run.tasks.values())
 
 
 async def test_stop_while_devices_start(world, clock):
@@ -358,7 +358,7 @@ async def crashed_run(world, clock) -> tuple[Runner, Path]:
     world.process_scans(duplicate_on_replay=False)
     with pytest.raises(TimeoutError):
         await clock.run(first.wait(), limit=40)
-    task = first._task
+    task = first._driver.task
     crash(first)
     await clock.run(asyncio.wait({task}))
     [run_dir] = run_dirs(world)
