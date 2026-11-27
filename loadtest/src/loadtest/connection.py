@@ -127,6 +127,7 @@ class Connection:
         self.password: str | None = None
         self.used_totp = False
         self.needs_totp = False
+        self.moves: list[dict] = []     # what connect listed: [{id, name, status}]
 
     @property
     def connected(self) -> bool:
@@ -167,6 +168,7 @@ class Connection:
         portal, self.portal = self.portal, None
         self.server = self.email = self.password = None
         self.used_totp = self.needs_totp = False
+        self.moves = []
         if portal is not None:
             await portal.close()
 

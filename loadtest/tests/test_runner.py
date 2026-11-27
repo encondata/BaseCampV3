@@ -923,3 +923,50 @@ async def test_start_names_the_unfinished_run_before_a_failed_check(world, clock
     with pytest.raises(RunnerError) as err:
         await runner.start()
     assert err.value.code == "unfinished_run"
+
+
+# ── follow-up 2: what a reloaded page needs ────────────────────────────
+
+
+def page_keys(runner: Runner) -> dict:
+    snap = json.loads(json.dumps(runner.snapshot()))     # JSON-serializable in every phase
+    return {k: snap[k] for k in ("moves", "selected", "devices")}
+
+
+async def test_snapshot_moves_selection_and_devices_in_every_phase(world, fake, clock):
+    fake.add_portal_user(EMAIL, PASSWORD)
+    runner = world.runner()
+    assert page_keys(runner) == {"moves": [], "selected": None, "devices": None}
+    got = await clock.run(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD))
+    moves = got["moves"]
+    assert page_keys(runner) == {"moves": moves, "selected": None, "devices": None}
+    report = await clock.run(runner.check(world.move_id, "wrong-move-pass", "fast"))
+    assert not report.can_start and runner.phase == "connected"
+    selected = {"move_id": world.move_id, "speed": "fast"}
+    assert page_keys(runner) == {"moves": moves, "selected": selected, "devices": 32}
+    await clock.run(runner.check(world.move_id, MOVE_PASSWORD, "fast"))
+    assert runner.phase == "checked"
+    assert page_keys(runner) == {"moves": moves, "selected": selected, "devices": 32}
+    moves[0]["name"] = "changed by the caller"
+    assert page_keys(runner)["moves"][0]["name"] != "changed by the caller"
+    await runner.start()
+    assert page_keys(runner) == {"moves": [], "selected": selected, "devices": 32}
+    world.process_scans(duplicate_on_replay=False)
+    with pytest.raises(TimeoutError):
+        await clock.run(runner.wait(), limit=30)
+    assert runner.phase == "running"
+    assert page_keys(runner) == {"moves": [], "selected": selected, "devices": 32}
+    await clock.run(runner.wait())
+    assert runner.phase == "done"
+    assert page_keys(runner) == {"moves": [], "selected": selected, "devices": 32}
+
+
+async def test_snapshot_page_keys_for_a_continued_run(world, clock):
+    await crashed_run(world, clock)
+    runner = world.runner()
+    assert page_keys(runner) == {"moves": [], "selected": None, "devices": None}
+    await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    assert page_keys(runner) == {"moves": [], "selected": None, "devices": 32}
+    await clock.run(runner.wait())
+    assert runner.phase == "done"
+    assert page_keys(runner) == {"moves": [], "selected": None, "devices": 32}

@@ -89,6 +89,7 @@ class Runner:
         self._report: CheckReport | None = None
         self._profile: Profile | None = None
         self._move_password: str | None = None
+        self._selected: dict | None = None      # {move_id, speed} of the last check
         self._unfinished = UnfinishedRuns(self.runs_dir, self.clock)
         self._driver = RunDriver(clock=self.clock, transport=transport, hub=self._hub,
                                  on_phase=self._on_phase, on_closed=self._on_run_closed)
@@ -135,6 +136,7 @@ class Runner:
         """Drops the sign-in, the check and the last run's view (not its result)."""
         await self._conn.forget()
         self._report = self._profile = self._move_password = None
+        self._selected = None
         self._driver.forget_run()
         if self.phase not in ACTIVE:
             self.phase = "idle"
@@ -159,8 +161,9 @@ class Runner:
                 raise sign_in_error(exc, "password_refused") from None
             self.phase = "connected"
             moves = sorted(moves, key=lambda m: m.status != "in_progress")
-            return {"status": "ok",
-                    "moves": [{"id": m.id, "name": m.name, "status": m.status} for m in moves]}
+            self._conn.moves = [{"id": m.id, "name": m.name, "status": m.status}
+                                for m in moves]
+            return {"status": "ok", "moves": [dict(m) for m in self._conn.moves]}
         finally:
             await self._end_busy()
 
@@ -185,6 +188,7 @@ class Runner:
                 router_url=self.router_url, transport=self._transport,
                 router_transport=self._router_transport, used_totp=self._conn.used_totp)
             self._report, self._profile, self._move_password = report, profile, move_password
+            self._selected = {"move_id": move_id, "speed": speed}
             if report.can_start:
                 self.phase = "checked"
             return report
@@ -354,6 +358,7 @@ class Runner:
     def snapshot(self) -> dict:
         return build_snapshot(
             phase=self.phase, error=self.error, connection=self._conn, run=self._driver.run,
-            report=self._report, check_profile=self._profile, result=self._driver.result,
+            report=self._report, check_profile=self._profile, selected=self._selected,
+            result=self._driver.result,
             feed_write_errors=self.events.write_errors, unfinished=self.unfinished(),
             now=self.clock.now())

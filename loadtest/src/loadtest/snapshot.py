@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from .preflight import CheckReport
-from .profile import Profile, containers_needed, trucks_needed
+from .profile import Profile, containers_needed, device_count, trucks_needed
 from .state import RunState
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ def report_dict(report: CheckReport, profile: Profile) -> dict:
 
 def build_snapshot(*, phase: str, error: str | None, connection: Connection,
                    run: Run | None, report: CheckReport | None, check_profile: Profile | None,
-                   result: dict | None, feed_write_errors: int, unfinished: dict | None,
+                   selected: dict | None, result: dict | None, feed_write_errors: int, unfinished: dict | None,
                    now: float) -> dict:
     state = run.state if run else None
     profile = run.profile if run else check_profile
@@ -58,6 +58,11 @@ def build_snapshot(*, phase: str, error: str | None, connection: Connection,
         "connected": ({"server": connection.server, "email": connection.email}
                       if connection.connected else None),
         "needs_totp": connection.needs_totp,
+        # the moves connect listed, while that sign-in is the page's (connected, checked)
+        "moves": ([dict(m) for m in connection.moves]
+                  if connection.connected and phase in ("connected", "checked") else []),
+        "selected": dict(selected) if selected else None,
+        "devices": device_count(profile) if profile else None,
         "move": move,
         "speed": profile.name if profile else None,
         "started_at": state.started_at if state else None,
