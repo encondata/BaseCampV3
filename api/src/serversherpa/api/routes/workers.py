@@ -160,6 +160,9 @@ async def bulk_import_template(
     if format == "csv":
         return Response(bulk.build_template_csv(), media_type="text/csv",
                         headers=_attachment("workers-template.csv"))
+    if format == "json":
+        return Response(bulk.build_template_json(), media_type="application/json",
+                        headers=_attachment("workers-template.json"))
     if format == "xlsx":
         levels, statuses, partners = await bulk.reference_lists(db)
         return Response(bulk.build_template_xlsx(levels, statuses, partners),
@@ -185,16 +188,22 @@ async def bulk_import_export(
     format: str = "xlsx",
     actor: AuthContext = require_permission("workers", "add"),
 ):
-    """The current workers in the template's layout — fill in, re-upload."""
+    """Every worker, re-uploadable. The export carries logins, roles and
+    timestamps, so it also needs users:view."""
     require_bulk_rank(actor)
-    if format not in ("csv", "xlsx"):
+    if not actor.access.can("users", "view"):
+        raise _err(403, "forbidden")
+    if format not in ("csv", "xlsx", "json"):
         raise _err(422, "unknown_format")
     rows = await bulk.export_rows(db)
+    if format == "json":
+        return Response(bulk.build_export_json(rows), media_type="application/json",
+                        headers=_attachment("workers-export.json"))
     if format == "csv":
-        return Response(bulk.build_rows_csv(rows), media_type="text/csv",
+        return Response(bulk.build_export_csv(rows), media_type="text/csv",
                         headers=_attachment("workers-export.csv"))
     levels, statuses, partners = await bulk.reference_lists(db)
-    return Response(bulk.build_rows_xlsx(rows, levels, statuses, partners),
+    return Response(bulk.build_export_xlsx(rows, levels, statuses, partners),
                     media_type=_XLSX, headers=_attachment("workers-export.xlsx"))
 
 

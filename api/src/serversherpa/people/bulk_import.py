@@ -224,23 +224,129 @@ def _worker_query():
     )
 
 
+def _text(value: str | None) -> str | None:
+    """Empty strings export as None."""
+    return value or None
+
+
+def _utc(value: datetime | None) -> str | None:
+    return value.astimezone(UTC).isoformat() if value else None
+
+
+def _day(value: date | None) -> str | None:
+    return value.isoformat() if value else None
+
+
 async def export_rows(db: AsyncSession) -> list[dict]:
-    """Every live worker in template shape, so an export re-uploads clean."""
+    """Every live worker with every EXPORT_COLUMNS key, typed: str, bool or
+    None, except `certifications` (a list of dicts). Accounts, active roles
+    and certifications load in one query each, keyed by person. Secrets
+    (password hash, TOTP, last login IP, ui prefs, avatar key) are never
+    read into a row."""
     partner_names = dict((await db.execute(select(Partner.id, Partner.name))).all())
+    pairs = (await db.execute(_worker_query())).all()
+    accounts = {
+        a.person_id: a for a in await db.scalars(select(UserAccount))}
+    roles: dict[uuid.UUID, list[str]] = {}
+    for pid, role in (await db.execute(
+            select(PersonRole.person_id, PersonRole.role)
+            .where(PersonRole.revoked_at.is_(None))
+            .order_by(natural(PersonRole.role)))).all():
+        roles.setdefault(pid, []).append(role)
+    certs: dict[uuid.UUID, list[dict]] = {}
+    for c in await db.scalars(
+            select(WorkerCertification)
+            .order_by(WorkerCertification.expires_on.asc().nulls_last(),
+                      natural(WorkerCertification.name))):
+        certs.setdefault(c.person_id, []).append({
+            "name": c.name, "issuer": _text(c.issuer),
+            "issued_on": _day(c.issued_on), "expires_on": _day(c.expires_on),
+            "source": c.source})
     out = []
-    for person, profile in (await db.execute(_worker_query())).all():
-        row = {col: (getattr(person, attr) or "") for col, attr in PERSON_ATTR.items()}
-        row["partner"] = (partner_names.get(profile.partner_id, "")
-                          if profile and profile.partner_id else "")
-        row["trade"] = (profile.trade if profile else None) or ""
-        row["level"] = (profile.level if profile else None) or ""
+    for person, profile in pairs:
+        row: dict[str, Any] = {
+            col: _text(getattr(person, attr)) for col, attr in PERSON_ATTR.items()}
+        row["person_id"] = str(person.id)
+        row["partner"] = (_text(partner_names.get(profile.partner_id))
+                          if profile and profile.partner_id else None)
+        row["trade"] = _text(profile.trade) if profile else None
+        row["level"] = _text(profile.level) if profile else None
         row["status"] = (profile.status if profile else None) or "active"
-        row["status_note"] = (profile.status_note if profile else None) or ""
-        # new columns; a later task fills them from the person / profile
-        for col in ("person_id", "will_travel", "travel_region", "travel_restrictions"):
-            row[col] = ""
-        out.append(row)
+        row["status_note"] = _text(profile.status_note) if profile else None
+        row["will_travel"] = profile.will_travel if profile else None
+        row["travel_region"] = _text(profile.travel_region) if profile else None
+        row["travel_restrictions"] = (
+            _text(profile.travel_restrictions) if profile else None)
+        account = accounts.get(person.id)
+        row.update(
+            badge_uid=str(person.badge_uid),
+            has_photo=person.avatar_key is not None,
+            source=_text(person.source),
+            source_ref=_text(person.source_ref),
+            has_login=account is not None,
+            login_email=account.email if account else None,
+            login_disabled=(account.disabled_at is not None) if account else None,
+            last_login_at=_utc(account.last_login_at) if account else None,
+            roles=", ".join(roles[person.id]) if roles.get(person.id) else None,
+            created_at=_utc(person.created_at),
+            updated_at=_utc(person.updated_at),
+            profile_updated_at=_utc(profile.updated_at) if profile else None,
+            certifications=certs.get(person.id, []),
+        )
+        out.append({col: row[col] for col in EXPORT_COLUMNS})
     return out
+
+
+def _cert_cell(cert: dict) -> str:
+    text = cert["name"]
+    if cert.get("issuer"):
+        text += f" ({cert['issuer']})"
+    issued, expires = cert.get("issued_on"), cert.get("expires_on")
+    if issued or expires:
+        text += " " + f"{issued or ''} → {expires or ''}".strip()
+    return text
+
+
+def flatten_row(row: dict) -> dict[str, str]:
+    """A typed export row as CSV/xlsx cells: None → blank, bool → yes/no,
+    certifications → one "; "-joined cell."""
+    out: dict[str, str] = {}
+    for col, value in row.items():
+        if col == "certifications":
+            out[col] = "; ".join(_cert_cell(c) for c in value or [])
+        elif value is None:
+            out[col] = ""
+        elif isinstance(value, bool):
+            out[col] = "yes" if value else "no"
+        else:
+            out[col] = str(value)
+    return out
+
+
+def build_export_json(rows: list[dict]) -> str:
+    return json.dumps(rows, indent=2, ensure_ascii=False)
+
+
+def build_export_csv(rows: list[dict]) -> str:
+    return core.build_rows_csv([flatten_row(r) for r in rows], EXPORT_COLUMNS)
+
+
+def build_export_xlsx(rows: list[dict], levels: list[str], statuses: list[str],
+                      partners: list[str]) -> bytes:
+    return core.build_rows_xlsx(
+        [flatten_row(r) for r in rows], EXPORT_COLUMNS, SHEET, [
+            ("Valid levels", levels), ("Valid statuses", statuses),
+            ("Partner names", partners)])
+
+
+def build_template_json() -> str:
+    rows = [{k: (v or None) for k, v in r.items()} for r in SAMPLE_ROWS]
+    rows[0]["will_travel"] = True
+    rows[0]["certifications"] = [{
+        "name": "OSHA 10", "issuer": "OSHA", "issued_on": "2025-03-01",
+        "expires_on": None}]
+    rows[1]["certifications"] = []
+    return json.dumps(rows, indent=2, ensure_ascii=False)
 
 
 # ── validation + preview ────────────────────────────────────────────

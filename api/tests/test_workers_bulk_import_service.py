@@ -190,12 +190,12 @@ async def test_export_rows_shape_and_round_trip(db, admin):
     await mk_worker(db, "Old", "Gone", archived=True)
     rows = await bi.export_rows(db)
     assert [r["last_name"] for r in rows] == ["Alpha", "Zulu"]
-    assert set(rows[0]) == set(bi.COLUMNS)
+    assert list(rows[0]) == bi.EXPORT_COLUMNS
     assert rows[0]["status"] == "active"                # profile-less default
     assert rows[1]["partner"] == "Haul It" and rows[1]["level"] == "L2"
     assert rows[1]["phone"] == "555-000-1111"
 
-    csv_text = bi.build_rows_csv(rows)
+    csv_text = bi.build_export_csv(rows)
     out = await preview(db, admin, [r for _, r in bi.parse_upload("e.csv", csv_text.encode())])
     assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged"]
 
@@ -206,10 +206,126 @@ async def test_export_round_trips_with_two_workers_sharing_a_name(db, admin):
     await mk_worker(db, "Chris", "Lee", email="c1@test.example.com")
     await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
     await mk_worker(db, "Amy", "Alpha", phone="555-000-2222")
-    csv_text = bi.build_rows_csv(await bi.export_rows(db))
+    csv_text = bi.build_export_csv(await bi.export_rows(db))
     out = await preview(db, admin, [r for _, r in bi.parse_upload("e.csv", csv_text.encode())])
     assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged", "unchanged"]
     assert out["can_commit"] is True
+
+
+async def test_export_rows_full_shape(db, admin):
+    from datetime import UTC, date, datetime
+    full = await mk_worker(db, "Full", "Zed", email="full@test.example.com",
+                           profile={"will_travel": True, "travel_region": "West",
+                                    "travel_restrictions": "No nights"})
+    full.avatar_key = "photos/x.jpg"
+    db.add(PersonRole(person_id=full.id, role="staff"))
+    db.add(UserAccount(person_id=full.id, email="login@test.example.com",
+                       password_hash="secret", disabled_at=datetime.now(UTC),
+                       last_login_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)))
+    db.add(WorkerCertification(person_id=full.id, name="Late", issuer="B",
+                               expires_on=date(2028, 1, 1)))
+    db.add(WorkerCertification(person_id=full.id, name="Open"))
+    db.add(WorkerCertification(person_id=full.id, name="Soon", issuer="A",
+                               issued_on=date(2025, 1, 1), expires_on=date(2027, 1, 31)))
+    await db.commit()
+    await mk_worker(db, "Bare", "Alpha")
+    rows = {r["last_name"]: r for r in await bi.export_rows(db)}
+    assert list(rows["Zed"]) == bi.EXPORT_COLUMNS
+    z = rows["Zed"]
+    assert z["person_id"] == str(full.id) and z["badge_uid"] == str(full.badge_uid)
+    assert z["will_travel"] is True and z["travel_region"] == "West"
+    assert z["has_photo"] is True and z["has_login"] is True
+    assert z["login_email"] == "login@test.example.com" and z["login_disabled"] is True
+    assert z["last_login_at"] == "2026-01-02T03:04:05+00:00"
+    assert z["roles"] == "staff, worker" and z["source"] == "manual"
+    assert z["created_at"].endswith("+00:00")
+    assert [c["name"] for c in z["certifications"]] == ["Soon", "Late", "Open"]
+    assert z["certifications"][0] == {
+        "name": "Soon", "issuer": "A", "issued_on": "2025-01-01",
+        "expires_on": "2027-01-31", "source": "manual"}
+    b = rows["Alpha"]
+    assert b["email"] is None and b["has_login"] is False
+    assert b["login_email"] is None and b["login_disabled"] is None
+    assert b["will_travel"] is None and b["has_photo"] is False
+    assert b["certifications"] == [] and b["status"] == "active"
+    assert b["roles"] == "worker"
+
+
+async def test_export_never_leaks_secrets(db, admin):
+    from datetime import UTC, datetime
+    p = await mk_worker(db, "Sec", "Ret", account=True)
+    p.avatar_key = "photos/secret.jpg"
+    acct = await db.scalar(select(UserAccount).where(UserAccount.person_id == p.id))
+    acct.totp_secret_enc = b"abc"
+    acct.last_login_at = datetime.now(UTC)
+    await db.commit()
+    text = bi.build_export_json(await bi.export_rows(db))
+    for word in ("password_hash", "totp", "last_login_ip", "ui_prefs", "avatar_key",
+                 "photos/secret.jpg"):
+        assert word not in text
+    csv_text = bi.build_export_csv(await bi.export_rows(db))
+    assert "photos/secret.jpg" not in csv_text and "password_hash" not in csv_text
+
+
+def test_flatten_row():
+    row = {c: None for c in bi.EXPORT_COLUMNS}
+    row.update(first_name="A", will_travel=False, has_photo=True, certifications=[
+        {"name": "CPR", "issuer": "Red Cross", "issued_on": None,
+         "expires_on": "2027-01-31", "source": "manual"},
+        {"name": "OSHA 10", "issuer": None, "issued_on": None,
+         "expires_on": None, "source": "manual"},
+        {"name": "First Aid", "issuer": None, "issued_on": "2025-03-01",
+         "expires_on": None, "source": "manual"}])
+    flat = bi.flatten_row(row)
+    assert flat["last_name"] == "" and flat["first_name"] == "A"
+    assert flat["will_travel"] == "no" and flat["has_photo"] == "yes"
+    assert flat["certifications"] == (
+        "CPR (Red Cross) → 2027-01-31; OSHA 10; First Aid 2025-03-01 →")
+    assert bi.flatten_row({**row, "certifications": []})["certifications"] == ""
+
+
+async def _round_trip_workers(db):
+    from datetime import date
+    await mk_worker(db, "Yes", "Travel", email="y@test.example.com",
+                    profile={"will_travel": True, "travel_region": "East"})
+    await mk_worker(db, "No", "Travel", profile={"will_travel": False})
+    await mk_worker(db, "Unset", "Travel", profile={"trade": "Cable"})
+    z = await mk_worker(db, "Zip", "Code")
+    z.postal_code = "02134"
+    db.add(WorkerCertification(person_id=z.id, name="CPR", issuer="Red Cross",
+                               expires_on=date(2027, 1, 31)))
+    await db.commit()
+
+
+async def test_csv_and_xlsx_export_round_trip_unchanged(db, admin):
+    await _round_trip_workers(db)
+    rows = await bi.export_rows(db)
+    csv_text = bi.build_export_csv(rows)
+    levels, statuses, partners = await bi.reference_lists(db)
+    blob = bi.build_export_xlsx(rows, levels, statuses, partners)
+    for name, content in (("w.csv", csv_text.encode()), ("w.xlsx", blob)):
+        out = await preview(db, admin, [r for _, r in bi.parse_upload(name, content)])
+        assert [r["action"] for r in out["rows"]] == ["unchanged"] * 4, name
+    assert csv_text.splitlines()[0] == ",".join(bi.EXPORT_COLUMNS)
+
+
+async def test_json_export_round_trips_unchanged(db, admin):
+    await _round_trip_workers(db)
+    text = bi.build_export_json(await bi.export_rows(db))
+    numbered = bi.parse_upload("w.json", text.encode())
+    out = await bi.preview_rows(db, numbered, actor_id=admin.id, actor_rank=ADMIN_RANK)
+    assert [r["action"] for r in out["rows"]] == ["unchanged"] * 4
+
+
+def test_template_json_shape():
+    rows = json.loads(bi.build_template_json())
+    assert list(rows[0]) == bi.COLUMNS + ["certifications"]
+    assert rows[0]["person_id"] is None and rows[0]["will_travel"] is True
+    assert rows[0]["certifications"] == [{
+        "name": "OSHA 10", "issuer": "OSHA", "issued_on": "2025-03-01",
+        "expires_on": None}]
+    assert rows[1]["will_travel"] is None and rows[1]["certifications"] == []
+    assert bi.number_json_rows(rows)
 
 
 async def test_reference_lists(db, admin):
