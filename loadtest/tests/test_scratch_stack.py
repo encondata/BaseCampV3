@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,10 @@ def test_a_process_is_ours_only_with_the_start_time_we_recorded(stack):
     started.append(pid)
     lines = module.pid_file("api").read_text().splitlines()
     assert lines[0] == str(pid) and lines[1]           # the pid and its start time
+    for _ in range(50):         # just after the fork, ps can still show the parent's command
+        if module.started_pid("api") == pid:
+            break
+        time.sleep(0.1)
     assert module.started_pid("api") == pid
     # same pid and command line, another start time: a process that is not ours
     module.pid_file("api").write_text(f"{pid}\nMon Jan  1 00:00:00 2001\n")

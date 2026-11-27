@@ -990,6 +990,45 @@ async def test_a_first_try_already_done_answer_fails_a_run_never_continued(world
     assert _named(result, kind)
 
 
+async def test_feed_lines_lost_before_a_continue_are_still_reported(world, clock):
+    """events.log could not be written before the interruption; the continued run's
+    result still warns, with the whole run's count."""
+    first = world.runner()
+    await world.ready(first)
+    await first.start()
+    world.process_scans(duplicate_on_replay=False)
+    with pytest.raises(TimeoutError):
+        await clock.run(first.wait(), limit=10)
+    events = first._driver.run.events
+
+    class Broken:
+        closed = False
+
+        def write(self, text):
+            raise OSError(28, "No space left on device")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    real, events._log = events._log, Broken()
+    for _ in range(3):
+        first._driver.feed(first._driver.run, "Test line")
+    events._log = real
+    assert events.write_errors == 3
+    await hard_crash(world, first)
+    runner = world.runner()
+    await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    await clock.run(runner.wait())
+    result = runner.result()
+    assert result["feed_write_errors"] == 3
+    assert {"level": "warn", "text": "3 feed lines could not be written to events.log."} in \
+        result["findings"]
+    assert result["verdict"] == "Pass with warnings"
+
+
 class TickingClock(FakeClock):
     """Virtual time whose `now()` moves on a little with every reading, like a real one."""
 

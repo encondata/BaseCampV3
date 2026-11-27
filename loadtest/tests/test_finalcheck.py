@@ -436,9 +436,8 @@ async def test_problems_the_tool_counted_are_findings(fake, clock, metrics, move
     metrics.count("action_errors", 2)
     metrics.count("heartbeat_errors")
     metrics.count("scans_not_sent", 10)
-    report = await clock.run(final_check(
-        portal=m.portal, state=m.state, profile=m.profile, metrics=metrics,
-        rule_checkpoints=m.rules, stopped_early=False, feed_write_errors=3))
+    metrics.count("feed_write_errors", 3)
+    report = await check(clock, metrics, m)
     assert report.verdict == "Fail"
     assert report.findings == [
         Finding("fail", "2 steps got an answer this tool does not understand."),

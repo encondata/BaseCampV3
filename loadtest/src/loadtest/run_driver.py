@@ -24,7 +24,7 @@ from .events import Events, FeedLine
 from .finalcheck import FinalReport, Finding, final_check
 from .fleet import Fleet, FleetError
 from .journal import JOURNAL_NAME, Journal
-from .metrics import METRICS_NAME, Metrics
+from .metrics import FEED_LOST, METRICS_NAME, Metrics
 from .pipeline import Pipeline, Step
 from .profile import Profile
 from .results import build_results, write_results
@@ -45,8 +45,9 @@ class RunEvents(Events):
     """A run's feed: its own ring and events.log, and every line passed on to the hub the
     page subscribes to once."""
 
-    def __init__(self, log_path: Path, hub: Events) -> None:
-        super().__init__(log_path)
+    def __init__(self, log_path: Path, hub: Events,
+                 on_lost: Callable[[], None] | None = None) -> None:
+        super().__init__(log_path, on_lost=on_lost)
         self._hub = hub
 
     def feed(self, line: FeedLine) -> None:
@@ -130,17 +131,19 @@ class RunDriver:
             journal = Journal(run_dir / JOURNAL_NAME)
         except OSError:
             raise RunnerError("cannot_write") from None
-        try:
-            events = RunEvents(run_dir / EVENTS_LOG, self._hub)
-        except OSError:
-            journal.close()
-            raise RunnerError("cannot_write") from None
         metrics = Metrics()
         try:
             metrics.open_log(run_dir / METRICS_NAME)     # a continued run replays it
         except OSError:
             journal.close()
-            events.close()
+            raise RunnerError("cannot_write") from None
+        try:
+            # every feed line events.log misses is counted for the whole run
+            events = RunEvents(run_dir / EVENTS_LOG, self._hub,
+                               on_lost=lambda: metrics.count(FEED_LOST))
+        except OSError:
+            journal.close()
+            metrics.close_log()
             raise RunnerError("cannot_write") from None
         portal.use_profile(metrics, profile.retry, profile.request_timeout_seconds)
         run = Run(state=state, profile=profile, move=move, run_dir=run_dir, journal=journal,
@@ -351,8 +354,7 @@ class RunDriver:
             rules = run.rules or set()
         return await final_check(portal=run.portal, state=run.state, profile=run.profile,
                                  metrics=run.metrics, rule_checkpoints=rules,
-                                 stopped_early=stopped_early, extra_findings=extra or (),
-                                 feed_write_errors=run.events.write_errors)
+                                 stopped_early=stopped_early, extra_findings=extra or ())
 
     async def _teardown(self, run: Run) -> None:
         run.stopping = True
@@ -394,8 +396,7 @@ class RunDriver:
         self.result = build_results(
             state=run.state, profile=run.profile, metrics=run.metrics, report=report,
             catch_up_seconds=catch_up, ended_at=run.ended_at, reason=reason,
-            secrets=run.secrets, db_health=db_health,
-            feed_write_errors=run.events.write_errors)
+            secrets=run.secrets, db_health=db_health)
         try:
             write_results(run.run_dir, self.result)
         except OSError as exc:

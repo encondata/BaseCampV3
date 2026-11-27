@@ -23,7 +23,7 @@ from typing import Literal, TypeVar
 
 from .actions import truck_label
 from .client.portal import AssetScan, PortalClient
-from .metrics import Metrics, percentile
+from .metrics import FEED_LOST, Metrics, percentile
 from .profile import Profile, StageSpec
 from .state import RunState, Server
 
@@ -121,11 +121,10 @@ def container_scans_sent(state: RunState) -> int:
 
 async def final_check(*, portal: PortalClient, state: RunState, profile: Profile,
                       metrics: Metrics, rule_checkpoints: set[str], stopped_early: bool,
-                      concurrency: int = 8, extra_findings: Sequence[Finding] = (),
-                      feed_write_errors: int = 0) -> FinalReport:
+                      concurrency: int = 8, extra_findings: Sequence[Finding] = ()
+                      ) -> FinalReport:
     """Raises only asyncio.CancelledError: a failed read is a finding. `extra_findings`
-    (the runner's own, such as a catch-up wait ended early) count toward the verdict.
-    `feed_write_errors` is how many feed lines events.log missed."""
+    (the runner's own, such as a catch-up wait ended early) count toward the verdict."""
     failed_calls = metrics.failed_calls()   # before this check's own reads
     stages = server_stages(profile)
     servers = list(state.servers.values())
@@ -229,7 +228,7 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
         findings.append(Finding("warn", f"{_n(twice, 'scan', 'scans')} {was} processed twice "
                                         "after a retry."))
     findings += _location_findings(state, metrics)
-    findings += _counted_findings(metrics, state, feed_write_errors)
+    findings += _counted_findings(metrics, state)
     findings += list(extra_findings)
 
     levels = {f.level for f in findings}
@@ -373,8 +372,7 @@ async def _truck_findings(portal: PortalClient, state: RunState) -> list[Finding
     return out
 
 
-def _counted_findings(metrics: Metrics, state: RunState,
-                      feed_write_errors: int) -> list[Finding]:
+def _counted_findings(metrics: Metrics, state: RunState) -> list[Finding]:
     """Problems the tool counted while it ran. A scan rejected inside an accepted batch
     always fails the step it was in, so it is named only when no step failure is listed
     (it would say the same thing twice)."""
@@ -383,6 +381,7 @@ def _counted_findings(metrics: Metrics, state: RunState,
     beats = counters.get("heartbeat_errors", 0)
     not_sent = counters.get("scans_not_sent", 0)
     rejected = counters.get("scans_rejected", 0)
+    feed_write_errors = counters.get(FEED_LOST, 0)    # the whole run's, Continues included
     out: list[Finding] = []
     if not_understood:
         out.append(Finding("fail", f"{_n(not_understood, 'step', 'steps')} got an answer "

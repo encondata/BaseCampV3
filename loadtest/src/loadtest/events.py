@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,11 +38,15 @@ def format_line(line: FeedLine) -> str:
 
 
 class Events:
-    def __init__(self, log_path: Path | None, keep: int = 500) -> None:
+    def __init__(self, log_path: Path | None, keep: int = 500,
+                 on_lost: Callable[[], None] | None = None) -> None:
+        """`on_lost` is called once for every line the log did not get (the run counts
+        them in its Metrics, so the count survives a Continue)."""
         self._ring: deque[FeedLine] = deque(maxlen=keep)
         self._subscribers: list[asyncio.Queue[FeedLine]] = []
         self._log = open(log_path, "a", encoding="utf-8") if log_path is not None else None
         self.write_errors = 0           # lines not written to the log (disk full, file removed)
+        self._on_lost = on_lost
         self._retry_at = 0.0
 
     def feed(self, line: FeedLine) -> None:
@@ -58,14 +63,19 @@ class Events:
         if self._log is None or self._log.closed:
             return
         if time.monotonic() < self._retry_at:   # after a failed write: not tried again yet
-            self.write_errors += 1
+            self._lost()
             return
         try:
             self._log.write(format_line(line) + "\n")
             self._log.flush()
         except OSError:
-            self.write_errors += 1
+            self._lost()
             self._retry_at = time.monotonic() + WRITE_RETRY_SECONDS
+
+    def _lost(self) -> None:
+        self.write_errors += 1
+        if self._on_lost is not None:
+            self._on_lost()
 
     def recent(self) -> list[FeedLine]:
         return list(self._ring)

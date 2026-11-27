@@ -18,6 +18,7 @@ from .logline import log
 
 METRICS_NAME = "metrics.jsonl"
 SYNC_INTERVAL = 1.0  # seconds between fsyncs, as the journal does
+FEED_LOST = "feed_write_errors"  # counter: feed lines events.log did not get
 
 # Calls that run in the background of a move; their failures are listed per call
 # but do not count toward the verdict's failed-call total. A failed refresh is followed
