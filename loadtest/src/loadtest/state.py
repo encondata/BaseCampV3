@@ -121,11 +121,14 @@ class RunState:
             self.interruptions.append((e["at"], None))
 
     def _resumed(self, e: dict) -> None:
-        for i in range(len(self.interruptions) - 1, -1, -1):
-            stopped, resumed = self.interruptions[i]
-            if resumed is None:
-                self.interruptions[i] = (stopped, e["at"])
-                return
+        # One resume closes every open interruption: the run was down from the
+        # first stop until now. A repeat of the same `at` is a no-op.
+        if any(resumed == e["at"] for _, resumed in self.interruptions):
+            return
+        self.interruptions = [
+            (stopped, e["at"] if resumed is None else resumed)
+            for stopped, resumed in self.interruptions
+        ]
 
     def _run_finished(self, e: dict) -> None:
         self.finished = e["reason"]

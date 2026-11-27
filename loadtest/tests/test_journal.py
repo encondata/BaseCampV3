@@ -1,10 +1,12 @@
 import dataclasses
+import os
 import random
 import uuid
 
 import pytest
 
 from loadtest.ids import make_tags
+from loadtest import journal as journal_mod
 from loadtest.journal import JOURNAL_NAME, Journal, find_unfinished, load_state, start_entry
 from loadtest.state import Container, RunState, Server, Truck
 
@@ -144,3 +146,83 @@ def test_append_after_close_and_non_finite_floats(tmp_path):
     j.close()
     with pytest.raises(ValueError):
         j.append({"t": "arrived", "at": 1.0})
+
+
+def test_resumed_is_idempotent_and_closes_all_open_interruptions():
+    st = make_state()
+    st.apply({"t": "interrupted", "at": 1.0})
+    st.apply({"t": "interrupted", "at": 2.0})
+    st.apply({"t": "resumed", "at": 3.0})
+    assert st.interruptions == [(1.0, 3.0), (2.0, 3.0)]
+    st.apply({"t": "resumed", "at": 3.0})
+    assert st.interruptions == [(1.0, 3.0), (2.0, 3.0)]
+    st.apply({"t": "interrupted", "at": 4.0})
+    st.apply({"t": "resumed", "at": 5.0})
+    st.apply({"t": "resumed", "at": 5.0})
+    assert st.interruptions == [(1.0, 3.0), (2.0, 3.0), (4.0, 5.0)]
+
+
+def test_idempotent_with_an_open_interruption():
+    for e in ENTRIES:
+        once, twice = make_state(), make_state()
+        for s in (once, twice):
+            s.apply({"t": "interrupted", "at": 500.0})
+        once.apply(e)
+        twice.apply(e)
+        twice.apply(e)
+        assert dataclasses.asdict(once) == dataclasses.asdict(twice), e["t"]
+
+
+def test_replaying_the_whole_sequence_again_changes_nothing():
+    st = make_state()
+    for e in ENTRIES:
+        st.apply(e)
+    snapshot = dataclasses.asdict(st)
+    for e in ENTRIES:
+        st.apply(e)
+    assert dataclasses.asdict(st) == snapshot
+
+
+def test_fsync_is_throttled_and_close_syncs(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append(fd))
+    j = Journal(tmp_path / JOURNAL_NAME)
+    for i in range(50):
+        j.append({"t": "arrived", "at": float(i), "truck": "t1"})
+    assert len(calls) < 5
+    before = len(calls)
+    j.close()
+    assert len(calls) == before + 1
+
+
+def test_fsync_runs_again_after_the_interval(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append(fd))
+    clock = [100.0]
+    monkeypatch.setattr(journal_mod.time, "monotonic", lambda: clock[0])
+    j = Journal(tmp_path / JOURNAL_NAME)
+    j.append({"t": "arrived", "at": 1.0, "truck": "t1"})
+    assert calls == []
+    clock[0] += 1.5
+    j.append({"t": "arrived", "at": 2.0, "truck": "t1"})
+    assert len(calls) == 1
+    j.close()
+
+
+def test_bad_last_line_with_newline_is_repaired(tmp_path):
+    path = tmp_path / JOURNAL_NAME
+    write(path, make_state(), ENTRIES[:2])
+    before = load_state(path)
+    with open(path, "ab") as fh:
+        fh.write(b"garbage\n")
+    assert load_state(path) == before
+    j = Journal(path)
+    j.append(ENTRIES[3])
+    j.close()
+    assert load_state(path).containers["c1"].closed
+
+
+def test_server_url_with_query_or_fragment_is_refused():
+    for url in ("https://example.com/?token=abc", "https://example.com/#frag"):
+        with pytest.raises(ValueError):
+            start_entry(make_state(url))

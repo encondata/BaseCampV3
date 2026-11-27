@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,31 +12,37 @@ from urllib.parse import urlsplit
 from .state import Container, RunState, Server, Truck
 
 JOURNAL_NAME = "journal.jsonl"
+SYNC_INTERVAL = 1.0  # seconds between fsyncs
 
 
 class Journal:
-    """Append-only JSON-lines file; every entry is flushed to disk as written."""
+    """Append-only JSON-lines file. Every entry is flushed to the OS as written and
+    fsynced to disk at most once a second (and on close), so a power loss costs
+    about a second of entries."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._repair_torn_tail()
         self._fh = open(self.path, "ab")
+        self._last_sync = time.monotonic()
 
     def _repair_torn_tail(self) -> None:
-        """Drop a half-written last line so new entries never glue onto it."""
+        """Drop an unreadable last line (torn or garbage, newline or not) so new
+        entries never turn it into a damaged middle line."""
         if not self.path.exists():
             return
         data = self.path.read_bytes()
-        if not data or data.endswith(b"\n"):
+        if not data:
             return
-        cut = data.rfind(b"\n") + 1
-        if _parse_line(data[cut:]) is not None:
-            with open(self.path, "ab") as fh:  # complete entry, only the newline is missing
-                fh.write(b"\n")
-        else:
+        body = data[:-1] if data.endswith(b"\n") else data
+        cut = body.rfind(b"\n") + 1
+        if _parse_line(body[cut:]) is None:
             with open(self.path, "r+b") as fh:
                 fh.truncate(cut)
+        elif not data.endswith(b"\n"):
+            with open(self.path, "ab") as fh:  # complete entry, only the newline is missing
+                fh.write(b"\n")
 
     def append(self, entry: dict) -> None:
         if self._fh.closed:
@@ -42,8 +50,16 @@ class Journal:
         line = json.dumps(entry, allow_nan=False, separators=(",", ":")) + "\n"
         self._fh.write(line.encode("utf-8"))
         self._fh.flush()
+        now = time.monotonic()
+        if now - self._last_sync >= SYNC_INTERVAL:
+            os.fsync(self._fh.fileno())
+            self._last_sync = now
 
     def close(self) -> None:
+        if self._fh.closed:
+            return
+        self._fh.flush()
+        os.fsync(self._fh.fileno())
         self._fh.close()
 
 
@@ -60,6 +76,8 @@ def start_entry(state: RunState) -> dict:
     parts = urlsplit(state.server_url)
     if parts.username is not None or parts.password is not None:
         raise ValueError("server URL must not carry credentials")
+    if parts.query or parts.fragment:
+        raise ValueError("server URL must not carry a query or fragment")
     return {
         "t": "run_started",
         "at": state.started_at,
