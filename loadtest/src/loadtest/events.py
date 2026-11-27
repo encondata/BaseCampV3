@@ -24,9 +24,10 @@ class FeedLine:
 
 
 def format_line(line: FeedLine) -> str:
-    """`14:02:11  Load test – Label station 2    Label station    SN 7HK2M93    ok  41 ms`,
-    in local 24-hour time; a failed line says `failed` and carries its note."""
-    out = (f"{time.strftime('%H:%M:%S', time.localtime(line.at))}  {line.device}    "
+    """`2026-11-27 14:02:11  Load test – Label station 2    Label station    SN 7HK2M93    ok
+    41 ms`, in local 24-hour time with the date (a run can last two days); a failed line
+    says `failed` and carries its note. The page shows the time only."""
+    out = (f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(line.at))}  {line.device}    "
            f"{line.action}    {line.subject}    {'ok' if line.ok else 'failed'}")
     if line.ms is not None:
         out += f"  {line.ms:.0f} ms"

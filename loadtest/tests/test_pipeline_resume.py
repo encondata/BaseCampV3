@@ -396,3 +396,18 @@ async def test_continue_from_any_stop(tmp_path):
         assert_complete(move.state(), profile)
     assert resent > 0  # the cut-off path was exercised
     assert kinds_hit == ALL_STOP_KINDS  # every mid-move situation was continued from
+
+
+def test_trip_percent_counts_each_update_once_after_a_skip():
+    """`updates_sent` is the last index sent, `skipped_through` the last one skipped: the
+    trip has passed the larger of the two, never their sum."""
+    from loadtest.snapshot import _trip_fraction
+    profile = real_time()
+    state = make_state(20, 1, 1, profile)
+    t = next(iter(state.trucks))
+    state.apply({"t": "departed", "truck": t, "at": 0.0, "ok": True})
+    for i in range(1, 11):
+        state.apply({"t": "location", "truck": t, "index": i, "ok": True, "at": 900.0 * i})
+    state.apply({"t": "location_skipped", "truck": t, "through": 22, "count": 12, "at": 1.0})
+    state.apply({"t": "location", "truck": t, "index": 23, "ok": True, "at": 2.0})
+    assert _trip_fraction(state, profile) == 23 / 68

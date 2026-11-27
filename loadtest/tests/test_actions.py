@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import re
 from collections import Counter
 
 import httpx
@@ -322,7 +323,8 @@ async def test_events_ring_keeps_500_and_log_keeps_all(tmp_path):
     lines = log.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1201
     assert lines[0].endswith("  Load test – QA 1    QA    SN 00001    ok  12 ms")
-    assert lines[0][:8].count(":") == 2
+    # a two-day run's log needs the date: YYYY-MM-DD HH:MM:SS
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", lines[0][:19])
     assert lines[99].endswith("SN 00100    failed  no answer")
     events.close()
 

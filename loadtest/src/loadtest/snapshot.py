@@ -104,7 +104,8 @@ def _trip_fraction(state: RunState, profile: Profile) -> float:
     trucks = list(state.trucks.values())
     if not trucks or updates <= 0:
         return 0.0
-    moved = sum(updates if t.arrived else min(updates, t.updates_sent + t.updates_skipped)
+    # the last index sent and the last one skipped: the truck has passed the larger
+    moved = sum(updates if t.arrived else min(updates, max(t.updates_sent, t.skipped_through))
                 for t in trucks)
     return moved / (len(trucks) * updates)
 
