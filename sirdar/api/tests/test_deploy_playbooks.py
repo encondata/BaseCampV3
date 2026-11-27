@@ -71,8 +71,8 @@ def test_publish_and_teardown_plans():
 
 def test_plans():
     assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 9, 10,
-                                               11, 11, 12, 13, 13, 14, 14, 14, 15, 15, 16, 17,
-                                               18, 19, 20]
+                                               11, 12, 13, 13, 14, 14, 14, 15, 15, 16, 17,
+                                               18, 19, 19, 20]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -871,19 +871,19 @@ def test_deactivate_has_no_slot_smoke_test():
 UPDATE_PLAN = ["preflight", "bootstrap", "fetch", "render", "build", "dump", "up"]
 
 
-def test_first_admin_step_follows_start_services():
+def test_first_admin_step_comes_after_publishing():
     def keys(**kw):
         return [s.key for s in steps.plan_for("update", first_admin=True, **kw)]
     assert keys() == [*UPDATE_PLAN, "first_admin"]
-    assert keys(publish=True) == [*UPDATE_PLAN, "first_admin", "dns", "proxy", "smoke"]
+    assert keys(publish=True) == [*UPDATE_PLAN, "dns", "proxy", "smoke", "first_admin"]
     assert keys(vm=True) == ["provision", *UPDATE_PLAN, "first_admin"]
-    assert keys(cloud=True) == ["do_prepare", *UPDATE_PLAN, "first_admin", "dns",
-                                "slot_smoke"]
-    assert keys(cloud=True, go_live=True)[-1] == "go_live"
+    assert keys(cloud=True) == ["do_prepare", *UPDATE_PLAN, "dns", "slot_smoke",
+                                "first_admin"]
+    assert keys(cloud=True, go_live=True)[-2:] == ["go_live", "first_admin"]
     assert [s.number for s in steps.plan_for("update", first_admin=True, publish=True)] == [
-        1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14]
+        1, 2, 3, 4, 5, 6, 10, 12, 13, 14, 19]
     assert steps.STEPS_BY_KEY["first_admin"].name == "Create the first admin"
-    # A restore may plan step 11 (a Seed Data recipe snapshot); pipeline.create_deployment
+    # A restore may plan step 19 (a Seed Data recipe snapshot); pipeline.create_deployment
     # refuses it for any other snapshot. The admin comes after the restore and up.
     assert [s.key for s in steps.plan_for("update", first_admin=True, restore=True)][-3:] == [
         "restore", "up", "first_admin"]
@@ -1707,7 +1707,7 @@ def test_lan_bluegreen_plans():
     assert _bg("update", restore=True, publish=True, go_live=True) == [
         *build, "dump", "data_vm", "restore", "up", "dns", "slot_smoke", "lan_switch"]
     assert _bg("update", first_admin=True, publish=True) == [
-        *build, "dump", "data_vm", "up", "first_admin", "dns", "slot_smoke"]
+        *build, "dump", "data_vm", "up", "dns", "slot_smoke", "first_admin"]
     assert [s.number for s in steps.plan_for("update", vm=True, bluegreen=True, restore=True,
                                              publish=True, go_live=True)] == [
         0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14]

@@ -188,13 +188,13 @@ async def test_the_first_deploy_runs_step_11_and_a_later_one_does_not(
     assert "first_admin" not in (await _audits(db, "deploy.deployment_start"))[1]
 
 
-async def test_a_retry_after_a_refusal_runs_step_11_again(client, db, target, fake_runner,
+async def test_a_retry_after_a_refusal_runs_step_19_again(client, db, target, fake_runner,
                                                           leak_guard):
     leak_guard.append(TYPED)
     h = await auth_headers(client, db)
     first = await _first_deploy(client, db, target, fake_runner, h, "3")
     got = (await client.get(f"/api/deploy/deployments/{first['id']}", headers=h)).json()
-    assert (got["status"], got["failed_step"]) == ("failed", 11)
+    assert (got["status"], got["failed_step"]) == ("failed", 19)
     new_password = "Another-Horse-Battery-7"
     leak_guard.append(new_password)
     resp = await client.put(f"{URL}/fresh/first-admin", headers=h,
@@ -208,14 +208,14 @@ async def test_a_retry_after_a_refusal_runs_step_11_again(client, db, target, fa
                              json={})
     assert resp.status_code == 201, resp.text
     second = resp.json()
-    assert (second["start_step"], second["first_admin"]) == (11, True)
+    assert (second["start_step"], second["first_admin"]) == (19, True)
     assert "first_admin" in [s["key"] for s in second["steps"]]
     await pipeline.wait(uuid.UUID(second["id"]))
     env = (await client.get(f"{URL}/fresh", headers=h)).json()
     assert env["first_admin"]["done"] is True
 
 
-async def test_a_retry_once_the_admin_is_done_has_no_step_11(client, db, target, fake_runner):
+async def test_a_retry_once_the_admin_is_done_has_no_step_19(client, db, target, fake_runner):
     h = await auth_headers(client, db)
     first = await _first_deploy(client, db, target, fake_runner, h, "3")
     from sirdar_api.deploy import first_admins
@@ -224,10 +224,10 @@ async def test_a_retry_once_the_admin_is_done_has_no_step_11(client, db, target,
     await first_admins.mark_done(db, env.id)       # made in the environment by hand
     await db.commit()
     retry = f"/api/deploy/deployments/{first['id']}/retry"
-    # From step 11: nothing is left after it, so there is nothing to retry (not a 500).
+    # From step 19: nothing is left after it, so there is nothing to retry (not a 500).
     resp = await client.post(retry, headers=h, json={})
     assert _code(resp) == (409, "not_retryable")
-    resp = await client.post(retry, headers=h, json={"from_step": 11})
+    resp = await client.post(retry, headers=h, json={"from_step": 19})
     assert _code(resp) == (409, "not_retryable")
     resp = await client.post(retry, headers=h, json={"from_step": 10})
     assert resp.status_code == 201, resp.text

@@ -425,7 +425,7 @@ async def test_a_snapshot_job_falls_back_to_the_active_slot(db, lan, snapshots_d
     assert (env.active_slot, env.current_sha) == ("orange", SHA)
 
 
-async def test_step_11_runs_on_the_slot_vm(db, lan, fake_runner, fake_publisher):
+async def test_step_19_runs_on_the_slot_vm(db, lan, fake_runner, fake_publisher):
     await first_admins.put(db, get_settings(), lan.id, first_admins.check(ADMIN))
     await db.commit()
     fake_runner.results["first_admin"] = RunResult(status="successful", rc=0,
@@ -434,7 +434,7 @@ async def test_step_11_runs_on_the_slot_vm(db, lan, fake_runner, fake_publisher)
     dep, steps, _ = await _load(dep_id)
     assert dep.status == "succeeded", dep.error
     # A's steps first; the other side's follow-up has no first_admin step
-    first_steps = [*FIRST[:-1], "first_admin", "slot_smoke"]
+    first_steps = [*FIRST, "first_admin"]
     assert fake_runner.steps()[:len(first_steps)] == first_steps
     assert fake_runner.steps().count("first_admin") == 1
     by_step = {r.step: r for r in fake_runner.requests[:len(first_steps)]}
