@@ -525,7 +525,7 @@ export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'p
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
-/** The first super admin step 11 of the first deploy creates (an environment that starts empty). */
+/** The first super admin step 19 of the first deploy creates (an environment that starts empty). */
 export interface NewFirstAdmin {
   first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite';
   /** typed only; write-only */
@@ -573,7 +573,7 @@ export interface DeploymentSummary {
   bluegreen: boolean;
   /** A Force delete (teardown only): steps that failed were skipped. Absent from older API answers. */
   force?: boolean;
-  /** Its plan has step 11, Create the first admin. */
+  /** Its plan has step 19, Create the first admin. */
   first_admin: boolean;
 }
 export interface DeploymentStep {
@@ -781,7 +781,7 @@ export const activateSlot = (name: string, slot: string | null, confirmName?: st
 /** A one-slot environment's second slot; `deployment` deploys the running commit to it (null before any deploy). */
 export const addSlot = (name: string) =>
   sendJson<{ environment: Environment; deployment: Deployment | null }>('POST', `${envPath(name)}/slots`);
-/** Fix the first admin before step 11 uses it: a new typed password, or switch to an invite. */
+/** Fix the first admin before step 19 uses it: a new typed password, or switch to an invite. */
 export const setFirstAdmin = (name: string, body: NewFirstAdmin) =>
   sendJson<Environment>('PUT', `${envPath(name)}/first-admin`, body);
 export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);

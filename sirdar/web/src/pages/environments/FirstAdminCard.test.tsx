@@ -47,7 +47,7 @@ it('shows the name, email and mode; Change needs deploy:change', () => {
   expect(within(card()).getByText('Ada Lovelace')).toBeTruthy();
   expect(within(card()).getByText('ada@example.com')).toBeTruthy();
   expect(within(card()).getByText('Typed')).toBeTruthy();
-  expect(within(card()).getByText(/step 11/)).toBeTruthy();
+  expect(within(card()).getByText(/step 19/)).toBeTruthy();
   cleanup();
   show({ ...PENDING, first_admin: { ...PENDING.first_admin!, password_mode: 'invite' } });
   expect(within(card()).getByText('Invite')).toBeTruthy();

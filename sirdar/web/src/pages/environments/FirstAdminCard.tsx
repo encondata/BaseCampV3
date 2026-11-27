@@ -1,7 +1,7 @@
-/** The Settings tab's First admin card: the super admin step 11 of the first
+/** The Settings tab's First admin card: the super admin step 19 of the first
  *  deploy creates, shown until it has. When the environment refused the typed
  *  password (or the email), Change sets a new one, or an invite instead,
- *  and the deploy is retried from step 11. After a clean-up removed the admin
+ *  and the deploy is retried from step 19. After a clean-up removed the admin
  *  a typed password created, Change opens by itself: the password is needed again. */
 import { useEffect, useRef, useState, type Ref } from 'react';
 
@@ -49,8 +49,8 @@ export default function FirstAdminCard({ env, disabled, minLength, onSaved }: {
       </div>
       {needsPassword ? <p className="page-hint">{FIRST_ADMIN_PASSWORD_NEEDED}</p> : (
         <p className="page-hint">
-          Step 11 of the first deploy creates this super admin. If the environment refused the password or the email,
-          change it here, then retry the deployment from step 11.
+          Step 19 of the first deploy creates this super admin. If the environment refused the password or the email,
+          change it here, then retry the deployment from step 19.
         </p>
       )}
       <dl className="sirdar-kv">
@@ -71,7 +71,7 @@ export default function FirstAdminCard({ env, disabled, minLength, onSaved }: {
                          onSaved={(saved) => {
                            setChanging(false);
                            setNotice(needsPassword ? 'Saved. Deploy creates the first admin.'
-                             : 'Saved. Retry the deployment from step 11 to create the first admin.');
+                             : 'Saved. Retry the deployment from step 19 to create the first admin.');
                            onSaved(saved);
                          }} />
       )}
@@ -165,8 +165,8 @@ function FirstAdminModal({ env, minLength, onSaved, onClose }: {
             <h3 id="sirdar-firstadmin-title">Change the first admin</h3>
             {fa.needs_password ? <p className="page-hint">{FIRST_ADMIN_PASSWORD_NEEDED}</p> : (
               <p className="page-hint">
-                The super admin step 11 creates in {env.name}. Set a new password, or send an invite with a set-password
-                link instead. Then retry the deployment from step 11.
+                The super admin step 19 creates in {env.name}. Set a new password, or send an invite with a set-password
+                link instead. Then retry the deployment from step 19.
               </p>
             )}
           </div>
@@ -192,7 +192,7 @@ function FirstAdminModal({ env, minLength, onSaved, onClose }: {
               <p className="page-hint">
                 {mode === 'typed'
                   ? `They sign in with this password${minLength ? ` (at least ${minLength} characters)` : ''}.`
-                  : 'Step 11 emails them a link to set their own password.'}
+                  : 'Step 19 emails them a link to set their own password.'}
               </p>
             </div>
             {mode === 'typed' && (

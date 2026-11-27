@@ -97,8 +97,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(9, "restore_dump", "Restore backup", "restore_dump.yml", 60 * 60),
     StepDef(10, "up", "Start services", "up.yml", 45 * 60),
     StepDef(11, "export", "Take snapshot", "export.yml", 120 * 60),
-    StepDef(11, "first_admin", "Create the first admin", "first_admin.yml", 10 * 60),
-    StepDef(12, "dns", "DNS records", "", 10 * 60, "python"),
+        StepDef(12, "dns", "DNS records", "", 10 * 60, "python"),
     StepDef(13, "proxy", "Proxy hosts", "", 45 * 60, "python"),
     StepDef(13, "slot_smoke", "Smoke test (slot)", "slot_smoke.yml", 10 * 60),
     StepDef(14, "smoke", "Smoke test", "", 10 * 60, "python"),
@@ -111,6 +110,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
     StepDef(18, "do_destroy", "Remove DigitalOcean resources", "", 60 * 60, "vm"),
     StepDef(19, "do_renew", "Renew certificate", "", 30 * 60, "vm"),
+    StepDef(19, "first_admin", "Create the first admin", "first_admin.yml", 10 * 60),
     StepDef(20, "seed", "Seed starter content", "seed.yml", 20 * 60),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
@@ -197,10 +197,9 @@ def _bg_plan(mode: str, *, restore: bool, publish: bool, go_live: bool,
 
 
 def _with_first_admin(keys: tuple[str, ...]) -> tuple[str, ...]:
-    """Step 11 right after Start services: the api is up, and nothing has
-    published the environment yet."""
-    at = keys.index("up") + 1
-    return (*keys[:at], "first_admin", *keys[at:])
+    """Step 19 after everything else but Seed: the environment is published
+    and smoke-tested before an invite email points anyone at it."""
+    return (*keys, "first_admin")
 
 
 def _with_seed(keys: tuple[str, ...], seed: bool) -> tuple[str, ...]:
