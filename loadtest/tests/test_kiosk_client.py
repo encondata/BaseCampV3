@@ -245,6 +245,17 @@ async def test_failed_call_returns_false_and_notes_retried_scans(fake, clock, de
 # ── tokens (Review Focus 3) ───────────────────────────────────────────
 
 
+async def test_kiosk_device_reports_its_refresh_cookie(fake, clock, device):
+    fake.add_move(servers=1, containers=0, trucks=0)
+    d = device("handheld")
+    assert not d.has_refresh_cookie
+    await clock.run(d.sign_in(PASSWORD))
+    assert d.has_refresh_cookie
+    for cookie in d._client.cookies.jar:
+        cookie.secure = True
+    assert not d.has_refresh_cookie
+
+
 async def test_stale_token_refreshes_once(fake, clock, device, metrics):
     fake.token_seconds = 900
     d = device("handheld")

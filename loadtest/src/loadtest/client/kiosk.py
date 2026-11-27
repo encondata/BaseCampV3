@@ -22,7 +22,7 @@ from typing import Literal
 import httpx
 
 from ..clock import Clock
-from ..http import CallFailed, TokenExpired, timed_call
+from ..http import CallFailed, TokenExpired, sendable_cookie, timed_call
 from ..metrics import Metrics
 from ..profile import DeviceKind, RetrySpec
 
@@ -131,6 +131,10 @@ class KioskDevice:
     @property
     def has_key(self) -> bool:
         return self._key is not None
+
+    @property
+    def has_refresh_cookie(self) -> bool:
+        return sendable_cookie(self._client, "ss_refresh")
 
     async def close(self) -> None:
         await self._client.aclose()

@@ -40,6 +40,13 @@ def error_code(response: httpx.Response) -> str | None:
     return code if isinstance(code, str) else None
 
 
+def sendable_cookie(client: httpx.AsyncClient, name: str) -> bool:
+    """True when the client's jar holds cookie `name` and will send it: a Secure
+    cookie is kept but never sent over a plain http:// address."""
+    https = client.base_url.scheme == "https"
+    return any(c.name == name and (https or not c.secure) for c in client.cookies.jar)
+
+
 def _retryable(status: int) -> bool:
     return status >= 500 or status == 423
 

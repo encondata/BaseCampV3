@@ -1,4 +1,5 @@
-"""An in-memory stand-in for the BaseCamp kiosk (and, from Task 8, portal) API.
+"""An in-memory stand-in for the BaseCamp kiosk and portal API (portal routes:
+fakeserver_portal.py).
 
 It copies what the load test depends on from the real routes in
 api/src/serversherpa/api/routes/kiosk.py and auth.py: the same paths, the same
@@ -27,6 +28,7 @@ from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
 
 import httpx
+from fakeserver_portal import register_portal_routes
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -345,6 +347,7 @@ class FakeBaseCamp:
         self._register_scan_routes()
         self._register_station_routes()
         self._register_container_truck_routes()
+        register_portal_routes(self)
 
     # ── test controls ──────────────────────────────────────────────────
 
@@ -404,7 +407,8 @@ class FakeBaseCamp:
     def add_portal_user(self, email: str, password: str, *,
                         totp: Literal["verify", "enroll"] | None = None, code: str = "123456",
                         permissions: set[str] | None = None) -> None:
-        """Stored now; the portal routes that use it arrive with Task 8."""
+        """`permissions` holds "resource:action" strings; None holds every one the
+        portal routes check (fakeserver_portal.PORTAL_PERMISSIONS)."""
         self.portal_users[email.lower()] = _PortalUser(email, password, totp, code, permissions)
 
     def process_scans(self, *, duplicate_on_replay: bool = True) -> None:
