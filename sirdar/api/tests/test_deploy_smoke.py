@@ -31,6 +31,24 @@ async def test_every_url_goes_to_the_proxy_with_sni_and_host():
     assert first.extensions["sni_hostname"] == "api.uat2.serversherpa.com"
 
 
+async def test_without_a_proxy_ip_every_url_goes_to_its_public_name():
+    fake = FakeSmoke()
+    results = await smoke.run(TARGETS, None, transport=fake.transport(),
+                              sleep=lambda _: None)
+    assert all(r.ok for r in results)
+    first = fake.requests[0]
+    assert str(first.url) == "https://api.uat2.serversherpa.com/healthz"
+    assert first.headers["host"] == "api.uat2.serversherpa.com"
+
+
+async def test_a_public_name_that_wont_connect_says_so():
+    def refuse(request):
+        raise httpx.ConnectError("refused", request=request)
+    results = await smoke.run(TARGETS[:1], None, transport=httpx.MockTransport(refuse),
+                              sleep=lambda _: None, attempts=1)
+    assert results[0].detail == "couldn't connect to its public address"
+
+
 async def test_redirects_pass_and_errors_fail():
     fake = FakeSmoke()
     fake.set("api.uat2.serversherpa.com", 301)

@@ -160,6 +160,25 @@ async def test_a_failed_certificate_is_retried_once():
            "try again\n" in lines
 
 
+async def test_a_key_without_certs_retry_keeps_waiting_for_caddy():
+    fake = FakeSwitchyard(permissions=set(switchyard.OPERATIONS) - {"certs.retry"})
+    fake.add_host("portal.uat2.serversherpa.com")
+    fake.cert_errors["portal.uat2.serversherpa.com"] = "acme: challenge failed"
+    sleeps, lines = [], []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            fake.issue("portal.uat2.serversherpa.com")      # Caddy's own retry worked
+
+    async with Switchyard(CFG, transport=fake.transport(), sleep=sleep) as api:
+        await api.wait_for_certificates(["portal.uat2.serversherpa.com"], lines.append)
+    assert fake.retries == 0
+    assert ("Switchyard's API key doesn't have the certs.retry permission, so Sirdar can't "
+            "ask Caddy to try again. Caddy retries on its own; still waiting.\n") in lines
+    assert lines[-1] == "portal.uat2.serversherpa.com: certificate in place\n"
+
+
 async def test_waiting_times_out_with_our_copy():
     fake = FakeSwitchyard()
     fake.add_host("api.uat2.serversherpa.com")

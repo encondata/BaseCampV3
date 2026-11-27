@@ -190,3 +190,32 @@ async def test_recover_orphans_fails_a_deleting_environment(db, env):
     assert await pipeline.recover_orphans() == 1
     await db.refresh(env)
     assert env.status == "failed"
+
+
+async def test_a_switchyard_environment_maps_its_public_names_to_the_public_ip(
+        db, deploy_env, ssh_server, secrets_key, fake_runner, fake_publisher):  # noqa: F811
+    """Switchyard isn't on the LAN at the proxy IP: inside the containers the
+    public names go to the Cloudflare public IP (the router sends 443 on)."""
+    import base64
+
+    from .test_deploy_pipeline import _ssh_env, trust_fake
+    _ssh_env(deploy_env, ssh_server)
+    await trust_fake(db, ssh_server)
+    await configure(db, switchyard=True)
+    sy = await make_environment(db, name="sy", current_sha=OLD, proxy="switchyard")
+    dep_id = await _start(db, sy)
+    dep, _, _ = await _load(dep_id)
+    assert dep.status == "succeeded", dep.error
+    render = next(r for r in fake_runner.requests if r.step == "render")
+    env_file = base64.b64decode(render.extravars["env_file_b64"]).decode()
+    assert "STACK_HOSTS_IP=203.0.113.7\n" in env_file
+
+
+async def test_an_npm_environment_keeps_the_proxy_ip_for_its_names(db, env, fake_runner,  # noqa: F811
+                                                                  fake_publisher):
+    import base64
+    dep_id = await _start(db, env)
+    await _load(dep_id)
+    render = next(r for r in fake_runner.requests if r.step == "render")
+    env_file = base64.b64decode(render.extravars["env_file_b64"]).decode()
+    assert "STACK_HOSTS_IP=203.0.113.7" not in env_file

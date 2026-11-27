@@ -13,6 +13,10 @@ origin https://<proxy_ip>, and httpcore reads sni_hostname only when it
 opens a connection, so a pooled connection would skip the next host's SNI
 and certificate verification.
 
+proxy_ip None (a Switchyard environment, whose LAN address Sirdar doesn't
+know) sends each request to the public name itself, as DNS resolves it, the
+way visitors reach it.
+
 With insecure (a DigitalOcean environment on Let's Encrypt staging) the
 certificate isn't verified."""
 
@@ -54,11 +58,14 @@ def _is_tls(error: BaseException) -> bool:
     return "CERTIFICATE_VERIFY_FAILED" in text or "[SSL" in text
 
 
-async def _check(transport: httpx.AsyncBaseTransport | None, proxy_ip: str, service: str,
-                 hostname: str, insecure: bool = False) -> SmokeResult:
+async def _check(transport: httpx.AsyncBaseTransport | None, proxy_ip: str | None,
+                 service: str, hostname: str, insecure: bool = False) -> SmokeResult:
     path = PATHS.get(service, "/")
     url = f"https://{hostname}{path}"
-    host = f"[{proxy_ip}]" if ":" in proxy_ip else proxy_ip
+    if proxy_ip is None:                        # the public name, as DNS resolves it
+        host = hostname
+    else:
+        host = f"[{proxy_ip}]" if ":" in proxy_ip else proxy_ip
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, transport=transport,
                                      follow_redirects=False, verify=not insecure,
@@ -71,7 +78,8 @@ async def _check(transport: httpx.AsyncBaseTransport | None, proxy_ip: str, serv
     except httpx.ConnectError as e:
         tls = _is_tls(e)
         return SmokeResult(service, url, False, "the certificate didn't verify" if tls
-                           else "couldn't connect to the proxy")
+                           else "couldn't connect to the proxy" if proxy_ip is not None
+                           else "couldn't connect to its public address")
     except httpx.HTTPError:
         return SmokeResult(service, url, False, "the request failed")
     if service == home.HOME:
@@ -83,7 +91,7 @@ async def _check(transport: httpx.AsyncBaseTransport | None, proxy_ip: str, serv
     return SmokeResult(service, url, 200 <= resp.status_code < 400, f"HTTP {resp.status_code}")
 
 
-async def run(targets: list[tuple[str, str]], proxy_ip: str, *,
+async def run(targets: list[tuple[str, str]], proxy_ip: str | None, *,
               transport: httpx.AsyncBaseTransport | None = None,
               sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
               attempts: int = ATTEMPTS, delay: float = DELAY,

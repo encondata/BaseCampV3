@@ -502,7 +502,7 @@ class EnvironmentIn(BaseModel):
     vm: VmIn | None = None
     # mode "new" with target "digitalocean" only: account, slots and sizes
     do: DoIn | None = None
-    # mode "new" only, without snapshot_id: the first deploy's step 11 creates it
+    # mode "new" only, without snapshot_id: the first deploy's step 19 creates it
     first_admin: FirstAdminIn | None = None
     # mode "new" only: the optional apps it runs (absent: all), its mail
     # (absent: Mailpit) and optional secrets (write-only)
@@ -803,11 +803,11 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
 @router.put("/environments/{name}/first-admin")
 async def set_first_admin(name: str, body: FirstAdminIn, request: Request, db: DbSession,
                           actor: AuthContext = require_permission("deploy", "change")):
-    """Change the first admin before step 11 used it: a new password (the
+    """Change the first admin before step 19 used it: a new password (the
     environment refused the last one) or an invite instead."""
     env = await _environment(db, name)
     # Locked until this request commits, and the running-deployment check is
-    # made under the lock: step 11 marks the record done in its own commit,
+    # made under the lock: step 19 marks the record done in its own commit,
     # so a PUT can't land between it reading the record and marking it.
     row = await db.get(EnvironmentFirstAdmin, env.id, with_for_update=True,
                        populate_existing=True)
@@ -815,7 +815,7 @@ async def set_first_admin(name: str, body: FirstAdminIn, request: Request, db: D
         raise _refuse(404, "first_admin_not_set")
     if row.done_at is not None:
         raise _refuse(409, "first_admin_done")
-    if await environments.is_deploying(db, env.id):    # step 11 may be using it
+    if await environments.is_deploying(db, env.id):    # step 19 may be using it
         raise _refuse(409, "deploy_in_progress")
     settings = get_settings()
     if not vault.is_configured(settings):
@@ -823,7 +823,7 @@ async def set_first_admin(name: str, body: FirstAdminIn, request: Request, db: D
     try:
         spec = first_admins.check(body.model_dump())
         await first_admins.put(db, settings, env.id, spec)
-    except first_admins.FirstAdminError as e:     # first_admin_done: step 11 got there first
+    except first_admins.FirstAdminError as e:     # first_admin_done: step 19 got there first
         await db.rollback()
         raise _refuse(_ENV_STATUS.get(e.code, 422), e.code, **e.extra) from None
     audit(db, actor_id=actor.user.person_id, action="deploy.first_admin_set",
@@ -1197,7 +1197,7 @@ async def _cleanup_allowed(db, env: Environment) -> None:
 
 
 def _takes_first_admin(snapshot) -> bool:
-    """Step 11 runs without a seed, or after a recipe-built one (a plain seed
+    """Step 19 runs without a seed, or after a recipe-built one (a plain seed
     already holds its users)."""
     return snapshot is None or snapshot.origin == "recipe"
 
@@ -1719,7 +1719,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # A DigitalOcean Delete that took a snapshot first (step 11).
     taking = dep.mode == "teardown" and (dep.cloud or dep.bluegreen) \
         and await _has_step(db, dep.id, "export")
-    # Step 11 again only while the first admin is still to be created, as
+    # Step 19 again only while the first admin is still to be created, as
     # create_deployment plans it (a done record drops the step).
     first_admin = dep.first_admin and await first_admins.pending(db, env.id)
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
@@ -1728,7 +1728,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                     bluegreen=dep.bluegreen, seed=dep.seed_content)
     admin_step = STEPS_BY_KEY["first_admin"].number
     if dep.first_admin and not first_admin and from_step == admin_step <= stopped:
-        # The admin was created since step 11 stopped: carry on with the step
+        # The admin was created since step 19 stopped: carry on with the step
         # after it, or there's nothing left to retry.
         later = [s.number for s in plan if s.number > admin_step]
         if not later:

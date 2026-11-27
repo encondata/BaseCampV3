@@ -419,3 +419,14 @@ async def test_a_failed_removal_apply_keeps_the_rows_and_the_retry_applies(db, e
     await _run(db, env, "unproxy")
     assert fake.applied == {} and await _rows(db) == []
     assert fake.applies[-1] == "Sirdar: uat2 remove proxy hosts"
+
+
+# ---- step 14: smoke test ---------------------------------------------------------------
+
+async def test_smoke_goes_to_the_public_names_not_the_proxy_ip(db, env, publish_fakes):  # noqa: F811
+    """Switchyard's LAN address isn't something Sirdar knows, so the smoke test
+    goes the way visitors do: each public name, resolved by DNS."""
+    lines = await _run(db, env, "smoke")
+    assert lines[0] == "https://api.uat2.serversherpa.com/healthz: HTTP 200\n"
+    hosts = {r.url.host for r in publish_fakes.smoke.requests}
+    assert hosts == {f"{s}.uat2.serversherpa.com" for s in PORTS}

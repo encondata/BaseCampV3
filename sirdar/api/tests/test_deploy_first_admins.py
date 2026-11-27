@@ -1,5 +1,5 @@
 """deploy/first_admins.py: the first super admin a fresh environment gets
-on its first deploy. A typed password is vault-encrypted until step 11 has
+on its first deploy. A typed password is vault-encrypted until step 19 has
 used it; an invite has none."""
 
 import pytest
@@ -120,14 +120,14 @@ def test_exit_codes_and_copy():
     assert "password policy" in first_admins.refusal(3)
     assert "exit 2" in first_admins.refusal(2) and "newer one" in first_admins.refusal(2)
     assert "email address" in first_admins.refusal(8) \
-        and "step 11" in first_admins.refusal(8)
+        and "step 19" in first_admins.refusal(8)
     assert "SMTP" in first_admins.refusal(5)
     assert "super_admin" in first_admins.refusal(4)
     assert "exit 9" in first_admins.refusal(9)
 
 
 async def test_put_replaces_a_pending_row(db, secrets_key):
-    """PUT …/first-admin before step 11 ran: the row is replaced in place."""
+    """PUT …/first-admin before step 19 ran: the row is replaced in place."""
     env = await make_environment(db, name="fresh", secrets={})
     first = await first_admins.put(db, get_settings(), env.id, first_admins.check(GOOD))
     await db.commit()
@@ -150,7 +150,7 @@ async def test_put_replaces_a_pending_row(db, secrets_key):
 
 
 async def test_put_refuses_once_done(db, secrets_key):
-    """After step 11 a new password would be stored with nothing to use or
+    """After step 19 a new password would be stored with nothing to use or
     clear it, so put refuses and leaves the row as it is."""
     env = await make_environment(db, name="fresh", secrets={})
     await first_admins.put(db, get_settings(), env.id, first_admins.check(GOOD))

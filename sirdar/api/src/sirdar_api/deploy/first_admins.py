@@ -1,8 +1,8 @@
 """The first super admin of an environment that starts empty (deploy phase
-8a): the record (environment_first_admins), its checks, the vars step 11
+8a): the record (environment_first_admins), its checks, the vars step 19
 (Create the first admin) hands its playbook, and our copy for the exit codes
 of `serversherpa bootstrap-admin`. A typed password is vault-encrypted until
-step 11 used it; it never reaches a response, log, audit row, error or argv
+step 19 used it; it never reaches a response, log, audit row, error or argv
 (it travels only as the command's stdin). Callers audit and commit."""
 
 import unicodedata
@@ -35,7 +35,7 @@ _REFUSALS = {
         "then retry."),
     3: ("The environment refused the first admin's password: it's shorter than its password "
         "policy allows. Set a new one on the environment's Settings tab, then retry from "
-        "step 11."),
+        "step 19."),
     4: ("The environment has no super_admin role. Deploy a commit whose migrations seed it, "
         "then retry."),
     5: ("The environment can't send email (SMTP isn't configured), so it can't invite the "
@@ -44,9 +44,9 @@ _REFUSALS = {
         "See the step's log, then retry."),
     7: ("A person with that email exists in this environment without an account. Give them "
         "an account there, or set another email on the environment's Settings tab, then "
-        "retry from step 11."),
+        "retry from step 19."),
     8: ("The environment refused the first admin's email address. Set another on the "
-        "environment's Settings tab, then retry from step 11."),
+        "environment's Settings tab, then retry from step 19."),
 }
 
 
@@ -116,7 +116,7 @@ async def pending(db: AsyncSession, env_id: uuid.UUID) -> bool:
 
 async def put(db: AsyncSession, settings: Settings, env_id: uuid.UUID,
               spec: dict) -> EnvironmentFirstAdmin:
-    """Insert or replace the first admin (a checked spec). Once step 11 has
+    """Insert or replace the first admin (a checked spec). Once step 19 has
     created them (done_at set) it refuses with first_admin_done: a password
     stored then would have nothing to use or clear it."""
     row = await get(db, env_id)
@@ -137,7 +137,7 @@ async def put(db: AsyncSession, settings: Settings, env_id: uuid.UUID,
 
 async def step_vars(db: AsyncSession, settings: Settings,
                     env_id: uuid.UUID) -> tuple[dict, list[str]]:
-    """Step 11's extra vars and the values to redact. vault.SecretsKeyMissing
+    """Step 19's extra vars and the values to redact. vault.SecretsKeyMissing
     and vault.SecretUnreadable propagate."""
     row = await get(db, env_id)
     if row is None or row.done_at is not None:
@@ -158,8 +158,8 @@ async def mark_done(db: AsyncSession, env_id: uuid.UUID) -> None:
 
 
 async def reset(db: AsyncSession, env_id: uuid.UUID) -> None:
-    """A cleanup made the environment empty again: step 11 creates the first
-    admin on its next first deploy. A typed password step 11 already used
+    """A cleanup made the environment empty again: step 19 creates the first
+    admin on its next first deploy. A typed password step 19 already used
     stays cleared (needs_password), so the user sets a new one."""
     row = await get(db, env_id)
     if row is not None and row.done_at is not None:

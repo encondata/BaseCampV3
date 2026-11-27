@@ -281,7 +281,15 @@ class Switchyard:
                 retried = True
                 out(f"{failed[0]}: Caddy couldn't get the certificate yet; asking it to try "
                     "again\n")
-                await self.retry_certificates()
+                try:
+                    await self.retry_certificates()
+                except SwitchyardError as e:
+                    if e.status != 403:
+                        raise
+                    # Caddy keeps retrying by itself; the nudge is only a nudge.
+                    out("Switchyard's API key doesn't have the certs.retry permission, so "
+                        "Sirdar can't ask Caddy to try again. Caddy retries on its own; "
+                        "still waiting.\n")
             if waited >= self._cert_timeout:
                 raise SwitchyardError(
                     f"Caddy didn't get a certificate for {waiting[0]} within "

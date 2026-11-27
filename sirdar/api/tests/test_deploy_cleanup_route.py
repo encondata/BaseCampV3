@@ -349,7 +349,7 @@ async def test_update_refused_while_first_admin_needs_password(client, db, fresh
     from sirdar_api.config import get_settings
     h = await auth_headers(client, db)
     await first_admins.put(db, get_settings(), fresh.id, first_admins.check(ADMIN))
-    # What a cleanup leaves: step 11 used (and cleared) the password, then reset.
+    # What a cleanup leaves: step 19 used (and cleared) the password, then reset.
     await first_admins.mark_done(db, fresh.id)
     await first_admins.reset(db, fresh.id)
     await db.commit()

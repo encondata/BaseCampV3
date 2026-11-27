@@ -41,9 +41,9 @@ def test_the_seed_step_ends_every_first_update_plan():
                                            20 * 60)
     assert _keys()[-2:] == ["up", "seed"]
     assert _keys(publish=True, first_admin=True)[-6:] == [
-        "up", "first_admin", "dns", "proxy", "smoke", "seed"]
+        "up", "dns", "proxy", "smoke", "first_admin", "seed"]
     assert _keys(cloud=True, go_live=True, first_admin=True)[-6:] == [
-        "up", "first_admin", "dns", "slot_smoke", "go_live", "seed"]
+        "up", "dns", "slot_smoke", "go_live", "first_admin", "seed"]
     assert _keys(vm=True, bluegreen=True, publish=True, go_live=True)[-5:] == [
         "up", "dns", "slot_smoke", "lan_switch", "seed"]
     for kw in ({"restore": True}, {}):

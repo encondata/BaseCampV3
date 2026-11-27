@@ -106,6 +106,18 @@ it('the port and STARTTLS sit with the host', async () => {
   expect(set).toHaveBeenCalledWith({ smtpStarttls: false });
 });
 
+it('Purelymail fills in its SMTP server, port and STARTTLS', async () => {
+  const set = renderStep({ mailMode: 'smtp' });
+  expect(screen.getByText(/Your user name is your full Purelymail address/)).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Use Purelymail' }));
+  expect(set).toHaveBeenCalledWith({ smtpHost: 'smtp.purelymail.com', smtpPort: '587', smtpStarttls: true });
+});
+
+it('no Purelymail button for Mailpit', () => {
+  renderStep();
+  expect(screen.queryByRole('button', { name: 'Use Purelymail' })).toBeNull();
+});
+
 it('no SMTP fields for Mailpit', () => {
   renderStep();
   expect(screen.queryByLabelText('SMTP host')).toBeNull();

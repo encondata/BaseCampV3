@@ -1,4 +1,4 @@
-# Step 11 — Create the first admin: the first Update of an environment that
+# Step 19 — Create the first admin: the first Update of an environment that
 # starts empty runs `serversherpa bootstrap-admin` in its api container
 # (ss-stack admin). A typed password reaches the command only as stdin, and
 # the task is no_log; an invite has no password. Exit 0 (created) and 10 (the

@@ -277,7 +277,7 @@ class EnvironmentSecret(Base):
 
 class EnvironmentFirstAdmin(Base):
     """The first super admin of an environment that starts empty (migration
-    0011): step 11 of its first deploy creates them. A typed password is
+    0011): step 19 of its first deploy creates them. A typed password is
     Fernet-encrypted with SIRDAR_SECRETS_KEY until that step used it, then
     cleared; an invite has none. Never returned."""
 
@@ -333,7 +333,7 @@ class Deployment(Base):
     cloud: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     slot: Mapped[str | None]
     go_live: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
-    # Fresh start (migration 0011): its plan has step 11, Create the first admin.
+    # Fresh start (migration 0011): its plan has step 19, Create the first admin.
     first_admin: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     # Its plan ends with step 20, Seed starter content (migration 0015): a first
     # Update that starts empty and asked for it. Retries keep it.

@@ -59,6 +59,9 @@ export function Segmented<T extends string | boolean>({ id, caption, value, opti
 
 type Change = (patch: Partial<AppsMailForm>) => void;
 
+/** Purelymail's SMTP submission server (STARTTLS on 587). */
+export const PURELYMAIL_SMTP = { smtpHost: 'smtp.purelymail.com', smtpPort: '587', smtpStarttls: true } as const;
+
 export function AppToggles({ form, onChange, error, errorId, disabled }: {
   form: Pick<AppsMailForm, 'apps' | 'mailMode'>; onChange: Change; error?: string; errorId: string; disabled?: boolean;
 }) {
@@ -115,6 +118,14 @@ export function MailFields({ idPrefix, form, onChange, error, disabled, showPass
       </p>
       {form.mailMode === 'smtp' && (
         <>
+          <div>
+            <button type="button" className="btn-ghost" disabled={disabled}
+                    aria-describedby={`${idPrefix}-purelymail-hint`}
+                    onClick={() => onChange({ ...PURELYMAIL_SMTP })}>Use Purelymail</button>
+            <p className="page-hint" id={`${idPrefix}-purelymail-hint`}>
+              Fills in Purelymail's server, port and STARTTLS. Your user name is your full Purelymail address.
+            </p>
+          </div>
           <div className="sirdar-flow-grid" role="group" aria-label="SMTP server">
             <Field id={`${idPrefix}-smtp-host`} label="SMTP host" value={form.smtpHost} errorId={errId} disabled={disabled}
                    onChange={(v) => onChange({ smtpHost: v })} />
