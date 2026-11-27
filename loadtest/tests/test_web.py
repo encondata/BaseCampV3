@@ -261,10 +261,12 @@ async def test_result_or_404(client, stub):
     got = await client.get("/api/result")
     assert got.status_code == 404
     assert got.json() == {"code": "no_result", "message": "There is no result yet."}
-    stub._result = {"verdict": "Pass"}
+    stub._result = {"verdict": "Pass", "series": {"waiting": [[1.0, 3]]}}
     got = await client.get("/api/result")
+    # the page needs no series (results.json on disk keeps them): a two-day run's are MBs
     assert (got.status_code, got.json()) == (200, {"verdict": "Pass"})
     assert got.headers["cache-control"] == "no-store"
+    assert stub._result["series"]                    # the kept result is left whole
 
 
 async def test_shutdown_hook_interrupts_the_run(stub):

@@ -1373,10 +1373,15 @@ wireTool('ft', {
     mix: modelMix(res.rows, MODELS),
   }),
   // What to enter in the portal's move wizard for this many devices.
+  // The numbers come from the tool's profile when it serves this page (simulate.js puts
+  // them here); opened as a plain file, the profile's usual 20 and 15.
   line: res => {
-    const containers = Math.ceil(res.rows.length / 20);
-    const trucks = Math.ceil(containers / 15);
-    return `Containers needed: ${fmt(containers)} · Trucks needed: ${fmt(trucks)} (20 per container, 15 containers per truck)`;
+    const sizes = window.loadtestSizes || {};
+    const size = sizes.container_size || 20;
+    const perTruck = sizes.containers_per_truck || 15;
+    const containers = Math.ceil(res.rows.length / size);
+    const trucks = Math.ceil(containers / perTruck);
+    return `Containers needed: ${fmt(containers)} · Trucks needed: ${fmt(trucks)} (${size} per container, ${perTruck} containers per truck)`;
   },
   columns: [
     ...COMMON_COLUMNS,

@@ -70,6 +70,16 @@ def _duration(seconds: float) -> str:
     return f"{secs} s"
 
 
+def _default_sizes() -> dict | None:
+    """The page's default profile's container and truck sizes, for the Generate tab."""
+    try:
+        profile = load_profile(profile_path("fast"))
+    except ProfileError:
+        return None
+    return {"container_size": profile.container_size,
+            "containers_per_truck": profile.containers_per_truck}
+
+
 class Runner:
     def __init__(self, *, runs_dir: Path, clock: Clock | None = None,
                  router_url: str | None = None,
@@ -91,6 +101,7 @@ class Runner:
         self._move_password: str | None = None
         self._selected: dict | None = None      # {move_id, speed} of the last check
         self._unfinished = UnfinishedRuns(self.runs_dir, self.clock)
+        self._sizes = _default_sizes()
         self._driver = RunDriver(clock=self.clock, transport=transport, hub=self._hub,
                                  on_phase=self._on_phase, on_closed=self._on_run_closed)
 
@@ -362,4 +373,4 @@ class Runner:
             report=self._report, check_profile=self._profile, selected=self._selected,
             result=self._driver.result,
             feed_write_errors=self.events.write_errors, unfinished=self.unfinished(),
-            now=self.clock.now())
+            now=self.clock.now(), sizes=self._sizes)

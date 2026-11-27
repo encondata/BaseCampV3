@@ -31,8 +31,8 @@ def report_dict(report: CheckReport, profile: Profile) -> dict:
 
 def build_snapshot(*, phase: str, error: str | None, connection: Connection,
                    run: Run | None, report: CheckReport | None, check_profile: Profile | None,
-                   selected: dict | None, result: dict | None, feed_write_errors: int, unfinished: dict | None,
-                   now: float) -> dict:
+                   selected: dict | None, result: dict | None, feed_write_errors: int,
+                   unfinished: dict | None, now: float, sizes: dict | None = None) -> dict:
     state = run.state if run else None
     profile = run.profile if run else check_profile
     servers = (len(state.servers) if state else len(report.roster) if report else 0)
@@ -81,6 +81,8 @@ def build_snapshot(*, phase: str, error: str | None, connection: Connection,
         "run_dir": str(run.run_dir) if run else None,
         "check": report_dict(report, check_profile) if report and check_profile else None,
         "unfinished": unfinished,
+        # the default profile's container_size and containers_per_truck (None: unreadable)
+        "sizes": dict(sizes) if sizes else None,
     }
 
 

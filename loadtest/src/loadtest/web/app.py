@@ -465,7 +465,8 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
         got = runner.result()
         if got is None:
             return JSONResponse(NO_RESULT, status_code=404, headers=NO_STORE)
-        return JSONResponse(got, headers=NO_STORE)
+        # the samples stay in results.json: the page draws none, and a two-day run's are MBs
+        return JSONResponse({k: v for k, v in got.items() if k != "series"}, headers=NO_STORE)
 
     @app.get("/api/events")
     async def events(request: Request) -> StreamingResponse:

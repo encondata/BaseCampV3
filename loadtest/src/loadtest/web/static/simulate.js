@@ -29,19 +29,36 @@
     constructor(code, message, fields) { super(message); this.code = code; this.fields = fields || []; }
   }
 
+  // No request may hold the page: one that takes too long is given up and treated as the
+  // tool not answering. Connect, check and continue sign in and read the server (retries
+  // included), so they get longer.
+  const WAIT_MS = 10000;
+  const LONG_WAIT_MS = 300000;
+  const LONG_POSTS = ['/api/connect', '/api/check', '/api/continue'];
+  function deadline(ms) {
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), ms);
+    return { signal: stop.signal, done: () => clearTimeout(timer) };
+  }
+
   async function post(path, body) {
-    let res;
+    const wait = deadline(LONG_POSTS.includes(path) ? LONG_WAIT_MS : WAIT_MS);
     try {
-      res = await fetch(path, {
-        method: 'POST', credentials: 'same-origin', cache: 'no-store',
-        headers: { 'X-Loadtest': '1', 'Content-Type': 'application/json' },
-        body: JSON.stringify(body || {}),
-      });
-    } catch (e) {
-      toolSilent(OFFLINE);
-      throw new ApiError('offline', OFFLINE);
+      let res;
+      try {
+        res = await fetch(path, {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'X-Loadtest': '1', 'Content-Type': 'application/json' },
+          body: JSON.stringify(body || {}), signal: wait.signal,
+        });
+      } catch (e) {
+        toolSilent(OFFLINE);
+        throw new ApiError('offline', OFFLINE);
+      }
+      return await answer(res);      // a body still arriving at the deadline is given up too
+    } finally {
+      wait.done();
     }
-    return answer(res);
   }
 
   // A 5xx or an answer that is not the tool's JSON (a proxy's error page while the tool
@@ -69,14 +86,19 @@
 
   /* reads only; every POST goes through post() above */
   async function get(path) {
-    let res;
+    const wait = deadline(WAIT_MS);
     try {
-      res = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
-    } catch (e) {
-      toolSilent(OFFLINE);
-      throw new ApiError('offline', OFFLINE);
+      let res;
+      try {
+        res = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal: wait.signal });
+      } catch (e) {
+        toolSilent(OFFLINE);
+        throw new ApiError('offline', OFFLINE);
+      }
+      return await answer(res);
+    } finally {
+      wait.done();
     }
-    return answer(res);
   }
 
   let blocked = false;      // the access key is missing: nothing more is asked
@@ -198,6 +220,8 @@
     }
     const first = snap === null;
     snap = state;
+    // the Generate tab's containers-and-trucks line uses the profile's numbers
+    if (state.sizes) window.loadtestSizes = state.sizes;
     if (first && ACTIVE.includes(state.phase) && !location.hash) location.hash = 'simulate';
     render();
   }
@@ -278,7 +302,6 @@
     if (label) track.setAttribute('aria-label', label);
     fill.style.width = pct + '%';
   }
-  const percent = (done, total) => (total ? Math.min(100, Math.floor((done / total) * 100)) : 0);
   function clock(seconds) {
     if (seconds == null || !Number.isFinite(seconds)) return DASH;
     const s = Math.max(0, Math.round(seconds));
@@ -923,14 +946,17 @@
     table('sim-scans', ['Sent', 'Processed', 'Processed twice', 'Never processed'],
       [[count(sc.sent), count(sc.processed), count(sc.processed_twice), count(sc.never_processed)]],
       [0, 1, 2, 3]);
+    const b = r.backlog || {};
+    // the load and unload scans are covered only by the backlog reaching zero
     const containerLine = sc.container_scans_sent == null ? ''
       : `${plural(sc.container_scans_sent, 'container scan', 'container scans')} sent` +
-        (sc.container_scans_checked ? '.' : ': not checked one by one; covered by the backlog reaching zero.');
+        (sc.container_scans_checked ? '.'
+          : b.catch_up_seconds != null ? ': not checked one by one; covered by the backlog reaching zero.'
+            : ': not checked one by one. The backlog did not reach zero, so they are not confirmed.');
     $('sim-container-scans').hidden = !containerLine;
     $('sim-container-scans').textContent = containerLine;
     const d = r.scan_delay_ms || {};
     table('sim-delay', ['Median', '95th', 'Slowest'], [[ms(d.median), ms(d.p95), ms(d.max)]], [0, 1, 2]);
-    const b = r.backlog || {};
     const catchUp = b.catch_up_seconds != null ? clock(b.catch_up_seconds)
       : r.run && r.run.reason === 'completed' ? 'did not catch up' : DASH;
     table('sim-backlog', ['Peak', 'Catch-up time'], [[count(b.peak), catchUp]], [0, 1]);

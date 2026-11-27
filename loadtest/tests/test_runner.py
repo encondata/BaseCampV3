@@ -1180,6 +1180,18 @@ async def test_snapshot_moves_selection_and_devices_in_every_phase(world, fake, 
     assert page_keys(runner) == {"moves": [], "selected": selected, "devices": 32}
 
 
+async def test_snapshot_carries_the_default_profiles_sizes(world, monkeypatch):
+    """The Generate tab's containers-and-trucks line reads them."""
+    assert world.runner().snapshot()["sizes"] == {"container_size": 20,
+                                                  "containers_per_truck": 15}
+    import loadtest.runner as runner_mod
+
+    def broken(path):
+        raise runner_mod.ProfileError("broken")
+    monkeypatch.setattr(runner_mod, "load_profile", broken)
+    assert world.runner().snapshot()["sizes"] is None      # the page falls back to 20 and 15
+
+
 async def test_snapshot_page_keys_for_a_continued_run(world, clock):
     await crashed_run(world, clock)
     runner = world.runner()

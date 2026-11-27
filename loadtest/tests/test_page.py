@@ -61,11 +61,16 @@ def test_index_loads_the_page_files_by_root_relative_url():
 
 
 def test_generate_gains_the_containers_and_trucks_line():
-    page = read("index.html")
+    page, js = read("index.html"), read("simulate.js")
     assert "Containers needed: ${fmt(containers)} · Trucks needed: ${fmt(trucks)}" in page
-    assert "(20 per container, 15 containers per truck)" in page
-    assert "Math.ceil(res.rows.length / 20)" in page
-    assert "Math.ceil(containers / 15)" in page
+    assert "(${size} per container, ${perTruck} containers per truck)" in page
+    assert "Math.ceil(res.rows.length / size)" in page
+    assert "Math.ceil(containers / perTruck)" in page
+    # the profile's numbers when the tool serves the page; 20 and 15 as a plain file
+    assert "const sizes = window.loadtestSizes || {};" in page
+    assert "const size = sizes.container_size || 20;" in page
+    assert "const perTruck = sizes.containers_per_truck || 15;" in page
+    assert "if (state.sizes) window.loadtestSizes = state.sizes;" in js
 
 
 def test_the_only_outside_requests_are_the_fonts_and_they_never_block():
@@ -278,3 +283,25 @@ def test_run_facts_show_the_clock_difference():
     assert "['Clock difference', clockDifference(r.clock_offset_seconds)]," in js
     assert "'Not measured; scan delay uses this machine’s clock'" in js
     assert "${seconds < 0 ? 'behind' : 'ahead of'} this machine’s" in js
+
+
+def test_no_request_to_the_tool_can_hold_the_page():
+    js = without_comments(read("simulate.js"))
+    assert "const WAIT_MS = 10000;" in js
+    assert js.count("signal: wait.signal") == 2          # both fetch helpers
+    assert js.count("wait.done();") == 2
+    assert "LONG_POSTS.includes(path) ? LONG_WAIT_MS : WAIT_MS" in js
+    assert "setTimeout(() => stop.abort(), ms)" in js
+
+
+def test_the_container_scan_line_says_what_covers_them():
+    js = read("simulate.js")
+    assert "b.catch_up_seconds != null" in js
+    assert "': not checked one by one; covered by the backlog reaching zero.'" in js
+    assert ("': not checked one by one. The backlog did not reach zero, so they are not "
+            "confirmed.'") in js
+
+
+def test_no_unused_helpers():
+    js = read("simulate.js")
+    assert "const percent =" not in js
