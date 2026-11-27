@@ -1,7 +1,7 @@
 """results.json: the run's facts, verdict, findings, call table and every sample.
 
-Never a password, token or key: `build_results` refuses a result holding any secret
-it is given.
+Never a password, token or key: `build_results` removes every secret it is given from
+the free text it writes, and never refuses a result.
 """
 
 from __future__ import annotations
@@ -25,45 +25,53 @@ def _iso(t: float | None) -> str | None:
     return None if t is None else datetime.fromtimestamp(t, UTC).isoformat()
 
 
-def _strings(value) -> Iterable[str]:
-    """Every string in a nested result, dictionary keys included."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            if isinstance(k, str):
-                yield k
-            yield from _strings(v)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            yield from _strings(v)
+MIN_SECRET_LENGTH = 6      # shorter values would match inside timestamps, ids and serials
+REMOVED = "[removed]"
 
 
-def _refuse_secrets(result: dict, secrets: Iterable[str]) -> None:
-    wanted = [s for s in secrets if s]
-    if not wanted:
-        return
-    for text in _strings(result):
-        if any(s in text for s in wanted):
-            raise ValueError("the result holds a secret; it was not written")
+class _Redactor:
+    """Removes secrets from free text only (finding texts, the reason). Structured values
+    (times, ids, serials, call names, counters, series, the profile) are never touched."""
+
+    def __init__(self, secrets: Iterable[str]) -> None:
+        # longest first, so a secret inside a longer one cannot leave a fragment behind
+        self.secrets = sorted({s for s in secrets if len(s) >= MIN_SECRET_LENGTH},
+                              key=len, reverse=True)
+        self.count = 0
+
+    def __call__(self, text: str) -> str:
+        for secret in self.secrets:
+            n = text.count(secret)
+            if n:
+                self.count += n
+                text = text.replace(secret, REMOVED)
+        return text
 
 
 def build_results(*, state: RunState, profile: Profile, metrics: Metrics,
                   report: FinalReport | None, catch_up_seconds: float | None, ended_at: float,
-                  reason: str, secrets: Iterable[str] = frozenset()) -> dict:
-    """`report` is None when the run ended in an error before the final check."""
+                  reason: str, secrets: Iterable[str] = frozenset(),
+                  db_health: str = "not_sampled") -> dict:
+    """`report` is None when the run ended in an error before the final check.
+
+    Never refuses a result: each secret (6 characters or more) found in a finding's text
+    or the reason is replaced with "[removed]", and `redactions` says how many were.
+    `db_health` is Sampler.db_health_state: sampled, not_available or not_sampled."""
+    redact = _Redactor(secrets)
+    reason = redact(reason)
     waiting = [v for _, v in metrics.series().get("waiting", [])]
     if report is None:
         verdict = "Fail"
         findings = [{"level": "fail",
-                     "text": f"The run ended before the final check could run: {reason}."}]
+                     "text": "The run ended before the final check could run: "
+                             f"{reason.removesuffix('.')}."}]
         scans = {"sent": None, "processed": None, "processed_twice": None,
                  "never_processed": None, "container_scans_sent": None,
                  "container_scans_checked": False}
         delay = {"median": None, "p95": None, "max": None}
     else:
         verdict = report.verdict
-        findings = [{"level": f.level, "text": f.text} for f in report.findings]
+        findings = [{"level": f.level, "text": redact(f.text)} for f in report.findings]
         scans = {"sent": report.scans_sent, "processed": report.scans_processed,
                  "processed_twice": report.scans_twice, "never_processed": report.scans_missing,
                  "container_scans_sent": report.container_scans_sent,
@@ -93,8 +101,9 @@ def build_results(*, state: RunState, profile: Profile, metrics: Metrics,
         "scan_delay_ms": delay,
         "backlog": {"peak": max(waiting, default=0), "catch_up_seconds": catch_up_seconds},
         "series": metrics.series(),
+        "db_health": db_health,
+        "redactions": redact.count,
     }
-    _refuse_secrets(result, secrets)
     return result
 
 
@@ -108,6 +117,8 @@ def write_results(run_dir: Path, results: dict) -> Path:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

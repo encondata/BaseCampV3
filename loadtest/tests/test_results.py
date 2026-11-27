@@ -46,7 +46,7 @@ def test_build_results_has_every_section():
     state.interruptions = [(STARTED + 60, STARTED + 120), (STARTED + 600, None)]
     out = build(state)
     assert set(out) == {"run", "verdict", "findings", "calls", "counters", "scans",
-                        "scan_delay_ms", "backlog", "series"}
+                        "scan_delay_ms", "backlog", "series", "db_health", "redactions"}
     run = out["run"]
     assert run["server_url"] == "http://localhost:8000"
     assert (run["move_id"], run["move_name"]) == ("move-1", "Load test move")
@@ -69,10 +69,12 @@ def test_build_results_has_every_section():
     assert out["scan_delay_ms"] == {"median": 120.0, "p95": 900.5, "max": 1500.0}
     assert out["backlog"] == {"peak": 37, "catch_up_seconds": 42.0}
     assert out["series"]["waiting"][1] == [STARTED + 10, 37]
+    assert out["db_health"] == "not_sampled" and out["redactions"] == 0
+    assert build(db_health="not_available")["db_health"] == "not_available"
 
 
 def test_no_report_is_a_fail_with_the_reason():
-    out = build(report=None, catch_up_seconds=None, reason="error: the server went away")
+    out = build(report=None, catch_up_seconds=None, reason="error: the server went away.")
     assert out["verdict"] == "Fail"
     assert out["findings"] == [{"level": "fail", "text": "The run ended before the final "
                                 "check could run: error: the server went away."}]
@@ -80,18 +82,34 @@ def test_no_report_is_a_fail_with_the_reason():
     assert out["scans"]["sent"] is None
 
 
-def test_a_secret_anywhere_refuses_the_result():
-    leak = report(findings=[Finding("fail", "login refused for move-pass-1")])
-    with pytest.raises(ValueError) as caught:
-        build(report=leak, secrets={"move-pass-1"})
-    assert "move-pass-1" not in str(caught.value)
-    with pytest.raises(ValueError):
-        build(reason="stopped by xx-token-xx", secrets={"token-"})
-    state = make_state(2, 1, 1, real_time(), started_at=STARTED)
-    state.profile_raw = {"notes": {"move-pass-1 here": 1}}       # a key counts too
-    with pytest.raises(ValueError):
-        build(state, secrets={"move-pass-1"})
-    assert build(secrets={""})["verdict"] == "Pass with warnings"   # empty secret ignored
+def test_secrets_are_removed_from_free_text_only():
+    leak = report(findings=[Finding("fail", "login refused for move-pass-1 (move-pass-1)"),
+                            Finding("warn", "nothing secret here")])
+    out = build(report=leak, reason="stopped: move-pass-1 refused", secrets={"move-pass-1"})
+    assert out["findings"][0]["text"] == "login refused for [removed] ([removed])"
+    assert out["findings"][1]["text"] == "nothing secret here"
+    assert out["run"]["reason"] == "stopped: [removed] refused"
+    assert out["redactions"] == 3
+    assert "move-pass-1" not in json.dumps(out)
+
+
+def test_one_leaked_secret_counts_one_redaction():
+    leak = report(findings=[Finding("fail", "refused move-pass-1")])
+    out = build(report=leak, secrets={"move-pass-1"})
+    assert out["findings"][0]["text"] == "refused [removed]"
+    assert out["redactions"] == 1
+
+
+def test_short_secrets_and_structured_values_are_left_alone():
+    state = make_state(10, 1, 1, real_time(), started_at=STARTED)
+    clean = build(state)
+    for secrets in ({"2027"}, {"move-pass-1"}, {"2027-01-15T08", "08:00:00"}, {""}, set()):
+        out = build(state, secrets=secrets)
+        assert out["run"]["started_at"] == "2027-01-15T08:00:00+00:00"   # never altered
+        assert out["series"] == clean["series"] and out["run"] == clean["run"]
+    # a long secret that matches only structured values: nothing removed, nothing refused
+    out = build(state, secrets={"2027-01-15T08"})
+    assert out["redactions"] == 0 and out["findings"] == clean["findings"]
 
 
 def test_write_results_is_pretty_sorted_json(tmp_path):
@@ -113,9 +131,13 @@ def test_write_results_is_pretty_sorted_json(tmp_path):
 async def test_results_from_a_clean_run(fake, clock, metrics, move, tmp_path):  # noqa: F811
     m = await move()
     final = await check(clock, metrics, m)
-    out = build_results(state=m.state, profile=m.profile, metrics=metrics, report=final,
-                        catch_up_seconds=0.0, ended_at=clock.now(), reason="completed",
-                        secrets={"move-pass-1", "portal-pass-1"})
+    for secrets in ({"2027"}, {"move-pass-1"}, {"move-pass-1", "portal-pass-1"}):
+        out = build_results(state=m.state, profile=m.profile, metrics=metrics, report=final,
+                            catch_up_seconds=0.0, ended_at=clock.now(), reason="completed",
+                            secrets=secrets)
+        assert out["redactions"] == 0
+        assert out["run"]["started_at"].startswith("2027-01-15T08:00:00")
+        assert out["run"]["move_id"] == m.move_id
     assert out["verdict"] == "Pass"
     assert out["scans"]["sent"] == out["scans"]["processed"] == SERVER_SCANS
     assert out["scans"]["container_scans_sent"] == CONTAINER_SCANS

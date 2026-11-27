@@ -78,7 +78,7 @@ def _sns(servers: list[Server]) -> str:
 
 def _could_not_read(what: str, check: str, plural: bool = False) -> Finding:
     verb = "were" if plural else "was"
-    return Finding("fail", f"Could not read {what} from the server, so {check} {verb} not done.")
+    return Finding("fail", f"Could not read {what}, so {check} {verb} not done.")
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -155,7 +155,8 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
     histories = await asyncio.gather(*(history(s) for s in servers))
     since = state.started_at - CLOCK_SKEW_SECONDS
     unread: list[Server] = []
-    missing: dict[str, list[Server]] = {spec.key: [] for spec in stages}
+    # checkpoint -> [(server, scans missing)], one entry per server short of that checkpoint
+    missing: dict[str, list[tuple[Server, int]]] = {}
     sent = processed = twice = 0
     delays: list[float] = []
     for server, (ok, rows) in zip(servers, histories):
@@ -171,29 +172,38 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
             continue
         delays += row_delays
         found = Counter(r.status for r in ours)
+        # one scan per landed stage; stages sharing a checkpoint each expect one
         expected = Counter(spec.checkpoint for spec in stages if server.done.get(spec.key))
         for checkpoint, want in expected.items():
             got = found.get(checkpoint, 0)
             sent += want
             processed += min(got, want)
             twice += max(0, got - want)
-        for spec in stages:
-            want = expected[spec.checkpoint]
-            if server.done.get(spec.key) and found.get(spec.checkpoint, 0) < want:
-                missing[spec.key].append(server)
+            if got < want:
+                missing.setdefault(checkpoint, []).append((server, want - got))
     if unread:
         many = len(unread) != 1
         findings.append(Finding(
             "fail", f"Could not read the scan history of {_n(len(unread), 'server', 'servers')} "
-                    f"({_sns(unread)}) from the server, so {'their' if many else 'its'} scans "
-                    "were not checked."))
-    for spec in stages:
-        gone = missing[spec.key]
-        if gone:
-            was = "was" if len(gone) == 1 else "were"
-            findings.append(Finding(
-                "fail", f"{_n(len(gone), 'scan', 'scans')} {was} never processed by the server: "
-                        f"{spec.label} ({spec.checkpoint}) for {_sns(gone)}."))
+                    f"({_sns(unread)}), so {'their' if many else 'its'} scans were not checked."))
+    for checkpoint in dict.fromkeys(spec.checkpoint for spec in stages):
+        gone = missing.get(checkpoint)
+        if not gone:
+            continue
+        count = sum(n for _, n in gone)
+        labels = " or ".join(dict.fromkeys(spec.label for spec in stages
+                                           if spec.checkpoint == checkpoint))
+        where = f"{labels} ({checkpoint}) for {_sns([srv for srv, _ in gone])}"
+        if stopped_early:
+            text = (f"{_n(count, 'scan', 'scans')} had not been processed yet when the run "
+                    f"was stopped: {where}.")
+        else:
+            was = "was" if count == 1 else "were"
+            text = (f"{_n(count, 'scan', 'scans')} {was} never processed by the BaseCamp "
+                    f"server: {where}.")
+        findings.append(Finding("fail", text))
+    if not stopped_early:
+        findings += _unfinished_findings(servers, stages)
     findings += await _roster_findings(portal, state, profile, stages, rule_checkpoints,
                                        stopped_early)
     if not stopped_early:
@@ -210,9 +220,26 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
     verdict = "Fail" if "fail" in levels else "Pass with warnings" if levels else "Pass"
     return FinalReport(verdict=verdict, findings=findings, scans_sent=sent,
                        scans_processed=processed, scans_twice=twice,
-                       scans_missing=sum(len(v) for v in missing.values()),
+                       scans_missing=sum(n for gone in missing.values() for _, n in gone),
                        container_scans_sent=container_scans_sent(state),
                        container_scans_checked=False, delay_ms=_delays(delays))
+
+
+def _unfinished_findings(servers: list[Server], stages: list[StageSpec]) -> list[Finding]:
+    """A run that was not stopped: servers that never got to a stage, grouped by the first
+    stage each one is missing (for example a crate whose load failed is never unpacked)."""
+    stuck: dict[str, list[Server]] = {}
+    for server in servers:
+        first = next((spec for spec in stages if spec.key not in server.done), None)
+        if first is not None:
+            stuck.setdefault(first.key, []).append(server)
+    out = []
+    for spec in stages:
+        group = stuck.get(spec.key)
+        if group:
+            out.append(Finding("fail", f"{_n(len(group), 'server', 'servers')} never reached "
+                                       f"{spec.label}: {_sns(group)}."))
+    return out
 
 
 async def _roster_findings(portal: PortalClient, state: RunState, profile: Profile,
@@ -222,7 +249,7 @@ async def _roster_findings(portal: PortalClient, state: RunState, profile: Profi
     last = stages[-1] if stages else None
     check_status = not stopped_early and last is not None and last.checkpoint in rule_checkpoints
     skipped = ([Finding("warn", "Move status not checked: no enabled rule for the "
-                                f"{last.label} checkpoint")]
+                                f"{last.label} checkpoint.")]
                if not stopped_early and last is not None and not check_status else [])
     ok, rows = await _read(portal.roster(state.move_id))
     if not ok:
@@ -261,6 +288,13 @@ async def _container_findings(portal: PortalClient, state: RunState) -> list[Fin
         return [_could_not_read("the containers", "the container check")]
     ours = sorted((c for c in rows if c.id in state.containers), key=lambda c: c.name)
     out: list[Finding] = []
+    seen = {c.id for c in rows}
+    gone = sorted(c.name for c in state.containers.values() if c.id not in seen)
+    if gone:
+        one = len(gone) == 1
+        out.append(Finding("fail", f"{_n(len(gone), 'container', 'containers')} the run used "
+                                   f"{'is' if one else 'are'} no longer on the move (or "
+                                   f"{'was' if one else 'were'} archived): {_listed(gone)}."))
     full = [c.name for c in ours if c.asset_count != 0]
     if full:
         are = "is" if len(full) == 1 else "are"
@@ -278,13 +312,21 @@ async def _truck_findings(portal: PortalClient, state: RunState) -> list[Finding
     ok, rows = await _read(portal.trucks(state.move_id))
     if not ok:
         return [_could_not_read("the trucks", "the truck check")]
+    out: list[Finding] = []
+    seen = {t.id for t in rows}
+    gone = sorted(t.name for t in state.trucks.values() if t.id not in seen)
+    if gone:
+        are = "is" if len(gone) == 1 else "are"
+        out.append(Finding("fail", f"{_n(len(gone), 'truck', 'trucks')} the run used {are} no "
+                                   f"longer on the move: {_listed(gone)}."))
     away = sorted((t for t in rows if t.id in state.trucks and t.status != TRUCK_DONE),
                   key=lambda t: t.name)
-    if not away:
-        return []
-    are = "is" if len(away) == 1 else "are"
-    return [Finding("fail", f"{_n(len(away), 'truck', 'trucks')} {are} not at the destination: "
-                            f"{_listed([f'{t.name} ({t.status})' for t in away])}.")]
+    if away:
+        are = "is" if len(away) == 1 else "are"
+        out.append(Finding("fail", f"{_n(len(away), 'truck', 'trucks')} {are} not at the "
+                                   f"destination: "
+                                   f"{_listed([f'{t.name} ({t.status})' for t in away])}."))
+    return out
 
 
 def _location_findings(state: RunState, metrics: Metrics) -> list[Finding]:
@@ -294,7 +336,8 @@ def _location_findings(state: RunState, metrics: Metrics) -> list[Finding]:
     if skipped:
         parts.append(f"{skipped:,} skipped while the runner was down")
     if retried:
-        parts.append(f"{retried:,} sent twice after a retry")
+        it = "it" if retried == 1 else "each"
+        parts.append(f"{retried:,} retried ({it} may have left a duplicate point)")
     if not parts:
         return []
     return [Finding("warn", f"Truck location updates: {', '.join(parts)}.")]

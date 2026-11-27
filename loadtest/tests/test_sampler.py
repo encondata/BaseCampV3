@@ -72,7 +72,9 @@ async def test_latest_follows_the_waiting_count_and_keeps_the_peak(fake, clock, 
         fake.process_scans()
         await clock.sleep(10)
 
+    assert setup.sampler.db_health_state == "not_sampled"
     await run_for(clock, setup.sampler, 0, during)
+    assert setup.sampler.db_health_state == "sampled"
     latest = setup.sampler.latest
     assert latest["waiting"] == 0                         # OTHER is not this run's
     assert latest["waiting_peak"] == 4
@@ -104,6 +106,7 @@ async def test_health_is_not_asked_again_after_none(fake, clock, metrics, setup)
     assert "db_health" not in metrics.series()
     health_calls = [p for _, p in fake.requests if p.startswith("/devtools/health")]
     assert len(health_calls) == 1
+    assert setup.sampler.db_health_state == "not_available"
 
 
 async def test_catch_up_returns_the_virtual_seconds_until_zero(fake, clock, setup):

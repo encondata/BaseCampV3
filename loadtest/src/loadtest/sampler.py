@@ -33,7 +33,13 @@ class Sampler:
         self.every = every
         # A failed read leaves its value as it was.
         self.latest: dict = {"waiting": None, "waiting_peak": 0, "workers": None, "totals": {}}
-        self._health = True     # False once the account turned out not to read it
+        self._health: str = "not_sampled"
+
+    @property
+    def db_health_state(self) -> str:
+        """"sampled" (at least one reading), "not_available" (the account may not read
+        Developer › Database › Health) or "not_sampled" (no reading yet)."""
+        return self._health
 
     async def run(self) -> None:
         """One reading of everything every `every` seconds, until cancelled."""
@@ -82,10 +88,11 @@ class Sampler:
         if ok:
             self.metrics.sample("asset_totals", self.clock.now(), totals)
             self.latest["totals"] = dict(totals)
-        if self._health:
+        if self._health != "not_available":
             ok, health = await _read(self.portal.db_health())
             if ok and health is None:
-                self._health = False
+                self._health = "not_available"
             elif ok:
+                self._health = "sampled"
                 self.metrics.sample("db_health", self.clock.now(), health)
 

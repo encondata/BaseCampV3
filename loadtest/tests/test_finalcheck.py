@@ -1,4 +1,5 @@
 import random
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -71,9 +72,10 @@ async def move(fake, clock, metrics):
             await thing.close()
 
 
-async def check(clock, metrics, m, *, rules=None, stopped_early=False) -> FinalReport:
+async def check(clock, metrics, m, *, rules=None, stopped_early=False,
+                profile=None) -> FinalReport:
     return await clock.run(final_check(
-        portal=m.portal, state=m.state, profile=m.profile, metrics=metrics,
+        portal=m.portal, state=m.state, profile=profile or m.profile, metrics=metrics,
         rule_checkpoints=m.rules if rules is None else rules, stopped_early=stopped_early))
 
 
@@ -115,7 +117,7 @@ async def test_missing_last_rule_skips_the_status_check_with_a_warning(fake, clo
     report = await check(clock, metrics, m, rules=rules)
     assert report.verdict == "Pass with warnings"
     assert report.findings == [Finding(
-        "warn", "Move status not checked: no enabled rule for the Complete checkpoint")]
+        "warn", "Move status not checked: no enabled rule for the Complete checkpoint.")]
 
 
 async def test_dropped_scan_fails_naming_checkpoint_and_serial(fake, clock, metrics, move):
@@ -130,7 +132,8 @@ async def test_dropped_scan_fails_naming_checkpoint_and_serial(fake, clock, metr
     assert report.scans_missing == 1
     assert report.scans_processed == SERVER_SCANS - 1
     assert texts(report) == [
-        f"1 scan was never processed by the server: Label station (labeled) for SN {serial}."]
+        (f"1 scan was never processed by the BaseCamp server: Label station (labeled) for "
+         f"SN {serial}.")]
 
 
 async def test_many_dropped_scans_list_three_serials_and_the_rest(fake, clock, metrics, move):
@@ -142,7 +145,7 @@ async def test_many_dropped_scans_list_three_serials_and_the_rest(fake, clock, m
     report = await check(clock, metrics, m)
     assert report.scans_missing == 5
     assert texts(report) == [
-        (f"5 scans were never processed by the server: QA (qa) for SN {serials[0]}, "
+        (f"5 scans were never processed by the BaseCamp server: QA (qa) for SN {serials[0]}, "
          f"SN {serials[1]}, SN {serials[2]} and 2 more.")]
 
 
@@ -235,7 +238,7 @@ async def test_failed_calls_and_truck_updates_are_reported(fake, clock, metrics,
     assert report.findings == [
         Finding("fail", "1 call failed for good (see the call table)."),
         Finding("warn", "Truck location updates: 4 skipped while the runner was down, "
-                        "2 sent twice after a retry.")]
+                        "2 retried (each may have left a duplicate point).")]
 
 
 async def test_stopped_early_expects_only_finished_stages(fake, clock, metrics, move):
@@ -263,12 +266,11 @@ async def test_failed_reads_are_findings_not_crashes(fake, clock, metrics, move,
     assert report.verdict == "Fail"
     serial = m.state.servers[sid].serial
     assert texts(report) == [
-        (f"Could not read the scan history of 1 server (SN {serial}) from the server, "
-         "so its scans were not checked."),
-        ("Could not read the move's roster from the server, so the tag and move status "
-         "checks were not done."),
-        "Could not read the containers from the server, so the container check was not done.",
-        "Could not read the trucks from the server, so the truck check was not done."]
+        (f"Could not read the scan history of 1 server (SN {serial}), so its scans were not "
+         "checked."),
+        "Could not read the move's roster, so the tag and move status checks were not done.",
+        "Could not read the containers, so the container check was not done.",
+        "Could not read the trucks, so the truck check was not done."]
     assert report.scans_sent == SERVER_SCANS - 10
     assert report.scans_processed == SERVER_SCANS - 10
 
@@ -289,6 +291,70 @@ async def test_a_malformed_history_row_is_an_unread_history(fake, clock, metrics
     monkeypatch.setattr(m.portal, "asset_scans", odd)
     report = await check(clock, metrics, m)
     assert texts(report) == [
-        (f"Could not read the scan history of 1 server (SN {m.state.servers[sid].serial}) "
-         "from the server, so its scans were not checked.")]
+        (f"Could not read the scan history of 1 server (SN {m.state.servers[sid].serial}), "
+         "so its scans were not checked.")]
     assert report.scans_sent == SERVER_SCANS - 10
+
+
+async def test_stopped_early_scan_not_processed_yet_is_worded_as_such(fake, clock, metrics, move):
+    m = await move(limit=40)
+    serial = min(s.serial for s in m.state.servers.values() if s.done.get("enroll"))
+    sid = server_by_serial(m, serial)
+    fake.processed_scans[:] = [p for p in fake.processed_scans
+                               if not (p["asset_id"] == sid and p["status"] == "pre_stage")]
+    report = await check(clock, metrics, m, stopped_early=True)
+    assert report.verdict == "Fail"
+    assert report.scans_missing == 1
+    assert texts(report) == [
+        STOPPED,
+        (f"1 scan had not been processed yet when the run was stopped: RFID enroll "
+         f"(pre_stage) for SN {serial}.")]
+
+
+async def test_containers_and_trucks_gone_from_the_move_fail(fake, clock, metrics, move):
+    m = await move()
+    cid = max(m.state.containers, key=lambda c: m.state.containers[c].name)
+    fake.containers[cid]["archived_at"] = fake._iso(clock.now())
+    tid = next(iter(m.state.trucks))
+    fake.trucks[tid]["initiative_id"] = "another-move"
+    report = await check(clock, metrics, m)
+    assert report.verdict == "Fail"
+    assert texts(report) == [
+        (f"1 container the run used is no longer on the move (or was archived): "
+         f"{m.state.containers[cid].name}."),
+        f"1 truck the run used is no longer on the move: {m.state.trucks[tid].name}."]
+
+
+async def test_servers_that_never_reached_a_stage_fail(fake, clock, metrics, move):
+    m = await move()
+    serials = first_serials(m, 2)
+    for serial in serials:
+        done = m.state.servers[server_by_serial(m, serial)].done
+        for key in ("unpack", "staging", "into_cage", "qa", "complete"):
+            del done[key]
+    report = await check(clock, metrics, m)
+    assert report.verdict == "Fail"
+    assert report.scans_sent == SERVER_SCANS - 10
+    assert report.scans_twice == 0                  # rows for stages not expected
+    assert texts(report) == [
+        f"2 servers never reached Unpack containers: SN {serials[0]} and SN {serials[1]}."]
+
+
+async def test_two_stages_sharing_a_checkpoint_count_once_each(fake, clock, metrics, move):
+    m = await move()
+    stages = tuple(replace(s, checkpoint="qa") if s.key == "staging" else s
+                   for s in m.profile.stages)
+    shared = replace(m.profile, stages=stages)
+    report = await check(clock, metrics, m, profile=shared)
+    assert report.scans_sent == SERVER_SCANS
+    assert report.scans_missing == SERVERS           # one qa row each, two expected
+    assert report.scans_processed == SERVER_SCANS - SERVERS
+    assert texts(report) == [
+        (f"{SERVERS} scans were never processed by the BaseCamp server: RFID 3 – Staging or "
+         f"QA (qa) for SN {first_serials(m, 3)[0]}, SN {first_serials(m, 3)[1]}, "
+         f"SN {first_serials(m, 3)[2]} and {SERVERS - 3} more.")]
+    for p in [p for p in fake.processed_scans if p["status"] == "qa"]:
+        fake.processed_scans.append({**p, "id": p["id"] + 100_000})
+    report = await check(clock, metrics, m, profile=shared)
+    assert report.verdict == "Pass", report.findings
+    assert (report.scans_missing, report.scans_twice) == (0, 0)
