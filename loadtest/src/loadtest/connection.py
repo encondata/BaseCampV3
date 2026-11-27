@@ -97,7 +97,9 @@ def safe_error(exc: BaseException) -> str:
     leaf = _leaf(exc)
     if isinstance(leaf, FleetError):
         return str(leaf)
-    return f"The run stopped because of an unexpected problem: {type(leaf).__name__}."
+    # the problem's type goes to the terminal only (log), never to the page
+    return ("The run stopped because of an unexpected problem in the load test tool. The "
+            "terminal shows what it was.")
 
 
 class Connection:

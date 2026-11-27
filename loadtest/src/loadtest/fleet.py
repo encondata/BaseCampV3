@@ -17,25 +17,30 @@ from .events import Events, FeedLine
 from .http import CallFailed
 from .ids import device_name, device_serial
 from .metrics import Metrics
+from .preflight import SIGN_IN_FAILURES, setup_failure, sign_in_failure
 from .profile import Profile
 
 BRING_UP_AT_ONCE = 8
 READY = "signed in, set up, move downloaded"
 STOPPED = "Stopped while the devices were starting."
-NOT_UNDERSTOOD = "the server sent an answer this tool does not understand"
+NOT_UNDERSTOOD = "The server sent an answer this tool does not understand."
+THEN = "continue the run"     # a failed bring-up leaves the run continuable
 
 
 class FleetError(Exception):
     """A device could not be brought up. The message is safe to show a user: it names
-    the device, the step and the server's code, never a password, token or key."""
+    the device and the step in the readiness check's plain words, never a password,
+    token, key or one of the server's internal codes."""
 
 
-def _why(exc: CallFailed) -> str:
-    if exc.code:
-        return f"{exc.call} answered {exc.code}"
-    if exc.status is not None:
-        return f"{exc.call} answered HTTP {exc.status}"
-    return f"{exc.call} got no answer"
+def _download_failure(exc: Exception) -> str:
+    if not isinstance(exc, CallFailed):
+        return NOT_UNDERSTOOD
+    if exc.code == "redirected":
+        return SIGN_IN_FAILURES["redirected"]
+    if exc.status is None:
+        return "The server could not be reached."
+    return f"The server answered {exc.status}."
 
 
 class Fleet:
@@ -43,7 +48,7 @@ class Fleet:
                  clock: Clock, events: Events, transport: httpx.AsyncBaseTransport | None = None,
                  rng: random.Random | None = None) -> None:
         if move.origin is None or move.destination is None:
-            raise FleetError(f"the move {move.name} needs both an origin and a destination site")
+            raise FleetError(f"The move {move.name} needs both an origin and a destination site.")
         self.profile = profile
         self.move = move
         self.metrics = metrics
@@ -135,22 +140,26 @@ class Fleet:
 
     async def _bring_up(self, device: KioskDevice, move_password: str) -> SyncData:
         site_id, checkpoint = self._setup[device.serial]
-        await self._step(device, "sign in", lambda: device.sign_in(move_password))
+        await self._step(device, "sign in", lambda: device.sign_in(move_password),
+                         lambda exc: sign_in_failure(exc, THEN))
         await self._step(device, "finish Kiosk Setup",
                          lambda: device.setup(initiative_id=self.move.id, site_id=site_id,
-                                              scan_status=checkpoint))
-        data = await self._step(device, "download the move", lambda: device.sync(self.move.id))
+                                              scan_status=checkpoint),
+                         lambda exc: setup_failure(exc, self.move, checkpoint, THEN))
+        data = await self._step(device, "download the move", lambda: device.sync(self.move.id),
+                                _download_failure)
         self.events.feed(FeedLine(self.clock.now(), device.name, "ready", READY, True, None))
         return data
 
     @staticmethod
-    async def _step(device: KioskDevice, what: str, call: Callable[[], Awaitable]):
+    async def _step(device: KioskDevice, what: str, call: Callable[[], Awaitable],
+                    why: Callable[[Exception], str]):
+        """`why` words a CallFailed or a malformed answer (ValueError, KeyError, a group
+        of them) as the readiness check does."""
         try:
             return await call()
-        except CallFailed as exc:
-            raise FleetError(f"{device.name} could not {what}: {_why(exc)}") from None
-        except Exception:   # a malformed answer (ValueError, KeyError, a group of them)
-            raise FleetError(f"{device.name} could not {what}: {NOT_UNDERSTOOD}") from None
+        except Exception as exc:    # noqa: BLE001 - every failure is a FleetError
+            raise FleetError(f"{device.name} could not {what}. {why(exc)}") from None
 
     # ── heartbeats ─────────────────────────────────────────────────────
 

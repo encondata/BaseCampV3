@@ -406,7 +406,8 @@ async def test_unexpected_problem_is_named_by_type_only(world, clock, monkeypatc
     await clock.run(runner.wait())
     assert runner.phase == "error"
     assert runner.snapshot()["error"] == (
-        "The run stopped because of an unexpected problem: RuntimeError." + CONTINUABLE)
+        "The run stopped because of an unexpected problem in the load test tool. The terminal "
+        "shows what it was." + CONTINUABLE)
     assert_interrupted(run_dirs(world)[0])
     assert_no_secrets(world, runner.snapshot())
 
@@ -422,7 +423,8 @@ async def test_a_fleet_start_problem_that_is_not_a_fleet_error(world, clock, mon
     await runner.start()
     await clock.run(runner.wait())
     assert runner.snapshot()["error"] == (
-        "The run stopped because of an unexpected problem: KeyError." + CONTINUABLE)
+        "The run stopped because of an unexpected problem in the load test tool. The terminal "
+        "shows what it was." + CONTINUABLE)
     assert_interrupted(run_dirs(world)[0])
     assert_no_secrets(world, runner.snapshot(), issued=3)   # no device signed in
 
@@ -440,7 +442,8 @@ async def test_a_failing_final_check_can_be_continued(world, fake, clock, monkey
     await clock.run(runner.wait())
     assert runner.phase == "error"
     assert runner.snapshot()["error"] == (
-        "The run stopped because of an unexpected problem: RuntimeError." + CONTINUABLE)
+        "The run stopped because of an unexpected problem in the load test tool. The terminal "
+        "shows what it was." + CONTINUABLE)
     [run_dir] = run_dirs(world)
     assert_interrupted(run_dir)
     assert runner.result()["verdict"] == "Fail"
@@ -469,7 +472,8 @@ async def test_a_failure_while_saving_the_result_never_leaves_the_runner_stuck(
     await clock.run(runner.wait())
     assert runner.phase == "error"
     assert runner.snapshot()["error"] == (
-        "The run stopped because of an unexpected problem: TypeError." + CONTINUABLE)
+        "The run stopped because of an unexpected problem in the load test tool. The terminal "
+        "shows what it was." + CONTINUABLE)
     [run_dir] = run_dirs(world)
     assert_interrupted(run_dir)
     assert runner._driver.run.journal._fh.closed

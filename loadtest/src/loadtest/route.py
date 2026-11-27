@@ -19,7 +19,13 @@ TIMEOUT_SECONDS = 30.0
 
 
 class RouteError(Exception):
-    """The road route could not be had. The message is plain and safe to show."""
+    """The road route could not be had. The message is plain and safe to show.
+    `answered` is True when the service answered (with a problem), False when it could
+    not be reached."""
+
+    def __init__(self, message: str, *, answered: bool = True) -> None:
+        super().__init__(message)
+        self.answered = answered
 
 
 class NoRoute(RouteError):
@@ -50,7 +56,7 @@ async def fetch_route(origin: tuple[float, float], destination: tuple[float, flo
             except httpx.TransportError:
                 continue
     if response is None:
-        raise RouteError("Could not reach the road-routing service.")
+        raise RouteError("Could not reach the road-routing service.", answered=False)
     if response.status_code != 200:
         raise RouteError(f"The road-routing service answered {response.status_code}.")
     try:

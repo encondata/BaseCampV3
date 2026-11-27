@@ -478,6 +478,14 @@ async def test_router_unreachable_names_the_host(setup):
     assert "NoRoute" not in detail
 
 
+@pytest.mark.parametrize("answer", [httpx.Response(429), httpx.Response(200, text="<html>")])
+async def test_a_router_that_answered_with_a_problem(setup, answer):
+    detail = only_failure(
+        await setup.check(router=httpx.MockTransport(lambda request: answer)), "route")
+    assert detail == ("The routing service (router.example.test) answered with a problem; "
+                      "try again in a minute.")
+
+
 async def test_bad_router_address_does_not_raise(setup):
     setup.fake.add_portal_user(EMAIL, PASSWORD)
     p = setup.portal_factory(transport=setup.fake.transport())

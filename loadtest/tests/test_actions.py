@@ -142,7 +142,8 @@ async def test_refused_move_password_is_a_safe_fleet_error(fake, clock, metrics)
     with pytest.raises(FleetError) as caught:
         await clock.run(fleet.start(wrong))
     message = str(caught.value)
-    assert fleet.devices[0].name in message and "invalid_move_password" in message
+    # the readiness check's own wording, never the server's internal code
+    assert message == f"{fleet.devices[0].name} could not sign in. The move password was not accepted."
     assert wrong not in message and MOVE_PASSWORD not in message
     assert all(d._client.is_closed for d in fleet.devices)
     await fleet.stop()                               # safe after a failed start
@@ -484,8 +485,9 @@ async def test_malformed_sign_in_answer_is_a_safe_fleet_error(fake, clock, metri
     fleet.devices[0].sign_in = broken
     with pytest.raises(FleetError) as caught:
         await clock.run(fleet.start(MOVE_PASSWORD))
-    assert str(caught.value) == (f"{fleet.devices[0].name} could not sign in: the server "
-                                 "sent an answer this tool does not understand")
+    assert str(caught.value) == (f"{fleet.devices[0].name} could not sign in. The kiosk "
+                                 "sign-in failed: the server sent an answer this tool does "
+                                 "not understand. Check the server address.")
     assert all(d._client.is_closed for d in fleet.devices)
 
 
@@ -602,3 +604,19 @@ def test_already_done_counts_on_the_first_try_only_for_a_resend_after_a_continue
     assert not actions._resending(unpack2)          # its pack never landed
     state.containers["c001"].load_failed = True
     assert not actions._resending(unload)           # its load never landed
+
+
+@pytest.mark.parametrize("fail, words", [
+    (("POST", "/kiosk/setup", 503), "could not finish Kiosk Setup. The move password was "
+     "accepted, but the kiosk could not be set up for this move (the server answered 503). "
+     "Check the server, then continue the run."),
+    (("GET", "/kiosk/sync/assets", 500), "could not download the move. The server answered 500."),
+])
+async def test_fleet_errors_use_plain_words(fake, clock, metrics, fail, words):
+    fleet = await _fleet(fake, clock, metrics)
+    method, path, status = fail
+    fake.fail(method, path, status=status, times=100)
+    with pytest.raises(FleetError) as caught:
+        await clock.run(fleet.start(MOVE_PASSWORD))
+    assert str(caught.value) == f"{fleet.devices[0].name} {words}"
+    await fleet.stop()

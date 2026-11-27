@@ -408,8 +408,9 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
                     "two sites' coordinates.")
             except RouteError as err:
                 add("route", label, "fail",
-                    f"Could not reach the routing service ({host}); try again in a minute. "
-                    f"{err}")
+                    f"The routing service ({host}) answered with a problem; try again in a "
+                    "minute." if err.answered else
+                    f"Could not reach the routing service ({host}); try again in a minute.")
             except (httpx.HTTPError, httpx.InvalidURL):
                 add("route", label, "fail",
                     f"Could not reach the routing service ({host}); try again in a minute, "
