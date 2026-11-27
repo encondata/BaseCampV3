@@ -28,7 +28,7 @@ PASSWORD = "fake-portal-pass"
 MOVE_PASSWORD = "move-pass-1"
 NO_RULE_STATUSES = ("on_truck", "received")
 SITES = (("Kansas City DC", "KC", 39.0997, -94.5786), ("Omaha DC", "OMA", 41.2565, -95.9345),
-         ("Dallas DC", "DAL", 32.7767, -96.797), ("Annex (no location)", None, None, None))
+         ("Dallas DC", "DAL", 32.7767, -96.797), ("Annex", None, None, None))
 
 
 def build(*, truck_rules: bool) -> FakeBaseCamp:
