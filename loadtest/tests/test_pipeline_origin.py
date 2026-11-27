@@ -27,12 +27,24 @@ class RecordingRandom(random.Random):
         return value
 
 
+class SlowDepartRecorder(Recorder):
+    """A Recorder whose depart call takes DEPART_SECONDS on the clock."""
+
+    DEPART_SECONDS = 1000.0
+
+    async def __call__(self, step):
+        landed = await super().__call__(step)
+        if step.kind == "depart":
+            await self.clock.sleep(self.DEPART_SECONDS)
+        return landed
+
+
 async def run_pipeline(servers, containers, trucks, profile=None, fail=None, rng=None,
-                       journal=None, state=None):
+                       journal=None, state=None, recorder_cls=Recorder):
     profile = profile or real_time()
     clock = FakeClock()
     state = state or make_state(servers, containers, trucks, profile, started_at=clock.now())
-    recorder = Recorder(clock, fail)
+    recorder = recorder_cls(clock, fail)
     pipeline = Pipeline(profile, state, recorder, clock, rng or random.Random(7), journal=journal)
     await clock.run(pipeline.run(), limit=LIMIT)
     return pipeline, recorder, clock
@@ -104,8 +116,16 @@ async def test_pack_spreads_one_container_over_seven_minutes():
     assert gaps == pytest.approx([21.0] * 19)
 
 
+async def test_a_short_container_takes_its_share_of_the_time():
+    # 7 min is a full container's time; 5 servers take 5 shares of 420 / 20 = 21 s
+    _, rec, _ = await run_pipeline(45, 3, 1)
+    times = [t for t, s in rec.of("pack") if s.container_id == "c003"]
+    assert len(times) == 5
+    assert [b - a for a, b in zip(times, times[1:])] == pytest.approx([21.0] * 4)
+
+
 async def test_trucks_depart_full_or_when_nothing_is_left():
-    pipeline, rec, _ = await run_pipeline(340, 17, 2)
+    pipeline, rec, _ = await run_pipeline(340, 17, 2, recorder_cls=SlowDepartRecorder)
     assert pipeline.profile.containers_per_truck == 15
     by_truck = defaultdict(list)
     for i, (t, s) in enumerate(rec.steps):
@@ -116,8 +136,10 @@ async def test_trucks_depart_full_or_when_nothing_is_left():
     for truck in ("t01", "t02"):
         *loads, depart = by_truck[truck]
         assert depart[1] >= loads[-1][1]
-    # t01 left while t02 was still being loaded
-    assert by_truck["t01"][-1][0] < by_truck["t02"][0][0]
+    # t01's trip never blocks loading: a t02 load lands while t01's depart call is running
+    depart_t01 = by_truck["t01"][-1][1]
+    window_end = depart_t01 + SlowDepartRecorder.DEPART_SECONDS
+    assert any(depart_t01 <= t < window_end for _, t, kind in by_truck["t02"] if kind == "load")
     assert pipeline.state.trucks["t01"].departed_at is not None
     assert pipeline.state.trucks["t02"].departed_at is not None
 

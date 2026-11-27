@@ -50,7 +50,8 @@ class _Pool:
 
     `take(n)` waits for `n` items, or for whatever is left once upstream has finished.
     The check and the take happen with no await between them, so two crews never
-    split one short remainder.
+    split one short remainder. Takes are in id order (servers by id, containers in
+    `state.containers` order), not in arrival order.
     """
 
     def __init__(self, key: Callable[[str], Hashable] | None = None):
@@ -161,7 +162,9 @@ class Pipeline:
     async def _pack_crew(self, spec: StageSpec, crew: int, inbox: _Pool, outbox: _Pool) -> None:
         while (server_ids := await inbox.take(self.profile.container_size)) is not None:
             cid = self._claim_container()
-            share = self._draw(spec) / len(server_ids) if spec.per == "container" else None
+            # A container's time is a full one's; a short container takes proportionally less.
+            share = (self._draw(spec) / self.profile.container_size
+                     if spec.per == "container" else None)
             for sid in server_ids:
                 await self.clock.sleep(share if share is not None else self._draw(spec))
                 ok = await self._perform(Step("pack", spec.key, crew, (sid,), container_id=cid))
@@ -210,6 +213,9 @@ class Pipeline:
 
     async def _perform(self, step: Step) -> bool:
         # A crew woken in the same instant as a cancel must not start a call.
+        # cancelling() stays above 0 until someone calls uncancel(), so each run()
+        # must be awaited in its own task (the runner does that); a second run() in
+        # a task that caught the CancelledError would refuse every call.
         if self._run_task is not None and self._run_task.cancelling():
             raise asyncio.CancelledError()
         return await self.perform(step)
