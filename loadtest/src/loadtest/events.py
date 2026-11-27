@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SUBSCRIBER_QUEUE = 1000
+WRITE_RETRY_SECONDS = 5.0   # after a failed log write, wall time before the file is tried again
 
 
 @dataclass(frozen=True)
@@ -39,16 +40,28 @@ class Events:
         self._ring: deque[FeedLine] = deque(maxlen=keep)
         self._subscribers: list[asyncio.Queue[FeedLine]] = []
         self._log = open(log_path, "a", encoding="utf-8") if log_path is not None else None
+        self.write_errors = 0           # log writes that failed (disk full, file removed)
+        self._retry_at = 0.0
 
     def feed(self, line: FeedLine) -> None:
+        """Never raises: a log file that cannot be written leaves the ring and the
+        subscribers going."""
         self._ring.append(line)
-        if self._log is not None and not self._log.closed:
-            self._log.write(format_line(line) + "\n")
-            self._log.flush()
+        self._write(line)
         for q in self._subscribers:
             if q.full():
                 q.get_nowait()          # a slow reader loses its oldest line, never blocks
             q.put_nowait(line)
+
+    def _write(self, line: FeedLine) -> None:
+        if self._log is None or self._log.closed or time.monotonic() < self._retry_at:
+            return
+        try:
+            self._log.write(format_line(line) + "\n")
+            self._log.flush()
+        except OSError:
+            self.write_errors += 1
+            self._retry_at = time.monotonic() + WRITE_RETRY_SECONDS
 
     def recent(self) -> list[FeedLine]:
         return list(self._ring)
@@ -64,4 +77,7 @@ class Events:
 
     def close(self) -> None:
         if self._log is not None:
-            self._log.close()
+            try:
+                self._log.close()
+            except OSError:
+                self.write_errors += 1

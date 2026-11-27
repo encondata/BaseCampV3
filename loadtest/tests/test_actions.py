@@ -9,10 +9,10 @@ from conftest import FAKE_BASE_URL
 from pipeline_helpers import fast, real_time
 from run_helpers import state_for_move
 
-from loadtest.actions import Actions
+from loadtest.actions import NO_KEY, NOT_UNDERSTOOD, Actions, truck_label
 from loadtest.client.portal import PortalClient
 from loadtest.events import Events, FeedLine
-from loadtest.fleet import Fleet, FleetError
+from loadtest.fleet import STOPPED, Fleet, FleetError
 from loadtest.ids import scan_id
 from loadtest.pipeline import Pipeline, Step
 
@@ -26,11 +26,13 @@ BACKGROUND = ("heartbeat", "station-heartbeat")
 
 
 class Recording(httpx.AsyncBaseTransport):
-    """Wraps the fake's transport and keeps (path, JSON body) of every request."""
+    """Wraps the fake's transport and keeps (path, JSON body) of every request, and in
+    `answers` (path, JSON body, status or None when the fake was down)."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self.inner = inner
         self.sent: list[tuple[str, dict]] = []
+        self.answers: list[tuple[str, dict, int | None]] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         body = await request.aread()
@@ -39,7 +41,13 @@ class Recording(httpx.AsyncBaseTransport):
         except ValueError:
             parsed = {}
         self.sent.append((request.url.path, parsed))
-        return await self.inner.handle_async_request(request)
+        try:
+            response = await self.inner.handle_async_request(request)
+        except httpx.TransportError:
+            self.answers.append((request.url.path, parsed, None))
+            raise
+        self.answers.append((request.url.path, parsed, response.status_code))
+        return response
 
     async def aclose(self) -> None:
         await self.inner.aclose()
@@ -241,7 +249,7 @@ async def test_feed_lines_carry_no_secrets_and_read_well(fake, clock, run, tmp_p
     assert cart.subject == "10 tags" and cart.device == "Load test – RFID 1 – Cage Exit"
     location = next(line for line in lines if line.action == "location")
     truck = next(iter(r.state.trucks.values()))
-    assert location.device == f"Truck {truck.name}"
+    assert location.device == truck.name == truck_label(truck.name)  # fake names say "Truck"
     lat, lng = r.state.route[0]
     assert location.subject == f"{lat:.4f}, {lng:.4f} (1 of 68)"
     assert {"departed", "arrived"} <= {line.action for line in lines}
@@ -263,13 +271,15 @@ async def test_partial_cart_is_not_landed_and_says_how_many(fake, clock, run):
 
 
 async def test_server_outage_does_not_kill_the_run(fake, clock, run, metrics):
-    r = await run()
+    r = await run(recording=True)
+    back = []
 
     async def outage():
         await clock.sleep(20)
         fake.down(True)
         await clock.sleep(120)
         fake.down(False)
+        back.append(len(r.transport.answers))
 
     await clock.run(asyncio.gather(pipeline_for(r, clock).run(), outage()))
     calls = metrics.calls()
@@ -281,6 +291,10 @@ async def test_server_outage_does_not_kill_the_run(fake, clock, run, metrics):
     assert any(not line.ok for line in r.events.recent())
     assert all("complete" in s.done for s in r.state.servers.values())
     assert r.state.servers[sorted(r.state.servers)[-1]].done["complete"] is True
+    # heartbeats resumed once the fake came back: every beating device got a 200
+    beat_ok = {body["serial"] for path, body, status in r.transport.answers[back[0]:]
+               if path in ("/kiosk/heartbeat", "/kiosk/station/heartbeat") and status == 200}
+    assert beat_ok == {d.serial for d in r.fleet.devices if d.kind != "label_station"}
 
 
 # ── events ────────────────────────────────────────────────────────────
@@ -316,3 +330,248 @@ async def test_events_ring_keeps_500_and_log_keeps_all(tmp_path):
     only_ring.feed(_line(1))
     assert only_ring.recent() == [_line(1)]
     only_ring.close()
+
+
+async def test_failed_log_write_keeps_the_feed_going(tmp_path, monkeypatch):
+    events = Events(tmp_path / "events.log")
+    q = events.subscribe()
+
+    class Broken:
+        closed = False
+        tries = 0
+
+        def write(self, text):
+            Broken.tries += 1
+            raise OSError(28, "No space left on device")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    real = events._log
+    events._log = Broken()
+    now = [1000.0]
+    monkeypatch.setattr("loadtest.events.time.monotonic", lambda: now[0])
+    for i in range(1, 4):
+        events.feed(_line(i))                         # never raises
+    assert events.write_errors == 1 and Broken.tries == 1   # not retried on every line
+    assert len(events.recent()) == 3 and q.qsize() == 3
+    now[0] += 5.1
+    events.feed(_line(4))
+    assert events.write_errors == 2 and Broken.tries == 2
+    events._log = real
+    now[0] += 5.1
+    events.feed(_line(5))
+    assert (tmp_path / "events.log").read_text(encoding="utf-8").count("\n") == 1
+    events.close()
+
+
+# ── fix round 1: fleet start and stop ─────────────────────────────────
+
+
+async def _fleet(fake, clock, metrics, profile=None, transport=None):
+    profile = profile or fast()
+    move_id = fake.add_move(servers=5, containers=1, trucks=1, password=MOVE_PASSWORD)
+    fake.add_portal_user(EMAIL, PORTAL_PASSWORD)
+    portal = PortalClient(base_url=FAKE_BASE_URL, metrics=metrics, clock=clock,
+                          retry=profile.retry, timeout=10.0, transport=fake.transport())
+    await clock.run(portal.login(EMAIL, PORTAL_PASSWORD))
+    move = await clock.run(portal.move(move_id))
+    await portal.close()
+    return Fleet(profile=profile, base_url=FAKE_BASE_URL, move=move, metrics=metrics,
+                 clock=clock, events=Events(None), transport=transport or fake.transport())
+
+
+def _slow_sign_ins(fleet, clock, seconds=30):
+    for d in fleet.devices:
+        def slow(pw, _orig=d.sign_in):
+            async def go():
+                await clock.sleep(seconds)
+                await _orig(pw)
+            return go()
+        d.sign_in = slow
+
+
+def _fleet_tasks() -> list[asyncio.Task]:
+    return [t for t in asyncio.all_tasks()
+            if not t.done() and "Fleet." in getattr(t.get_coro(), "__qualname__", "")]
+
+
+async def test_stop_during_start_ends_start_and_leaves_nothing(fake, clock, metrics):
+    fleet = await _fleet(fake, clock, metrics)
+    _slow_sign_ins(fleet, clock)
+
+    async def scenario():
+        starting = asyncio.create_task(fleet.start(MOVE_PASSWORD))
+        await clock.sleep(40)            # first device up, the next 8 mid sign-in
+        await fleet.stop()
+        assert starting.done()
+        with pytest.raises(FleetError, match=STOPPED):
+            starting.result()
+        assert _fleet_tasks() == [] and fleet._beats == []
+
+    await clock.run(scenario())
+    assert all(d._client.is_closed for d in fleet.devices)
+    assert len(fake.devices) == 1
+    await fleet.stop()
+
+
+async def test_cancel_during_start_closes_every_device(fake, clock, metrics):
+    fleet = await _fleet(fake, clock, metrics)
+    _slow_sign_ins(fleet, clock)
+
+    async def scenario():
+        starting = asyncio.create_task(fleet.start(MOVE_PASSWORD))
+        await clock.sleep(40)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        assert _fleet_tasks() == [] and fleet._beats == []
+
+    await clock.run(scenario())
+    assert all(d._client.is_closed for d in fleet.devices)
+    await fleet.stop()
+
+
+async def test_first_device_alone_then_eight_at_a_time(fake, clock, metrics):
+    fleet = await _fleet(fake, clock, metrics)
+    log: list[tuple[str, str]] = []
+    active = [0, 0]                       # now, most at once
+
+    for d in fleet.devices:
+        def track(name, orig, serial=d.serial):
+            def call(*a, **k):
+                async def go():
+                    if name == "sign_in":
+                        active[0] += 1
+                        active[1] = max(active)
+                    log.append((serial, f"{name} start"))
+                    await clock.sleep(1)
+                    result = await orig(*a, **k)
+                    log.append((serial, f"{name} end"))
+                    if name == "sync":
+                        active[0] -= 1
+                    return result
+                return go()
+            return call
+        for name in ("sign_in", "setup", "sync"):
+            setattr(d, name, track(name, getattr(d, name)))
+
+    await clock.run(fleet.start(MOVE_PASSWORD))
+    first = fleet.devices[0].serial
+    first_done = log.index((first, "sync end"))
+    assert [e for _, e in log[:first_done + 1]] == ["sign_in start", "sign_in end",
+                                                    "setup start", "setup end",
+                                                    "sync start", "sync end"]
+    assert all(serial == first for serial, _ in log[:first_done + 1])
+    assert active[1] == 8
+    assert len(_fleet_tasks()) == 32                 # the check sees the heartbeat tasks
+    await fleet.stop()
+    assert _fleet_tasks() == []
+
+
+async def test_malformed_sign_in_answer_is_a_safe_fleet_error(fake, clock, metrics):
+    fleet = await _fleet(fake, clock, metrics)
+
+    async def broken(pw):
+        raise KeyError("access_token")
+
+    fleet.devices[0].sign_in = broken
+    with pytest.raises(FleetError) as caught:
+        await clock.run(fleet.start(MOVE_PASSWORD))
+    assert str(caught.value) == (f"{fleet.devices[0].name} could not sign in: the server "
+                                 "sent an answer this tool does not understand")
+    assert all(d._client.is_closed for d in fleet.devices)
+
+
+async def test_a_heartbeat_that_raises_does_not_end_the_beats(clock, run, metrics):
+    r = await run(real_time(), servers=5, containers=1, trucks=1)
+    d = r.fleet.device_for("qa", 0)
+    calls = []
+    orig = d.heartbeat
+
+    async def flaky():
+        calls.append(clock.now())
+        if len(calls) == 1:
+            raise ValueError("not JSON")
+        await orig()
+
+    d.heartbeat = flaky
+    await clock.run(clock.sleep(300))
+    assert metrics.counters()["heartbeat_errors"] == 1
+    assert len(calls) >= 4
+
+
+async def test_heartbeats_keep_to_their_due_times(clock, run):
+    r = await run(real_time(), servers=5, containers=1, trucks=1)
+    d = r.fleet.device_for("enroll", 0)
+    times = []
+    orig = d.heartbeat
+
+    async def overrun():
+        times.append(clock.now())
+        if len(times) == 2:
+            await clock.sleep(150)       # this beat overruns two and a half intervals
+        else:
+            await clock.sleep(7)         # a slow beat does not push the next one back
+        await orig()
+
+    d.heartbeat = overrun
+    await clock.run(clock.sleep(600))
+    phase = [round((t - times[0]) % 60, 6) % 60 for t in times]
+    assert all(p == 0 for p in phase), times
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert gaps[0] == 60 and gaps[1] == 180 and all(g == 60 for g in gaps[2:]), gaps
+
+
+# ── fix round 1: feed notes and names ─────────────────────────────────
+
+
+async def test_genuinely_partial_cart_says_7_of_10(fake, clock, run):
+    r = await run()
+    cart = tuple(sorted(r.state.servers)[:10])
+    refused = {str(scan_id(r.state.run_id, "cage_exit", sid)) for sid in cart[:3]}
+    store = fake._store_scan_batch
+
+    def rejecting(device, scans, **kw):
+        out = store(device, [s for s in scans if str(s.client_scan_id) not in refused], **kw)
+        out["rejected"] += [{"client_scan_id": i, "code": "bad_status"} for i in refused]
+        return out
+
+    fake._store_scan_batch = rejecting
+    assert not await clock.run(r.actions.perform(Step("cart", "cage_exit", 0, cart)))
+    line = r.events.recent()[-1]
+    assert not line.ok and line.note == "7 of 10 accepted" and line.subject == "10 tags"
+
+
+async def test_keyless_station_says_not_sent(clock, run, metrics):
+    r = await run()
+    sid = sorted(r.state.servers)[0]
+    for stage, step in (("label", Step("each", "label", 0, (sid,))),
+                        ("cage_exit", Step("cart", "cage_exit", 0, (sid,)))):
+        r.fleet.device_for(stage, 0)._key = None
+        assert not await clock.run(r.actions.perform(step))
+        line = r.events.recent()[-1]
+        assert line.note == NO_KEY == "not sent: this station has no key"
+    assert metrics.counters()["scans_not_sent"] == 2
+
+
+async def test_unexpected_error_line_names_the_device(clock, run, metrics):
+    r = await run()
+    assert not await clock.run(r.actions.perform(Step("each", "qa", 1, ("no-such-server",))))
+    line = r.events.recent()[-1]
+    assert (line.device, line.action) == ("Load test – QA 2", "QA")
+    assert line.note == NOT_UNDERSTOOD and not line.ok
+    assert metrics.counters()["action_errors"] == 1
+
+
+async def test_truck_names_get_truck_in_front_only_when_missing(clock, run):
+    assert truck_label("08") == "Truck 08"
+    assert truck_label("Truck 08") == "Truck 08" and truck_label("TRUCK-8") == "TRUCK-8"
+    r = await run()
+    truck = next(iter(r.state.trucks.values()))
+    truck.name = "08"
+    assert await clock.run(r.actions.perform(Step("depart", "trip", 0, truck_id=truck.id)))
+    assert r.events.recent()[-1].device == "Truck 08"

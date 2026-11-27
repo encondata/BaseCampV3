@@ -4,7 +4,9 @@ synced, and heart-beating for the whole run."""
 from __future__ import annotations
 
 import asyncio
+import math
 import random
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -19,6 +21,8 @@ from .profile import Profile
 
 BRING_UP_AT_ONCE = 8
 READY = "signed in, set up, move downloaded"
+STOPPED = "Stopped while the devices were starting."
+NOT_UNDERSTOOD = "the server sent an answer this tool does not understand"
 
 
 class FleetError(Exception):
@@ -42,6 +46,7 @@ class Fleet:
             raise FleetError(f"the move {move.name} needs both an origin and a destination site")
         self.profile = profile
         self.move = move
+        self.metrics = metrics
         self.clock = clock
         self.events = events
         self._rng = rng or random.Random(0)
@@ -49,6 +54,9 @@ class Fleet:
         self._by_stage: dict[str, list[KioskDevice]] = {}
         self._setup: dict[str, tuple[str, str]] = {}     # serial -> (site id, checkpoint)
         self._beats: list[asyncio.Task] = []
+        self._bringing: list[asyncio.Task] = []          # bring-ups in flight
+        self._start_done: asyncio.Event | None = None    # set once start() has unwound
+        self._stopping = False
         self._closed = False
         for stage in profile.stages:
             if stage.device is None or stage.checkpoint is None:
@@ -70,66 +78,116 @@ class Fleet:
         stage_devices = self._by_stage[stage_key]
         return stage_devices[crew % len(stage_devices)]
 
+    # ── start ──────────────────────────────────────────────────────────
+
     async def start(self, move_password: str) -> SyncData:
         """The first device alone (its sign-in may create the move's kiosk identity),
-        then the rest at most 8 at a time; then the heartbeats. On the first failure
-        every device is closed and a FleetError raised."""
+        then the rest at most 8 at a time; then the heartbeats. On the first failure,
+        a stop() or a cancel, every device is closed; a failure or a stop raises
+        FleetError."""
+        if self._stopping or self._closed:
+            raise FleetError(STOPPED)
+        self._start_done = asyncio.Event()
         try:
-            first = await self._bring_up(self.devices[0], move_password)
-            gate = asyncio.Semaphore(BRING_UP_AT_ONCE)
-
-            async def gated(device: KioskDevice) -> None:
-                async with gate:
-                    await self._bring_up(device, move_password)
-
-            try:
-                async with asyncio.TaskGroup() as group:
-                    for device in self.devices[1:]:
-                        group.create_task(gated(device))
-            except BaseExceptionGroup as failed:
-                errors = [e for e in failed.exceptions if isinstance(e, FleetError)]
-                if errors:
-                    raise errors[0] from None
-                raise
+            first = await self._bring_up_all(self.devices[:1], move_password, 1)
+            await self._bring_up_all(self.devices[1:], move_password, BRING_UP_AT_ONCE)
+            if self._stopping:
+                raise FleetError(STOPPED)
+            # no await from the check above to here: stop() cannot slip in between
+            interval = self.profile.heartbeat_seconds
+            self._beats = [asyncio.create_task(self._beat(d, self._rng.uniform(0, interval)))
+                           for d in self.devices]
+            return first[0]
         except BaseException:
-            await self.stop()
+            await self._cancel_bring_ups()
+            await self._close_devices()
             raise
-        interval = self.profile.heartbeat_seconds
-        self._beats = [asyncio.create_task(self._beat(d, self._rng.uniform(0, interval)))
-                       for d in self.devices]
-        return first
+        finally:
+            self._start_done.set()
+
+    async def _bring_up_all(self, devices: list[KioskDevice], move_password: str,
+                            at_once: int) -> list[SyncData]:
+        gate = asyncio.Semaphore(at_once)
+
+        async def gated(device: KioskDevice) -> SyncData:
+            async with gate:
+                if self._stopping:
+                    raise FleetError(STOPPED)
+                return await self._bring_up(device, move_password)
+
+        tasks = [asyncio.create_task(gated(d)) for d in devices]
+        self._bringing = tasks
+        if tasks:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        if self._stopping:
+            raise FleetError(STOPPED)
+        for task in tasks:              # the first failure, in device order
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                raise task.exception()
+        self._bringing = []
+        return [task.result() for task in tasks]
+
+    async def _cancel_bring_ups(self) -> None:
+        tasks, self._bringing = self._bringing, []
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _bring_up(self, device: KioskDevice, move_password: str) -> SyncData:
         site_id, checkpoint = self._setup[device.serial]
-        try:
-            await device.sign_in(move_password)
-        except CallFailed as exc:
-            raise FleetError(f"{device.name} could not sign in: {_why(exc)}") from None
-        try:
-            await device.setup(initiative_id=self.move.id, site_id=site_id,
-                               scan_status=checkpoint)
-        except CallFailed as exc:
-            raise FleetError(f"{device.name} could not finish Kiosk Setup: {_why(exc)}") from None
-        try:
-            data = await device.sync(self.move.id)
-        except CallFailed as exc:
-            raise FleetError(f"{device.name} could not download the move: {_why(exc)}") from None
+        await self._step(device, "sign in", lambda: device.sign_in(move_password))
+        await self._step(device, "finish Kiosk Setup",
+                         lambda: device.setup(initiative_id=self.move.id, site_id=site_id,
+                                              scan_status=checkpoint))
+        data = await self._step(device, "download the move", lambda: device.sync(self.move.id))
         self.events.feed(FeedLine(self.clock.now(), device.name, "ready", READY, True, None))
         return data
 
+    @staticmethod
+    async def _step(device: KioskDevice, what: str, call: Callable[[], Awaitable]):
+        try:
+            return await call()
+        except CallFailed as exc:
+            raise FleetError(f"{device.name} could not {what}: {_why(exc)}") from None
+        except Exception:   # a malformed answer (ValueError, KeyError, a group of them)
+            raise FleetError(f"{device.name} could not {what}: {NOT_UNDERSTOOD}") from None
+
+    # ── heartbeats ─────────────────────────────────────────────────────
+
     async def _beat(self, device: KioskDevice, offset: float) -> None:
-        """heartbeat() returns normally on failure, so this loop runs until cancelled."""
-        await self.clock.sleep(offset)
+        """Beats at start + offset + k × interval on the clock, until cancelled. A beat
+        that overruns skips to the next due time that is still ahead; nothing it raises
+        ends the loop."""
+        interval = self.profile.heartbeat_seconds
+        first = self.clock.now() + offset
+        k = 0
         while True:
-            await device.heartbeat()
-            await self.clock.sleep(self.profile.heartbeat_seconds)
+            await self.clock.sleep(max(0.0, first + k * interval - self.clock.now()))
+            try:
+                await device.heartbeat()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.metrics.count("heartbeat_errors")
+            k = max(k + 1, math.floor((self.clock.now() - first) / interval) + 1)
+
+    # ── stop ───────────────────────────────────────────────────────────
 
     async def stop(self) -> None:
-        """Cancel the heartbeats, wait for them, close every device. Safe to repeat."""
+        """Ends a start() still running, cancels the heartbeats, waits for them, and
+        closes every device. No heartbeat task is left once it returns. Safe to repeat."""
+        self._stopping = True
+        for task in self._bringing:
+            task.cancel()
+        if self._start_done is not None and not self._start_done.is_set():
+            await self._start_done.wait()
         beats, self._beats = self._beats, []
         for task in beats:
             task.cancel()
         await asyncio.gather(*beats, return_exceptions=True)
+        await self._close_devices()
+
+    async def _close_devices(self) -> None:
         if not self._closed:
             self._closed = True
             for device in self.devices:

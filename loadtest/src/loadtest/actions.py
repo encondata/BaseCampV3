@@ -21,6 +21,14 @@ from .state import RunState
 
 T = TypeVar("T")
 FAILED = "call failed"  # the clients say only whether a call landed
+NO_KEY = "not sent: this station has no key"
+NOT_UNDERSTOOD = "The server sent an answer this tool does not understand."
+_TRIP_ACTIONS = {"depart": "departed", "location": "location", "arrive": "arrived"}
+
+
+def truck_label(name: str) -> str:
+    """The truck's feed name: its own, with "Truck " in front unless it already says truck."""
+    return name if "truck" in name.lower() else f"Truck {name}"
 
 
 async def _timed(call: Awaitable[T]) -> tuple[T, float]:
@@ -50,11 +58,22 @@ class Actions:
             return await self._device_step(step)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # a bug here must not stop the move; it shows in the feed
+        except Exception:  # a malformed answer must not stop the move; it shows in the feed
             self.metrics.count("action_errors")
-            self.events.feed(FeedLine(self.clock.now(), step.stage, step.kind, "", False, None,
-                                      f"error: {type(exc).__name__}"))
+            device, action = self._who(step)
+            self.events.feed(FeedLine(self.clock.now(), device, action, "", False, None,
+                                      NOT_UNDERSTOOD))
             return False
+
+    def _who(self, step: Step) -> tuple[str, str]:
+        """Device and action for a step's feed line, as plain as the step allows."""
+        try:
+            if step.kind in _TRIP_ACTIONS:
+                return truck_label(self.state.trucks[step.truck_id].name), _TRIP_ACTIONS[step.kind]
+            return (self.fleet.device_for(step.stage, step.crew).name,
+                    self._stages[step.stage].label)
+        except KeyError:
+            return step.stage, step.kind
 
     # ── device steps ───────────────────────────────────────────────────
 
@@ -71,13 +90,14 @@ class Actions:
     async def _device_step(self, step: Step) -> bool:
         spec = self._stages[step.stage]
         device = self.fleet.device_for(step.stage, step.crew)
+        keyless = device.is_station and not device.has_key     # send_scans sends nothing
         note = ""
         if step.kind == "cart":
             servers = [self.state.servers[sid] for sid in step.server_ids]
             scans = [self._scan(spec, s.id, s.tag, "rfid") for s in servers]
             accepted, ms = await _timed(device.send_scans(scans))
             ok = accepted == len(scans)
-            if not ok:
+            if not ok and not keyless:
                 note = f"{accepted} of {len(scans)} accepted"
             subject = f"{len(scans)} tags"
         elif step.kind in ("load", "unload"):
@@ -92,7 +112,7 @@ class Actions:
             ok, ms = await _timed(self._server_call(step, spec, device, server.id))
             subject = f"SN {server.serial}"
         self.events.feed(FeedLine(self.clock.now(), device.name, spec.label, subject, ok, ms,
-                                  note or ("" if ok else FAILED)))
+                                  note or ("" if ok else NO_KEY if keyless else FAILED)))
         return ok
 
     async def _server_call(self, step: Step, spec: StageSpec, device: KioskDevice,
@@ -115,13 +135,12 @@ class Actions:
         if step.kind == "location":
             lat, lng = self.state.route[step.index - 1]
             ok, ms = await _timed(self.portal.add_truck_location(truck.id, lat, lng))
-            action = "location"
             subject = f"{lat:.4f}, {lng:.4f} ({step.index} of {self.profile.trip.updates})"
         else:
             status = "in_transit" if step.kind == "depart" else "at_destination"
             ok, ms = await _timed(self.portal.set_truck_status(truck.id, status))
-            action = "departed" if step.kind == "depart" else "arrived"
             subject = f"{len(truck.container_ids)} containers"
-        self.events.feed(FeedLine(self.clock.now(), f"Truck {truck.name}", action, subject, ok,
-                                  ms, "" if ok else FAILED))
+        self.events.feed(FeedLine(self.clock.now(), truck_label(truck.name),
+                                  _TRIP_ACTIONS[step.kind], subject, ok, ms,
+                                  "" if ok else FAILED))
         return ok
