@@ -1,0 +1,63 @@
+import json
+
+from loadtest.metrics import DEFAULT_BACKGROUND, Metrics
+
+
+def test_percentiles_use_linear_interpolation():
+    m = Metrics()
+    for ms in range(1, 101):
+        m.record("scan", float(ms), True)
+    row = m.calls()["scan"]
+    assert row["count"] == 100
+    assert row["median_ms"] == 50.5
+    assert abs(row["p95_ms"] - 95.05) <= 0.1
+    assert row["max_ms"] == 100
+
+
+def test_single_sample_is_every_statistic():
+    m = Metrics()
+    m.record("pack", 12.34, True)
+    row = m.calls()["pack"]
+    assert (row["median_ms"], row["p95_ms"], row["max_ms"]) == (12.3, 12.3, 12.3)
+
+
+def test_counts_retries_and_failures_per_logical_call():
+    m = Metrics()
+    m.record("pack", 10, True, retries=2)
+    m.record("pack", 20, False, retries=4)
+    m.record("pack", 30, True)
+    row = m.calls()["pack"]
+    assert (row["count"], row["retries"], row["failures"]) == (3, 6, 1)
+
+
+def test_failed_calls_skips_background_calls_but_calls_lists_them():
+    m = Metrics()
+    m.record("pack", 1, False)
+    m.record("heartbeat", 1, False)
+    m.record("db-health", 1, False)
+    assert m.failed_calls() == 1
+    assert m.calls()["heartbeat"]["failures"] == 1
+    assert "heartbeat" in DEFAULT_BACKGROUND
+
+
+def test_custom_background_set():
+    m = Metrics(background=frozenset({"pack"}))
+    m.record("pack", 1, False)
+    m.record("heartbeat", 1, False)
+    assert m.failed_calls() == 1
+
+
+def test_counters_and_series_are_sorted_plain_json():
+    m = Metrics()
+    m.count("zeta")
+    m.count("alpha", 3)
+    m.count("alpha")
+    m.sample("backlog", 100.0, 5)
+    m.sample("backlog", 160.0, {"a": 1})
+    m.record("zz", 1, True)
+    m.record("aa", 1, True)
+    assert list(m.counters()) == ["alpha", "zeta"]
+    assert m.counters()["alpha"] == 4
+    assert m.series() == {"backlog": [[100.0, 5], [160.0, {"a": 1}]]}
+    assert list(m.calls()) == ["aa", "zz"]
+    json.dumps([m.calls(), m.counters(), m.series()])
