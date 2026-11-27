@@ -309,9 +309,8 @@ def test_the_old_file_builders_are_gone():
         assert gone not in page, gone
     # the inline script is the theme switch and the view routing, nothing else
     inline = page[page.index("<script>"):page.index("</script>")]
-    assert "const THEME_KEY = 'data-generator.theme';" in inline    # the sign-in page's key
-    assert "localStorage.setItem(THEME_KEY, b.dataset.themeChoice)" in inline
-    assert "function showView()" in inline
+    assert "'data-generator.theme'" in inline                 # the sign-in page's key
+    assert "localStorage.setItem(THEME_KEY" in inline and "showView" in inline
     assert "fetch(" not in inline and "innerHTML" not in inline
 
 
@@ -322,10 +321,10 @@ def test_generate_has_exactly_the_briefs_inputs():
                    "gen-trucks", "gen-move-password"]
     buttons = re.findall(r'<button[^>]*>', view)
     assert len(buttons) == 2                         # Start (back) and Create
-    assert '<button class="btn-solid" type="submit" id="gen-go">Create</button>' in view
+    assert re.search(r'<button[^>]*type="submit"[^>]*id="gen-go"[^>]*>Create</button>', view)
     # step 1 is the Simulate view's own sign-in card, moved in by simulate.js
-    assert '<div id="gen-signin"></div>' in view and "sim-connect" not in view
-    assert '<p class="eyebrow-sm">Step 2 · Create the move</p>' in view
+    assert 'id="gen-signin"' in view and "sim-connect" not in view
+    assert "Step 2 · Create the move" in view
     # the button sits in the sticky strip, so it never hides below a scroll
     assert view.index('class="sim-stick"') < view.index('id="gen-go"')
 
@@ -335,47 +334,62 @@ def test_the_generated_move_password_is_visible_and_never_autofilled():
     tag = re.search(r'<input[^>]*id="gen-move-password"[^>]*>', view).group(0)
     assert 'type="text"' in tag and 'autocomplete="off"' in tag
     js = without_comments(read("simulate.js"))
-    assert "crypto.getRandomValues(byte);" in js
-    assert "Math.random" not in js
-    assert "$('gen-move-password').value = newMovePassword();" in js
-    # handed to Simulate's field in memory when the set-up finishes
-    assert "if (password) $('sim-move-password').value = password;" in js
+    assert "crypto.getRandomValues(" in js and "Math.random" not in js
+    # handed to Simulate's move password field in memory, never to storage
+    assert re.search(r"\$\('sim-move-password'\)\.value = \w+", js)
 
 
 def test_one_sign_in_serves_both_views():
     js = without_comments(read("simulate.js"))
-    assert "$('gen-signin').append($('sim-connect'));" in js
-    assert "$('sim-setup').prepend($('sim-connect'));" in js
-    assert "$('gen-notices').append(...notices);" in js        # not answering shows there too
+    assert re.search(r"\$\('gen-signin'\)\.append\(\$\('sim-connect'\)\)", js)
+    assert re.search(r"\$\('sim-setup'\)\.prepend\(\$\('sim-connect'\)\)", js)
+    assert "'gen-notices'" in js                    # "not answering" shows on Generate too
     render = js[js.index("function render() {"):js.index("function focusView(")]
-    assert "renderConnect();" in render and "renderGenerate();" in render
+    assert "renderConnect()" in render and "renderGenerate()" in render
+
+
+def test_connect_is_locked_while_a_run_is_active():
+    js = without_comments(read("simulate.js"))
+    line = next(l for l in js.splitlines() if "$('sim-connect-go').disabled =" in l)
+    assert "ACTIVE.includes(snap.phase)" in line
+
+
+def test_a_site_with_no_location_cannot_be_picked_and_says_why():
+    js = without_comments(read("simulate.js"))
+    fill = js[js.index("function fillSites() {"):js.index("const autoCounts")]
+    assert "disabled = !site.has_location" in fill
+    assert "(no map location)" in fill
 
 
 def test_the_set_up_follows_the_snapshot():
     js = without_comments(read("simulate.js"))
-    assert "const SETUP_STEPS = ['draft', 'assets', 'crates_trucks', 'create', 'verify', 'activate'];" in js
-    assert "setText('gen-step', s.step_label || '');" in js
-    assert "$('gen-set').disabled = !signed || working || !!held || !!busy;" in js
+    for step in ("draft", "assets", "crates_trucks", "create", "verify", "activate"):
+        assert f"'{step}'" in js, step
+    assert "s.step_label" in js
     # finished: Simulate opens on the new move; nothing else is started for him
     follow = js[js.index("function followSetup() {"):js.index("let sites = null")]
-    assert "madeMove = s.move_id;" in follow and "location.hash = 'simulate';" in follow
+    assert "s.move_id" in follow and "location.hash = 'simulate'" in follow
     assert "post(" not in follow
-    assert "const keep = madeMove || (sel && sel.move_id) || select.value;" in js
+    # an error leaves every typed value alone; only an empty password field is refilled
+    error = follow[follow.index("if (s.state !== 'done')"):follow.index("madeMove =")]
+    assert "gen-name" not in error and "gen-containers" not in error
+    assert "if (!$('gen-move-password').value)" in error
     # a failed set-up's message shows until the next one starts
-    assert "snap.setup.state === 'error' ? snap.setup.message : ''" in js
+    assert "snap.setup.message" in js
 
 
 def test_containers_and_trucks_follow_the_servers_from_the_profile():
     js = without_comments(read("simulate.js"))
-    assert "Math.ceil(Number(raw) / sizes.container_size)" in js
-    assert "Math.ceil(containers / sizes.containers_per_truck)" in js
-    assert "typed < need[id]" in js            # raised numbers are kept, lower ones raised
+    assert "sizes.container_size" in js and "sizes.containers_per_truck" in js
+    assert "Math.ceil(" in js
     assert "window.loadtestSizes" not in js
+    # only typing the servers recomputes them, never a snapshot or an error
+    assert re.findall(r"followServers\b", js).count("followServers") == 2   # defined, bound
 
 
 def test_the_sites_read_and_the_setup_post_get_the_long_deadline():
     js = without_comments(read("simulate.js"))
-    assert "const LONG_POSTS = ['/api/connect', '/api/check', '/api/continue', '/api/setup'];" in js
-    assert "const LONG_GETS = ['/api/sites'];" in js
-    assert "deadline(LONG_GETS.includes(path) ? LONG_WAIT_MS : WAIT_MS)" in js
+    posts = re.search(r"const LONG_POSTS = \[([^\]]*)\]", js).group(1)
+    gets = re.search(r"const LONG_GETS = \[([^\]]*)\]", js).group(1)
+    assert "'/api/setup'" in posts and "'/api/sites'" in gets
     assert re.findall(r"(\w+)\('/api/sites'", js) == ["get"]

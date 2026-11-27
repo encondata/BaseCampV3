@@ -547,7 +547,8 @@
     $('sim-totp-field').hidden = !(totpAsked || snap.needs_totp);
     $('sim-move-set').disabled = !listed || !!busy;
     $('sim-check-go').disabled = !listed || !(snap.moves || []).length || !!busy;
-    $('sim-connect-go').disabled = !!busy;
+    // during a run the card is only seen on Generate, where it is locked like the rest
+    $('sim-connect-go').disabled = !!busy || ACTIVE.includes(snap.phase);
     $('sim-connect-go').textContent = busy === 'connect' ? 'Connecting…' : 'Connect';
     $('sim-check-go').textContent = busy === 'check' ? 'Checking…' : 'Check server';
     const line = listed ? `Connected to ${c.server} as ${c.email}.` : '';
@@ -558,6 +559,7 @@
 
   $('sim-connect').addEventListener('submit', e => {
     e.preventDefault();
+    if ($('sim-connect-go').disabled) return;
     const body = { server: value('sim-server'), email: value('sim-email'),
       password: $('sim-password').value };
     const asking = !$('sim-totp-field').hidden;
@@ -1052,6 +1054,7 @@
   let following = false;    // this page started the set-up or saw it working
   let madePassword = '';    // in memory only, until Simulate's move password field takes it
   let setupSeen = false;    // the first state's set-up has been put back in the form
+  let refocus = '';         // a field to focus once the form is enabled again
 
   // The set-up the page follows: on done, Simulate opens with the new move picked and its
   // password filled in, ready for Check server. Nothing else is started.
@@ -1073,9 +1076,12 @@
     following = false;
     const password = madePassword;
     madePassword = '';
-    if (s.state !== 'done') {                // the error shows; the form keeps what was typed
-      // after a reload the password was not known here: offer a new one for the next try
+    if (s.state !== 'done') {
+      // The error shows and every field keeps what was typed: Create again with the same
+      // entries carries on with the same move. Only an empty password field (after a
+      // reload, when it was not known here) gets a new one.
       if (!$('gen-move-password').value) $('gen-move-password').value = newMovePassword();
+      if (s.step === 'activate') refocus = 'gen-move-password';   // the thing to change
       return;
     }
     madeMove = s.move_id;
@@ -1133,8 +1139,10 @@
       none.selected = true;
       select.replaceChildren(none);
       for (const site of sites || []) {
-        const opt = el('option', null, site.name);
+        // a truck needs a road route, so a site with no location cannot be picked
+        const opt = el('option', null, site.has_location ? site.name : `${site.name} (no map location)`);
         opt.value = site.id;
+        opt.disabled = !site.has_location;
         select.append(opt);
       }
       if (keep && (sites || []).some(x => x.id === keep)) select.value = keep;
@@ -1193,6 +1201,10 @@
       bar($('gen-progress-bar'), $('gen-progress-fill'),
         Math.round(((i + 0.5) / SETUP_STEPS.length) * 100));
       setText('gen-step', s.step_label || '');
+    }
+    if (refocus && !$('gen-set').disabled) {
+      if (onGenerate()) $(refocus).focus();
+      refocus = '';
     }
   }
 

@@ -50,14 +50,22 @@ python3 -m venv .venv && .venv/bin/pip install -e .
       **Create**.
 
    Both sites need a latitude and longitude (the trucks need a road route
-   between them), and they must differ. The tool does what the portal's
+   between them), and they must differ. A site without one is greyed out
+   in the lists, marked "(no map location)". The tool does what the portal's
    Bulk Actions › Create a move in steps does, through the same server
    routes: it makes a draft, sends a generated From-To list and waits for
    the server to check it, adds the containers and trucks, creates the
-   move (the server's import worker does this; a big move takes a while),
+   move (a big move takes a while),
    checks that the move has every server, then sets the move password and
    In progress. The page shows which step it is on; you can close it and
-   open it again. If a step fails, the page says how far it got.
+   open it again. If a step fails, the page says how far it got and what
+   to do. If only the move password was refused, type another and press
+   Create again without changing anything else: the same move is used,
+   no second one is made.
+
+   Stopping the tool while a move is being created can still leave that
+   move on the server, Planned and without a move password: check the
+   portal's moves before creating it again.
 
    On the server this leaves a move In progress with its move password,
    the servers (serial `LT{TAG}00001` onward, no RFID tags), 24 servers to
@@ -68,7 +76,9 @@ python3 -m venv .venv && .venv/bin/pip install -e .
    When it finishes, Simulate opens with the new move picked and its move
    password filled in. Nothing more is started: choose **Check server**
    when you are ready. The page keeps that password only while it is
-   open, so copy it from the Generate form if you need it later.
+   open. Copy the move password from the form before pressing Create if
+   you will need it later (to continue a run after the tool restarts). If
+   it is lost, set a new one on the move in the portal.
 
    The portal account needs to be an admin that can add moves, containers
    and trucks. Creating a move is only possible while no run is in
@@ -492,6 +502,21 @@ a portal user and a road route, and prints the sign-in details:
 ```bash
 LOADTEST_ROUTER_URL=http://127.0.0.1:8796 .venv/bin/python -m loadtest --host 127.0.0.1
 ```
+
+### Checked by hand
+
+The test suite has no browser, so `tests/test_page.py` only reads the
+page's files for its safety rules. These page paths are checked by hand
+in a browser against the fake server, after any change to the page:
+
+- A set-up that finishes opens Simulate with the new move picked and its
+  move password filled in.
+- A set-up that fails leaves the form usable, with everything that was
+  typed still there.
+- Reloading the page during a set-up brings the form back locked, on the
+  same step.
+- A refused move password, then Create again with a new password, ends
+  with one move, not two.
 
 ### A real scratch server
 
