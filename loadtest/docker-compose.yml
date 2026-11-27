@@ -1,0 +1,43 @@
+# Move load test: one container, the page and the runner.
+#
+#   cd loadtest
+#   cp .env.example .env            # then set LOADTEST_PUBLIC_URL
+#   docker compose up -d --build
+#
+# Then open LOADTEST_PUBLIC_URL and sign in.
+#
+# The CONTAINER makes every call to the BaseCamp server and to the routing
+# service, so both addresses must be reachable from inside it. "localhost"
+# there is the container itself, never this machine.
+name: serversherpa-loadtest
+
+services:
+  loadtest:
+    build: .
+    image: serversherpa-loadtest
+    ports:
+      - "${LOADTEST_BIND_IP:-0.0.0.0}:${LOADTEST_PORT:-8795}:8795"
+    environment:
+      # the address people type to open the page; any other name is refused
+      LOADTEST_PUBLIC_URL: ${LOADTEST_PUBLIC_URL:?set LOADTEST_PUBLIC_URL in loadtest/.env}
+      # the page's sign-in
+      LOADTEST_USERNAME: ${LOADTEST_USERNAME:-admin}
+      LOADTEST_PASSWORD: ${LOADTEST_PASSWORD:-password123}
+      # empty means the public OSRM routing service
+      LOADTEST_ROUTER_URL: ${LOADTEST_ROUTER_URL:-}
+    volumes:
+      # run results
+      - loadtest-data:/data
+      # the two speeds' numbers: edit the files here, then restart the container
+      - ./profiles:/app/profiles:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # stopping interrupts a run so it can be continued; give it time to save
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+volumes:
+  loadtest-data:

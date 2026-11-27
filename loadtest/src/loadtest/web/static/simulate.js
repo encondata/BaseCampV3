@@ -69,8 +69,13 @@
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
     const ours = !!data && typeof data === 'object';
+    if (res.status === 401 && ours && data.code === 'sign_in') {
+      block(false);
+      window.location.replace('/login');     // the session ended: the tool restarted
+      throw new ApiError('forbidden', '');
+    }
     if (res.status === 403 && ours && data.code === 'forbidden') {
-      block();
+      block(true);
       throw new ApiError('forbidden', '');
     }
     if (!ours || res.status >= 500) {
@@ -101,7 +106,7 @@
     }
   }
 
-  let blocked = false;      // the access key is missing: nothing more is asked
+  let blocked = false;      // signed out, or refused by the tool: nothing more is asked
   let stateDown = false;    // the last request found the tool not answering, or in trouble
   let downMessage = OFFLINE; // what the notice says while stateDown
   let streamDown = false;   // the event stream closed for good and must be reopened
@@ -111,9 +116,9 @@
   let eventsRun = undefined; // the run the open stream was opened for
   let seq = 0, appliedSeq = 0; // an older /api/state answer never overwrites a newer state
 
-  function block() {
+  function block(say) {
     blocked = true;
-    $('sim-forbidden').hidden = false;
+    $('sim-forbidden').hidden = !say;
     $('sim-offline').hidden = true;
     $('sim-body').hidden = true;
     clearInterval(retryTimer);
@@ -187,7 +192,7 @@
         streamDown = true;     // refused or not an event stream: reopened by the retry
         paintHealth();
       }
-      refresh();      // says why: the tool is down (notice and retry) or the key is missing
+      refresh();      // says why: the tool is down (notice and retry) or the session ended
     });
   }
   function reopenEvents() {

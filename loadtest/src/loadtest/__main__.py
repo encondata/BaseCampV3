@@ -19,7 +19,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m loadtest",
         description="Starts the move load test page. Routing service: "
-                    "LOADTEST_ROUTER_URL (default %s)." % DEFAULT_ROUTER_URL)
+                    "LOADTEST_ROUTER_URL (default %s). The page's sign-in: "
+                    "LOADTEST_USERNAME and LOADTEST_PASSWORD." % DEFAULT_ROUTER_URL)
     parser.add_argument("--host", default="0.0.0.0",
                         help="address to listen on (default 0.0.0.0, every network)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
@@ -27,12 +28,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-host", action="append", default=[], metavar="NAME",
                         help="a reverse proxy's name the page may be opened by "
                              "(repeatable). The proxy must reach the tool on this machine. "
-                             "Everyone, on this machine too, then needs the keyed link: put "
-                             "/?key=... after the proxy's own address")
+                             "Everyone then signs in, on this machine too")
+    parser.add_argument("--public-url", metavar="ADDRESS",
+                        default=os.environ.get("LOADTEST_PUBLIC_URL") or None,
+                        help="the address people open the page by when the tool runs in a "
+                             "container or behind a proxy, such as "
+                             "https://loadtest.example.com or http://10.0.0.5:8795 (or set "
+                             "LOADTEST_PUBLIC_URL). Its name is allowed like --allow-host, "
+                             "and the printed address is this one")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR,
                         help="folder for run results (default: the runs folder next to the "
                              "tool)")
     return parser.parse_args(argv)
+
+
+DEFAULT_SIGN_IN = ("Sign in with the default username and password, admin and password123. "
+                   "Set LOADTEST_USERNAME and LOADTEST_PASSWORD to change them.")
+OWN_SIGN_IN = ("Sign in with the username and password set in LOADTEST_USERNAME and "
+               "LOADTEST_PASSWORD.")
+BAD_PUBLIC_URL = ("--public-url must be the page's address and nothing else, such as "
+                  "https://loadtest.example.com or http://10.0.0.5:8795.")
+
+
+def public_address(value: str) -> tuple[str, str]:
+    """A --public-url value as (the address without a trailing slash, its host name).
+    Exits when it is anything but http(s)://host[:port]."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(value.strip())
+        port = parts.port
+        host = parts.hostname
+    except ValueError:
+        sys.exit(BAD_PUBLIC_URL)
+    if (parts.scheme not in ("http", "https") or not host or parts.path not in ("", "/")
+            or parts.query or parts.fragment or "@" in parts.netloc):
+        sys.exit(BAD_PUBLIC_URL)
+    shown = f"[{host}]" if ":" in host else host
+    return f"{parts.scheme}://{shown}" + (f":{port}" if port else ""), host
+
+
+def sign_in_from_environment():
+    """The page's username and password: LOADTEST_USERNAME and LOADTEST_PASSWORD, else the
+    defaults. Returns (sign-in, whether both are the defaults)."""
+    from .web.signin import DEFAULT_PASSWORD, DEFAULT_USERNAME, SignIn
+    username = os.environ.get("LOADTEST_USERNAME") or DEFAULT_USERNAME
+    password = os.environ.get("LOADTEST_PASSWORD") or DEFAULT_PASSWORD
+    return (SignIn(username, password),
+            username == DEFAULT_USERNAME and password == DEFAULT_PASSWORD)
 
 
 def lan_address() -> str:
@@ -134,9 +176,11 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _serve(args: argparse.Namespace, runs_dir: Path) -> None:
+    public = public_address(args.public_url) if args.public_url else None
+    # a container or a proxy makes everyone arrive the same way, so the public address
+    # counts as an allowed proxy name: every visitor then signs in
+    proxy_names = list(args.allow_host) + ([public[1]] if public else [])
     sock = bind(args.host, args.port)
-
-    import secrets
 
     import uvicorn
 
@@ -147,12 +191,13 @@ def _serve(args: argparse.Namespace, runs_dir: Path) -> None:
     runner = Runner(runs_dir=runs_dir,
                     router_url=os.environ.get("LOADTEST_ROUTER_URL") or DEFAULT_ROUTER_URL)
     lan = lan_address()
-    # a proxy makes everyone arrive from loopback, so --allow-host also needs the key
-    keyed = not is_loopback(args.host) or bool(args.allow_host)
-    access_key = secrets.token_urlsafe(24) if keyed else None
-    app = create_app(runner, allowed_hosts=allowed_hosts(args.host, lan, args.allow_host),
-                     access_key=access_key, cookie_name=f"loadtest_key_{args.port}",
-                     local_skip=not args.allow_host)
+    # a proxy makes everyone arrive from loopback, so --allow-host means everyone signs in
+    guarded = not is_loopback(args.host) or bool(proxy_names)
+    sign_in, default_sign_in = sign_in_from_environment() if guarded else (None, False)
+    app = create_app(runner, allowed_hosts=allowed_hosts(args.host, lan, proxy_names),
+                     sign_in=sign_in, cookie_name=f"loadtest_session_{args.port}",
+                     local_skip=not proxy_names,
+                     secure_cookie=bool(public) and public[0].startswith("https://"))
 
     class _Server(uvicorn.Server):
         def handle_exit(self, sig, frame) -> None:
@@ -167,28 +212,34 @@ def _serve(args: argparse.Namespace, runs_dir: Path) -> None:
             self._loop = asyncio.get_running_loop()
             await super().serve(sockets=sockets)
 
-    # no access log: the printed link's ?key= must never be logged. No proxy headers:
-    # the client address is the real peer, never one a request claims.
+    # no access log: who opened what is nobody's business. No proxy headers: the client
+    # address is the real peer, never one a request claims.
     config = uvicorn.Config(app, log_level="info", timeout_graceful_shutdown=5,
                             access_log=False, proxy_headers=False)
     server = _Server(config)
 
     local = args.host in WILDCARD or is_loopback(args.host)
-    if args.allow_host:
+    if public:
+        print(f"Move load test: {public[0]}", flush=True)
+        print("Everyone signs in, on this machine too.", flush=True)
+    elif args.allow_host:
         shown = "localhost" if local else args.host
         if ":" in shown:
             shown = f"[{shown}]"
-        print(f"Move load test: http://{shown}:{args.port}/?key={access_key}", flush=True)
-        print("A proxy name was allowed, so every visitor needs the key, on this machine too.",
+        print(f"Move load test: http://{shown}:{args.port}", flush=True)
+        print("A proxy name was allowed, so everyone signs in, on this machine too.",
               flush=True)
     else:
-        if access_key is not None:
+        if guarded:
             shown = lan if args.host in WILDCARD else args.host
             if ":" in shown:
                 shown = f"[{shown}]"
-            print(f"Move load test: http://{shown}:{args.port}/?key={access_key}", flush=True)
+            print(f"Move load test: http://{shown}:{args.port}", flush=True)
         if local:
-            print(f"On this machine: http://localhost:{args.port}", flush=True)
+            print(f"On this machine: http://localhost:{args.port}" +
+                  (" (no sign-in)" if guarded else ""), flush=True)
+    if guarded:
+        print(DEFAULT_SIGN_IN if default_sign_in else OWN_SIGN_IN, flush=True)
     server.run(sockets=[sock])
 
 

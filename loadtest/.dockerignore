@@ -1,0 +1,9 @@
+# Only pyproject.toml, src and profiles go into the image.
+.venv
+runs
+.env
+tests
+**/__pycache__
+**/*.egg-info
+.pytest_cache
+README.md

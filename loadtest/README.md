@@ -70,13 +70,23 @@ The tool prints the page's address. Open it in a browser.
 ### Who can open the page
 
 By default the page is reachable from other machines on your network.
-Anyone who opens it can press Start or Stop, so the tool asks for a key:
+Anyone who opens it can press Start or Stop, so the page asks for a
+username and password:
 
-- **On the runner machine itself**, open `http://localhost:8795`. No key is
-  needed.
-- **From another machine**, open the full link the tool printed. It ends in
-  `/?key=…`. The key changes every time the tool starts. Keep the link to
-  yourself.
+- **On the runner machine itself**, open `http://localhost:8795`. There is
+  no sign-in.
+- **From another machine**, open the address the tool printed and sign in.
+  The default username is `admin` and the default password is
+  `password123`.
+
+To use your own, set them before starting the tool:
+
+```bash
+LOADTEST_USERNAME=ops LOADTEST_PASSWORD='something-long' .venv/bin/python -m loadtest
+```
+
+The defaults are public, so change them on any network you do not fully
+trust. Restarting the tool signs everyone out.
 
 The page itself is plain http. Passwords typed on another machine cross
 the network unencrypted, and so does the portal password on its way to
@@ -95,14 +105,17 @@ Behind a reverse proxy, name the proxy's host so the tool accepts it:
 .venv/bin/python -m loadtest --allow-host loadtest.example.com
 ```
 
-With `--allow-host`, everyone needs the key, on this machine too. Put
-`/?key=…` from the printed link after the proxy's own address.
+With `--allow-host`, everyone signs in, on this machine too.
 
 Other options:
 
 - `--port 8800` uses another port (the default is 8795).
 - `--runs-dir /some/folder` saves results somewhere else (the default is
   the `runs` folder in this directory).
+- `--public-url https://loadtest.example.com` is the address people open
+  the page by when it is not this machine's own name, as in a container.
+  It works like `--allow-host` (everyone signs in), and the printed
+  address is this one.
 
 Only one copy of the tool may use a runs folder at a time. A second copy
 on the same folder stops at once with:
@@ -123,6 +136,58 @@ runs in development mode). Over plain http, every device has to sign in
 again about every 15 minutes. That adds load a real move does not have,
 and a portal account with 2FA would be asked for a new code mid-run. The
 readiness check warns about this, or fails if 2FA is involved.
+
+## Run it in Docker
+
+Use this to run the tool on a server instead of your own machine. You need
+Docker with Compose on that server, and this `loadtest` folder copied to
+it (or the whole repository checked out there).
+
+```bash
+cd loadtest
+```
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set `LOADTEST_PUBLIC_URL` to the address people will type
+to open the page: the server's name or address with the port, such as
+`http://10.0.0.5:8795`, or the reverse proxy's name, such as
+`https://loadtest.example.com`. The page refuses every other name.
+
+```bash
+docker compose up -d --build
+```
+
+Open that address and sign in. The username and password are
+`LOADTEST_USERNAME` and `LOADTEST_PASSWORD` in `.env` (`admin` and
+`password123` unless you change them). Everyone signs in, on the server
+itself too.
+
+Things that differ from running it on your own machine:
+
+- **The container makes the calls.** The BaseCamp server's address must be
+  reachable from inside the container. `localhost` there is the container
+  itself.
+- **Results** are in the `loadtest-data` volume, in `/data/runs`. Copy a
+  run out with `docker compose cp loadtest:/data/runs ./runs-copy`.
+- **Restarts interrupt a run.** Stopping, restarting or rebuilding the
+  container interrupts a run in progress. Nothing is lost: open the page and
+  press Continue (see "Continuing an interrupted run"). The passwords have
+  to be typed again, because they are never saved.
+- **Changing the numbers.** The `profiles` folder next to the compose file
+  is what the container reads. Edit a file there, then
+  `docker compose restart loadtest`.
+- **Changing the sign-in.** Edit `LOADTEST_USERNAME` and
+  `LOADTEST_PASSWORD` in `.env`, then `docker compose up -d`.
+- **https.** The container serves plain http. For https, put a reverse
+  proxy in front, set `LOADTEST_PUBLIC_URL` to the proxy's https name, and
+  set `LOADTEST_BIND_IP=127.0.0.1` if the proxy runs on the same server.
+  The live feed is one long-lived response and already asks nginx-style
+  proxies not to buffer it.
+
+To stop it: `docker compose down`. Add `-v` to delete the results as well.
 
 ## The steps on the page
 
@@ -366,6 +431,8 @@ caffeinate -dimsu .venv/bin/python -m loadtest
 
 Also plug the machine in and turn off automatic updates that restart it. If
 it does restart, use Continue (see above).
+
+A server that is always on avoids this: see "Run it in Docker".
 
 ## Developing
 

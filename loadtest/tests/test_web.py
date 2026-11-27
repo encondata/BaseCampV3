@@ -12,6 +12,7 @@ from loadtest.events import Events, FeedLine
 from loadtest.preflight import Check, CheckReport
 from loadtest.runner import Runner, RunnerError
 from loadtest.web.app import create_app, event_stream
+from loadtest.web.signin import SignIn
 
 PAGE = {"X-Loadtest": "1"}
 EMAIL = "ops@example.com"
@@ -278,7 +279,9 @@ async def test_shutdown_hook_interrupts_the_run(stub):
 
 # ── who may reach the tool ─────────────────────────────────────────────
 
-KEY = "k3y-" + "A" * 28
+SIGN_IN = SignIn("admin", "s3cret-pass")
+NEED_SIGN_IN = {"code": "sign_in", "message": "Sign in to use the load test."}
+WRONG = "That username or password is not right."
 LAN = ("192.168.1.50", 12345)
 
 
@@ -288,13 +291,24 @@ def tool(stub, *, client=("127.0.0.1", 123), base="http://localhost:8795", **kwa
                              base_url=base)
 
 
+def lan_tool(stub, **kwargs):
+    """A visitor from another machine, opening the page by this machine's LAN address."""
+    return tool(stub, client=LAN, base="http://192.168.1.10:8795",
+                allowed_hosts=["192.168.1.10"], sign_in=SIGN_IN, **kwargs)
+
+
+async def sign_in(c, username="admin", password="s3cret-pass", **kwargs):
+    return await c.post("/login", data={"username": username, "password": password}, **kwargs)
+
+
 async def test_a_wrong_host_is_refused(stub):
-    async with tool(stub, base="http://evil.example:8795") as c:
-        for got in (await c.get("/"), await c.get("/api/state"),
-                    await c.post("/api/start", headers=PAGE)):
+    async with tool(stub, base="http://evil.example:8795", sign_in=SIGN_IN) as c:
+        for got in (await c.get("/"), await c.get("/api/state"), await c.get("/login"),
+                    await sign_in(c), await c.post("/api/start", headers=PAGE)):
             assert got.status_code == 400
-            assert got.text == ("This address is not allowed. Use the link printed when the "
-                                "tool started.")
+            assert got.text == ("This address is not allowed. Open the page by the address "
+                                "the tool printed.")
+            assert "set-cookie" not in got.headers
     assert stub.calls == []
 
 
@@ -311,63 +325,157 @@ async def test_only_localhost_names_by_default(stub):
         assert (await c.get("/api/state")).status_code == 400
 
 
-async def test_a_lan_client_needs_the_key(stub):
-    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
-                    allowed_hosts=["192.168.1.10"], access_key=KEY) as c:
-        need = "Open the link printed when the tool started. It includes a key."
+async def test_a_lan_client_must_sign_in(stub):
+    async with lan_tool(stub) as c:
         for path in ("/api/state", "/api/events", "/api/result"):
             got = await c.get(path)
-            assert got.status_code == 403
-            assert got.json() == {"code": "forbidden", "message": need}
-        for path in ("/", "/static/index.html"):
+            assert got.status_code == 401
+            assert got.json() == NEED_SIGN_IN
+            assert got.headers["cache-control"] == "no-store"
+        for path in ("/", "/static/index.html", "/static/simulate.js", "/anything"):
             got = await c.get(path)
-            assert got.status_code == 403
-            assert got.headers["content-type"].startswith("text/html")
-            assert need in got.text
+            assert got.status_code == 303 and got.headers["location"] == "/login"
+            assert got.headers["cache-control"] == "no-store"
         got = await c.post("/api/start", headers=PAGE)
-        assert got.status_code == 403
+        assert got.status_code == 401
         assert stub.calls == []
 
 
-async def test_a_wrong_key_sets_no_cookie(stub):
-    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
-                    allowed_hosts=["192.168.1.10"], access_key=KEY) as c:
-        for wrong in ("nope", KEY[:-1], "é" * 5, ""):
-            got = await c.get("/", params={"key": wrong})
-            assert got.status_code == 403
-            assert "set-cookie" not in got.headers
-        c.cookies.set("loadtest_key", "nope")
-        assert (await c.get("/api/state")).status_code == 403
+async def test_the_sign_in_page_asks_for_a_username_and_password(stub):
+    async with lan_tool(stub) as c:
+        got = await c.get("/login")
+        assert got.status_code == 200
+        assert got.headers["content-type"].startswith("text/html")
+        assert got.headers["cache-control"] == "no-store"
+        page = got.text
+        assert '<form method="post" action="/login"' in page
+        assert 'name="username"' in page and 'autocomplete="username"' in page
+        assert 'name="password" type="password"' in page
+        assert 'autocomplete="current-password"' in page
+        assert ">Sign in</button>" in page
+        assert WRONG not in page
+        assert "s3cret-pass" not in page and 'value="admin"' not in page    # nothing prefilled
+        assert "data-generator.theme" in page       # follows the page's light or dark
+        assert (await c.put("/login")).status_code == 405
 
 
-async def test_the_key_link_sets_a_cookie_and_clears_the_address(stub, capsys, caplog):
-    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
-                    allowed_hosts=["192.168.1.10"], access_key=KEY) as c:
-        got = await c.get("/", params={"key": KEY})
+@pytest.mark.parametrize("username,password", [
+    ("admin", "nope"), ("admin", "s3cret-pas"), ("admin", "s3cret-pass "), ("admin", ""),
+    ("Admin", "s3cret-pass"), ("root", "s3cret-pass"), ("", "s3cret-pass"), ("", ""),
+    ("admin", "é" * 5), ("s3cret-pass", "admin")])
+async def test_a_wrong_username_or_password_signs_nobody_in(stub, username, password):
+    async with lan_tool(stub) as c:
+        got = await sign_in(c, username, password)
+        assert got.status_code == 401
+        assert "set-cookie" not in got.headers
+        assert WRONG in got.text
+        assert (await c.get("/api/state")).status_code == 401
+    assert stub.calls == []
+
+
+async def test_a_wrong_try_shows_the_username_again_and_never_the_password(stub):
+    async with lan_tool(stub) as c:
+        got = await sign_in(c, 'jim"><script>alert(1)</script>', "typed-pass-9")
+        assert got.status_code == 401
+        assert 'value="jim&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"' in got.text
+        assert "<script>alert" not in got.text
+        assert "typed-pass-9" not in got.text
+
+
+async def test_a_made_up_session_cookie_opens_nothing(stub):
+    async with lan_tool(stub) as c:
+        for forged in ("nope", "s3cret-pass", "admin", "A" * 43):
+            c.cookies.set("loadtest_session", forged)
+            assert (await c.get("/api/state")).status_code == 401
+            c.cookies.clear()
+
+
+@pytest.mark.parametrize("body,content_type", [
+    (b"username=admin&password=" + b"x" * 5000, "application/x-www-form-urlencoded"),
+    (b"", "application/x-www-form-urlencoded"),
+    (b"\xff\xfe\x00", "application/x-www-form-urlencoded"),
+    (b'{"username": "admin", "password": "s3cret-pass"}', "application/json"),
+    (b"password=s3cret-pass", "application/x-www-form-urlencoded")])
+async def test_a_form_that_is_not_the_sign_in_form_signs_nobody_in(stub, body, content_type):
+    async with lan_tool(stub) as c:
+        got = await c.post("/login", content=body, headers={"Content-Type": content_type})
+        assert got.status_code == 401 and "set-cookie" not in got.headers
+
+
+async def test_another_sites_form_cannot_sign_in(stub):
+    async with lan_tool(stub) as c:
+        got = await sign_in(c, headers={"Origin": "http://evil.example"})
+        assert got.status_code == 403 and "set-cookie" not in got.headers
+        got = await sign_in(c, headers={"Origin": "http://192.168.1.10:8795"})
+        assert got.status_code == 303
+
+
+async def test_signing_in_sets_a_session_cookie_and_opens_the_page(stub, capsys, caplog):
+    async with lan_tool(stub) as c:
+        got = await sign_in(c)
         assert got.status_code == 303 and got.headers["location"] == "/"
+        assert got.headers["cache-control"] == "no-store"
         cookie = got.headers["set-cookie"]
-        assert cookie.startswith(f"loadtest_key={KEY};")
+        assert cookie.startswith("loadtest_session=")
+        value = cookie.split(";")[0].split("=", 1)[1]
+        assert len(value) >= 32 and "s3cret-pass" not in value and "admin" not in value
         parts = {p.strip().lower() for p in cookie.split(";")}
         assert {"httponly", "samesite=strict", "path=/"} <= parts
         assert not any(p.startswith(("secure", "max-age", "expires")) for p in parts)
         bodies = [got.text]
-        got = await c.get("/", params={"key": KEY}, follow_redirects=True)
-        assert got.status_code == 200 and got.url.path == "/" and not got.url.query
-        bodies.append(got.text)
-        for path in ("/api/state", "/static/index.html", "/api/result"):
+        for path in ("/", "/api/state", "/static/index.html", "/api/result"):
             got = await c.get(path)
-            assert got.status_code in (200, 404) and got.status_code != 403
+            assert got.status_code in (200, 404)
             bodies.append(got.text)
+        got = await c.get("/login")                     # already in: straight to the page
+        assert got.status_code == 303 and got.headers["location"] == "/"
         got = await c.post("/api/start", headers=PAGE)
         assert got.status_code == 202
-    assert all(KEY not in b for b in bodies)
+    assert all("s3cret-pass" not in b and value not in b for b in bodies)
     out = capsys.readouterr()
-    assert KEY not in out.out + out.err + caplog.text
+    assert "s3cret-pass" not in out.out + out.err + caplog.text
+    assert value not in out.out + out.err + caplog.text
 
 
-async def test_the_key_cookie_opens_the_event_stream(stub):
+async def test_over_https_the_session_cookie_is_secure(stub):
+    async with lan_tool(stub, secure_cookie=True) as c:
+        cookie = (await sign_in(c)).headers["set-cookie"]
+        assert "secure" in {p.strip().lower() for p in cookie.split(";")}
+
+
+async def test_a_restart_signs_everyone_out(stub):
+    async with lan_tool(stub) as first:
+        assert (await sign_in(first)).status_code == 303
+        session = first.cookies.get("loadtest_session")
+        assert (await first.get("/api/state")).status_code == 200
+    async with lan_tool(stub) as second:                # the tool started again
+        second.cookies.set("loadtest_session", session)
+        assert (await second.get("/api/state")).status_code == 401
+        second.cookies.clear()
+        assert (await sign_in(second)).status_code == 303
+        assert second.cookies.get("loadtest_session") != session
+
+
+def test_a_sign_in_never_shows_its_password():
+    assert "s3cret-pass" not in repr(SIGN_IN) + str(SIGN_IN) + f"{SIGN_IN!r}"
+    assert SIGN_IN.matches("admin", "s3cret-pass")
+    assert SignIn("ünïcode", "pässwörd").matches("ünïcode", "pässwörd")
+
+
+async def test_with_no_sign_in_the_sign_in_page_leads_to_the_page(stub):
+    async with tool(stub) as c:
+        got = await c.get("/login")
+        assert got.status_code == 303 and got.headers["location"] == "/"
+        assert (await c.get("/api/state")).status_code == 200
+
+
+async def test_the_session_cookie_opens_the_event_stream(stub):
     """Read at ASGI level: the stream never ends on its own."""
-    app = create_app(stub, allowed_hosts=["192.168.1.10"], access_key=KEY)
+    app = create_app(stub, allowed_hosts=["192.168.1.10"], sign_in=SIGN_IN)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=LAN),
+                                 base_url="http://192.168.1.10:8795") as c:
+        assert (await sign_in(c)).status_code == 303
+        session = c.cookies.get("loadtest_session")
     sent: list[dict] = []
     started = asyncio.Event()
     disconnect = asyncio.Event()
@@ -385,7 +493,7 @@ async def test_the_key_cookie_opens_the_event_stream(stub):
              "method": "GET", "scheme": "http", "path": "/api/events",
              "raw_path": b"/api/events", "query_string": b"", "root_path": "",
              "headers": [(b"host", b"192.168.1.10:8795"),
-                         (b"cookie", f"loadtest_key={KEY}".encode())],
+                         (b"cookie", f"loadtest_session={session}".encode())],
              "client": LAN, "server": ("192.168.1.10", 8795)}
     task = asyncio.create_task(app(scope, receive, send))
     await asyncio.wait_for(started.wait(), 2)
@@ -394,11 +502,13 @@ async def test_the_key_cookie_opens_the_event_stream(stub):
     assert sent[0]["status"] == 200
 
 
-async def test_this_machine_needs_no_key(stub):
+async def test_this_machine_needs_no_sign_in(stub):
     for client in (("127.0.0.1", 5), ("::1", 5)):
-        async with tool(stub, client=client, access_key=KEY) as c:
+        async with tool(stub, client=client, sign_in=SIGN_IN) as c:
             assert (await c.get("/")).status_code == 200
             assert (await c.get("/api/state")).status_code == 200
+            got = await c.get("/login")
+            assert got.status_code == 303 and got.headers["location"] == "/"
             assert (await c.post("/api/start", headers=PAGE)).status_code == 202
             assert (await c.post("/api/start")).status_code == 403     # header still needed
 
@@ -568,38 +678,38 @@ async def test_tls_proxy_origin_matches_a_host_without_port(stub):
 
 
 @pytest.mark.parametrize("header", ["X-Forwarded-For", "Forwarded", "X-Real-IP"])
-async def test_a_forwarded_loopback_request_needs_the_key(stub, header):
-    async with tool(stub, access_key=KEY) as c:
+async def test_a_forwarded_loopback_request_must_sign_in(stub, header):
+    async with tool(stub, sign_in=SIGN_IN) as c:
         got = await c.get("/api/state", headers={header: "1.2.3.4"})
-        assert got.status_code == 403
-        c.cookies.set("loadtest_key", KEY)
+        assert got.status_code == 401
+        assert (await sign_in(c, headers={header: "1.2.3.4"})).status_code == 303
         got = await c.get("/api/state", headers={header: "1.2.3.4"})
         assert got.status_code == 200
 
 
-async def test_loopback_under_another_name_needs_the_key(stub):
+async def test_loopback_under_another_name_must_sign_in(stub):
     hosts = ["192.168.1.10", "proxy.example", "jimmys-mac.local"]
     for base in ("http://192.168.1.10:8795", "http://proxy.example", "http://jimmys-mac.local"):
-        async with tool(stub, base=base, allowed_hosts=hosts, access_key=KEY) as c:
-            assert (await c.get("/api/state")).status_code == 403
-            assert (await c.get("/")).status_code == 403
-            c.cookies.set("loadtest_key", KEY)
+        async with tool(stub, base=base, allowed_hosts=hosts, sign_in=SIGN_IN) as c:
+            assert (await c.get("/api/state")).status_code == 401
+            got = await c.get("/")
+            assert got.status_code == 303 and got.headers["location"] == "/login"
+            assert (await sign_in(c)).status_code == 303
             assert (await c.get("/api/state")).status_code == 200
     for base in ("http://localhost:8795", "http://127.0.0.1:8795", "http://[::1]:8795"):
-        async with tool(stub, base=base, allowed_hosts=hosts, access_key=KEY) as c:
+        async with tool(stub, base=base, allowed_hosts=hosts, sign_in=SIGN_IN) as c:
             assert (await c.get("/api/state")).status_code == 200
 
 
 async def test_the_cookie_name_is_per_port(stub):
-    async with tool(stub, client=LAN, base="http://192.168.1.10:8795",
-                    allowed_hosts=["192.168.1.10"], access_key=KEY,
-                    cookie_name="loadtest_key_8795") as c:
-        got = await c.get("/", params={"key": KEY})
-        assert got.headers["set-cookie"].startswith(f"loadtest_key_8795={KEY};")
+    async with lan_tool(stub, cookie_name="loadtest_session_8795") as c:
+        got = await sign_in(c)
+        assert got.headers["set-cookie"].startswith("loadtest_session_8795=")
+        session = c.cookies.get("loadtest_session_8795")
         assert (await c.get("/api/state")).status_code == 200
         c.cookies.clear()
-        c.cookies.set("loadtest_key", KEY)
-        assert (await c.get("/api/state")).status_code == 403
+        c.cookies.set("loadtest_session", session)
+        assert (await c.get("/api/state")).status_code == 401
 
 
 @pytest.mark.parametrize("host", ["[::1]evil.com", "[::1]:80x", "[::1", "localhost:abc",
@@ -722,12 +832,13 @@ def test_allow_host_turns_off_the_local_skip(monkeypatch, tmp_path, extra, skip)
     assert seen["local_skip"] is skip
 
 
-async def test_without_the_local_skip_this_machine_needs_the_key(stub):
-    async with tool(stub, access_key=KEY, local_skip=False) as c:
-        assert (await c.get("/api/state")).status_code == 403
-        assert (await c.get("/")).status_code == 403
-        got = await c.get("/", params={"key": KEY})
-        assert got.status_code == 303
+async def test_without_the_local_skip_this_machine_signs_in_too(stub):
+    async with tool(stub, sign_in=SIGN_IN, local_skip=False) as c:
+        assert (await c.get("/api/state")).status_code == 401
+        got = await c.get("/")
+        assert got.status_code == 303 and got.headers["location"] == "/login"
+        assert (await c.get("/login")).status_code == 200
+        assert (await sign_in(c)).status_code == 303
         assert (await c.get("/api/state")).status_code == 200
         assert (await c.post("/api/start", headers=PAGE)).status_code == 202
 
@@ -745,22 +856,22 @@ async def test_shutdown_gives_up_on_a_stop_that_never_ends(stub, capsys):
     assert "TimeoutError" in capsys.readouterr().err
 
 
-def test_allow_host_on_loopback_prints_a_keyed_link(monkeypatch, tmp_path, capsys):
+def test_allow_host_on_loopback_says_everyone_signs_in(monkeypatch, tmp_path, capsys):
     import socket
 
     import uvicorn
 
     from loadtest import __main__ as cli
-    apps = []
 
     class Fake(uvicorn.Server):
         def run(self, sockets=None):
-            apps.append(self.config.app)
             for s in sockets or ():
                 s.close()
 
     monkeypatch.setattr(uvicorn, "Server", Fake)
-    for extra, keyed in (([], False), (["--allow-host", "proxy.example"], True)):
+    for name in ("LOADTEST_USERNAME", "LOADTEST_PASSWORD", "LOADTEST_PUBLIC_URL"):
+        monkeypatch.delenv(name, raising=False)
+    for extra, guarded in (([], False), (["--allow-host", "proxy.example"], True)):
         probe = socket.socket()
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -768,12 +879,10 @@ def test_allow_host_on_loopback_prints_a_keyed_link(monkeypatch, tmp_path, capsy
         cli.main(["--host", "127.0.0.1", "--port", str(port), *extra,
                   "--runs-dir", str(tmp_path / "runs")])
         out = capsys.readouterr().out.splitlines()
-        if keyed:
-            assert len(out) == 2
-            assert out[0].startswith(f"Move load test: http://localhost:{port}/?key=")
-            assert len(out[0].rsplit("=", 1)[1]) >= 32
-            assert out[1] == ("A proxy name was allowed, so every visitor needs the key, on "
-                              "this machine too.")
+        if guarded:
+            assert out == [f"Move load test: http://localhost:{port}",
+                           "A proxy name was allowed, so everyone signs in, on this machine "
+                           "too.", cli.DEFAULT_SIGN_IN]
         else:
             assert out == [f"On this machine: http://localhost:{port}"]
 
