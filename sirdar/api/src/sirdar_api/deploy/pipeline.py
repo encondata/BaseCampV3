@@ -792,6 +792,91 @@ VM_KEY_UNREADABLE = ("Sirdar can't read its key for this environment's VM with t
                      "SIRDAR_SECRETS_KEY.")
 
 
+@dataclass(frozen=True)
+class AppEnv:
+    """An environment's app .env (what step 4 writes) and the secret values
+    its slot keys added (for the redactor)."""
+    text: str = field(repr=False)
+    extra_secrets: tuple[str, ...] = field(default=(), repr=False)
+
+
+async def _env_inputs(db: AsyncSession, env: Environment, settings: Settings
+                      ) -> tuple[list[EnvironmentService], dict[str, int], dict[str, str]]:
+    """The environment's service rows, its ports and its stored secrets."""
+    service_rows = list(await db.scalars(select(EnvironmentService)
+                                         .where(EnvironmentService.environment_id == env.id)))
+    ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in service_rows}}
+    return service_rows, ports, await _load_secrets(db, env.id, settings)
+
+
+async def render_app_env(db: AsyncSession, env: Environment, settings: Settings, *, sha: str,
+                         slot: str | None, cloud: bool, bluegreen: bool, slot_keys: bool = True,
+                         ports: dict[str, int] | None = None,
+                         secrets: dict[str, str] | None = None) -> AppEnv:
+    """The app .env for `sha`: the stored secrets, the apps and mail, the
+    Switchyard STACK_HOSTS_IP and, with slot_keys, a DigitalOcean slot's or
+    a LAN Blue/Green app VM's keys. The pipeline passes the ports and the
+    secrets it already holds (a snapshot restore's keys among them); the
+    .env download leaves them out and they are read here. PrepareError
+    carries our own copy."""
+    if ports is None or secrets is None:
+        _, ports, secrets = await _env_inputs(db, env, settings)
+    found: list[str] = []
+    # every render (Update, Reset, Restore backup, Roll back; any target)
+    # carries the apps and mail, and the devices secrets while it runs
+    try:
+        extra: dict[str, str] = app_rules.env_extra(env, secrets)
+    except app_rules.AppsError as e:
+        raise PrepareError("Sirdar couldn't write this environment's .env: missing secrets: "
+                           f"{', '.join(e.extra['missing'])}.") from None
+    if env.proxy == "switchyard":
+        # Switchyard isn't at the proxy IP on the LAN: inside the containers the
+        # public names go to the public IP, as visitors' do (the router sends
+        # 443 on to Switchyard).
+        cloudflare = await integrations.load_cloudflare(db, settings)
+        if cloudflare is not None:
+            extra["STACK_HOSTS_IP"] = cloudflare.public_ip
+    if cloud and slot_keys:
+        try:
+            cloud_extra, cloud_secrets = await do_envs.env_extra(db, settings, env, slot,
+                                                                 secrets)
+            extra |= cloud_extra
+        except do_envs.DoEnvError as e:
+            missing_keys = e.extra.get("missing") or []
+            if missing_keys == ["renewal token"]:  # the account's, not something step 0 builds
+                raise PrepareError("The DigitalOcean account has no renewal token (the token "
+                                   "droplets renew their certificate with). Add it in Settings "
+                                   "› Integrations, then retry.") from None
+            missing = ", ".join(missing_keys)
+            tail = (" Add the account's renewal token in Settings › Integrations too."
+                    if "renewal token" in missing_keys else "")
+            raise PrepareError(f"This environment isn't fully built yet (missing: {missing}). "
+                               f"Retry from step 0 (Prepare DigitalOcean).{tail}") from None
+        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+            raise PrepareError("Sirdar can't read this environment's DigitalOcean secrets "
+                               "with the current SIRDAR_SECRETS_KEY.") from None
+        found += cloud_secrets
+    if bluegreen and slot_keys:
+        try:
+            lan_extra, lan_secrets = await lan_slots.env_extra(db, env, secrets)
+            extra |= lan_extra
+        except do_envs.DoEnvError:
+            raise PrepareError("This environment's data VM isn't recorded. Retry from step 0 "
+                               "(Prepare VM).") from None
+        found += lan_secrets
+    try:
+        text = envfile.render_env(envfile.EnvConfig(
+            name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(sha),
+            proxy_ip=env.proxy_ip, bind_ip=env.bind_ip, ports=ports,
+            keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket,
+            log_level=env.log_level, api_mode=envfile.api_mode(env.type), secrets=secrets,
+            extra=extra))
+    except envfile.RenderError as e:
+        raise PrepareError(f"Sirdar couldn't write this environment's .env: {e.reason}.") \
+            from None
+    return AppEnv(text=text, extra_secrets=tuple(found))
+
+
 async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings, *,
                    needs_host: bool = True, more_secrets: tuple[str, ...] = ()) -> _Context:
     """Everything the steps need. Without host steps (a publish job, or a
@@ -825,9 +910,6 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         raise PrepareError("This environment's SSH target isn't configured any more. "
                            "Pick another target, then retry.")
     target, private_key = await _run_target(db, cfg)
-    service_rows = list(await db.scalars(select(EnvironmentService)
-                                         .where(EnvironmentService.environment_id == env.id)))
-    ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in service_rows}}
     if "devices" in env.apps:
         # Devices turned on before Sirdar made its secrets: make the missing
         # ones now (a stored one is never replaced). The caller commits them
@@ -839,58 +921,23 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
                 raise
             raise PrepareError("SIRDAR_SECRETS_KEY isn't set, so Sirdar can't make this "
                                "environment's devices secrets.") from None
-    secrets = await _load_secrets(db, env.id, settings)
+    service_rows, ports, secrets = await _env_inputs(db, env, settings)
     step_vars, snapshot_keys, extra_secrets = await _snapshot_vars(db, env, dep, settings,
                                                                    secrets, ports=ports)
     secrets = {**secrets, **snapshot_keys}
-    # every render (Update, Reset, Restore backup, Roll back; any target)
-    # carries the apps and mail, and the devices secrets while it runs
-    try:
-        extra: dict[str, str] = app_rules.env_extra(env, secrets)
-    except app_rules.AppsError as e:
-        raise PrepareError("Sirdar couldn't write this environment's .env: missing secrets: "
-                           f"{', '.join(e.extra['missing'])}.") from None
-    if env.proxy == "switchyard":
-        # Switchyard isn't at the proxy IP on the LAN: inside the containers the
-        # public names go to the public IP, as visitors' do (the router sends
-        # 443 on to Switchyard).
-        cloudflare = await integrations.load_cloudflare(db, settings)
-        if cloudflare is not None:
-            extra["STACK_HOSTS_IP"] = cloudflare.public_ip
     if dep.cloud:
         # Read again here, not only at the start: step 0 may have just made
         # the Spaces secret and the doadmin password.
         extra_secrets = [*extra_secrets, *await do_envs.secret_values(db, settings, env)]
-    if dep.cloud and dep.mode == "update":           # only Update renders .env
-        try:
-            cloud_extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot,
-                                                                 secrets)
-            extra |= cloud_extra
-        except do_envs.DoEnvError as e:
-            found = e.extra.get("missing") or []
-            if found == ["renewal token"]:       # the account's, not something step 0 builds
-                raise PrepareError("The DigitalOcean account has no renewal token (the token "
-                                   "droplets renew their certificate with). Add it in Settings "
-                                   "› Integrations, then retry.") from None
-            missing = ", ".join(found)
-            tail = (" Add the account's renewal token in Settings › Integrations too."
-                    if "renewal token" in found else "")
-            raise PrepareError(f"This environment isn't fully built yet (missing: {missing}). "
-                               f"Retry from step 0 (Prepare DigitalOcean).{tail}") from None
-        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-            raise PrepareError("Sirdar can't read this environment's DigitalOcean secrets "
-                               "with the current SIRDAR_SECRETS_KEY.") from None
-        extra_secrets = [*extra_secrets, *cloud_secrets]
+    # Only Update renders a DigitalOcean or Blue/Green slot's own keys.
+    app_env = await render_app_env(db, env, settings, sha=dep.sha, slot=dep.slot,
+                                   cloud=dep.cloud, bluegreen=dep.bluegreen,
+                                   slot_keys=dep.mode == "update", ports=ports,
+                                   secrets=secrets)
+    extra_secrets = [*extra_secrets, *app_env.extra_secrets]
     data_target: RunTarget | None = None
     data_b64, data_key = "", None
     if dep.bluegreen and dep.mode == "update":       # only Update renders .env
-        try:
-            lan_extra, lan_secrets = await lan_slots.env_extra(db, env, secrets)
-            extra |= lan_extra
-        except do_envs.DoEnvError:
-            raise PrepareError("This environment's data VM isn't recorded. Retry from step 0 "
-                               "(Prepare VM).") from None
-        extra_secrets = [*extra_secrets, *lan_secrets]
         try:
             data_cfg = await vms.host_config(db, settings, env, role=vms.DATA)
         except (vault.SecretsKeyMissing, vault.SecretUnreadable):
@@ -917,17 +964,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         step_vars["dump"] = {"data_new": not await lan_slots.ran(db, env)}
     # Step 20: the Learning space only where the learning site and the wiki run.
     step_vars["seed"] = {"seed_learning": "learn" in env.apps and "wiki" in env.apps}
-    try:
-        text = envfile.render_env(envfile.EnvConfig(
-            name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(dep.sha),
-            proxy_ip=env.proxy_ip, bind_ip=env.bind_ip, ports=ports,
-            keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket,
-            log_level=env.log_level, api_mode=envfile.api_mode(env.type), secrets=secrets,
-            extra=extra))
-    except envfile.RenderError as e:
-        raise PrepareError(f"Sirdar couldn't write this environment's .env: {e.reason}.") \
-            from None
-    env_b64 = base64.b64encode(text.encode()).decode()
+    env_b64 = base64.b64encode(app_env.text.encode()).decode()
     folder = envfile.env_dir(env.name)
     if dep.bluegreen:
         # The slot smoke test's names, each at its own port on the app VM
