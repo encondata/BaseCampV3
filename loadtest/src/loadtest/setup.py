@@ -53,8 +53,7 @@ STEPS = {
     "draft": "Starting the move on the server",
     "assets": "Sending the From-To list and waiting for the server to check it",
     "crates_trucks": "Adding the containers and trucks",
-    "create": "Creating the move (the server's import worker does this; a big move takes a "
-              "while)",
+    "create": "Creating the move",
     "verify": "Checking that the move has every server",
     "activate": "Setting the move password and In progress",
     "done": "The move is ready",
@@ -103,6 +102,11 @@ class Plan:
     def view(self) -> dict:
         return {"name": self.name, "servers": self.servers, "containers": self.containers,
                 "trucks": self.trucks}
+
+    def key(self) -> tuple:
+        """What must match for a new set-up to carry on a failed one's move."""
+        return (self.name, self.origin.id, self.destination.id, self.servers,
+                self.containers, self.trucks)
 
 
 class TooLarge(Exception):
@@ -229,6 +233,32 @@ def refusal(exc: Exception) -> str:
     return f"the server answered with an error (HTTP {exc.status})."
 
 
+PASSWORD_REFUSALS = ("kiosk_password_too_short", "kiosk_password_contains_name",
+                     "kiosk_password_in_use")
+SAME_MOVE = "the same move is used, no second one is made."
+SECOND_MOVE = ("Pressing Create again would make a second move; look at this move in the "
+               "portal instead.")
+
+
+def activate_next(exc: Exception) -> str:
+    """What to do after step 6 failed. Create with the same entries carries on this move
+    (Setup keeps it until the next sign-in or run), except after a 401, which needs a new
+    sign-in and so loses it."""
+    code = exc.code if isinstance(exc, CallFailed) else None
+    status = exc.status if isinstance(exc, CallFailed) else None
+    if code in PASSWORD_REFUSALS:
+        return f"Type another move password and press Create again: {SAME_MOVE}"
+    if status == 401:
+        return ("Set its move password and In progress on the move in the portal. Signing in "
+                "again and pressing Create would make a second move.")
+    if status == 403:
+        return ("Set its move password and In progress on the move in the portal with an admin "
+                "account. Pressing Create again with the same entries uses this same move (no "
+                "second one is made), but this sign-in would be refused again.")
+    return (f"Press Create again with the same entries to try once more: {SAME_MOVE} Or set "
+            "its move password and In progress on the move in the portal.")
+
+
 class Setup:
     """One move set-up at a time: its task and the state the snapshot shows."""
 
@@ -236,6 +266,9 @@ class Setup:
         self.clock = clock
         self._view: dict | None = None
         self._task: asyncio.Task | None = None
+        # a move whose step 6 failed: {"key": Plan.key(), "move_id"}; never a password
+        self._resume: dict | None = None
+        self._made: str | None = None       # the running set-up's move, once it exists
 
     def __repr__(self) -> str:
         return f"Setup(working={self.working})"
@@ -248,18 +281,25 @@ class Setup:
         return dict(self._view) if self._view else None
 
     def forget(self) -> None:
-        """Drops the last set-up's view (never one that is still working)."""
+        """Drops the last set-up's view and any move it could carry on (never while one
+        is working)."""
         if not self.working:
-            self._view = None
+            self._view = self._resume = None
 
     def start(self, portal: PortalClient, plan: Plan, password: str, *,
-              on_done: Callable[[str], Awaitable[None]]) -> None:
-        """No await before the task exists: two calls at once cannot start two."""
+              on_done: Callable[[str, bool], Awaitable[None]]) -> None:
+        """No await before the task exists: two calls at once cannot start two. When the
+        last set-up failed at step 6 and `plan` has the same entries, only step 6 runs,
+        on that move. `on_done(move_id, ready)` runs once the move exists on the server,
+        ready or not."""
         if self.working:
             raise RunnerError("setup_working")
-        self._view = {"state": "working", "step": "draft", "step_label": STEPS["draft"],
+        resume, self._resume = self._resume, None
+        move_id = resume["move_id"] if resume and resume["key"] == plan.key() else None
+        step = "activate" if move_id else "draft"
+        self._view = {"state": "working", "step": step, "step_label": STEPS[step],
                       "message": "", "move_id": None, **plan.view()}
-        self._task = asyncio.create_task(self._run(portal, plan, password, on_done))
+        self._task = asyncio.create_task(self._run(portal, plan, password, on_done, move_id))
 
     async def wait(self) -> None:
         if self._task is not None:
@@ -275,30 +315,53 @@ class Setup:
         self._view.update(step=key, step_label=STEPS[key])
 
     async def _run(self, portal: PortalClient, plan: Plan, password: str,
-                   on_done: Callable[[str], Awaitable[None]]) -> None:
+                   on_done: Callable[[str, bool], Awaitable[None]],
+                   move_id: str | None) -> None:
+        self._made = move_id
         try:
-            move_id = await self._steps(portal, plan, password)
-            del password
-            await on_done(move_id)
+            if move_id is None:
+                move_id = await self._steps(portal, plan)
+            await self._activate(portal, plan, move_id, password)
         except StepFailed as failed:
             self._view.update(state="error", message=failed.message)
-            return
         except Exception as exc:  # noqa: BLE001 - the page gets words, the terminal the type
             log("creating the move stopped", exc)
             self._view.update(state="error", message=(
                 "Creating the move stopped because of an unexpected problem in the load test "
                 f"tool ({self._view['step_label'].lower()}). The terminal shows what it was. "
                 f'Look for "{plan.name}" in the portal\'s moves before trying again.'))
-            return
-        self._step("done")
-        self._view.update(state="done", move_id=move_id)
+        else:
+            self._step("done")
+            self._view.update(state="done", move_id=move_id)
+        finally:
+            del password
+        if self._made is not None:
+            try:
+                await on_done(self._made, self._view["state"] == "done")
+            except Exception as exc:  # noqa: BLE001 - the move list is a nicety
+                log("the move list could not be brought up to date", exc)
 
-    async def _steps(self, portal: PortalClient, plan: Plan, password: str) -> str:
+    async def _activate(self, portal: PortalClient, plan: Plan, move_id: str,
+                        password: str) -> None:
+        """Step 6. A failure keeps the move for a set-up with the same entries."""
+        self._step("activate")
+        try:
+            await portal.activate_move(move_id, password)
+        except Exception as exc:
+            if not isinstance(exc, (CallFailed, *BAD_ANSWER)):
+                raise
+            self._resume = {"key": plan.key(), "move_id": move_id}
+            raise StepFailed(f'The move "{plan.name}" was created with {plan.servers:,} '
+                             f"servers, but {refusal(exc)} It is not In progress yet. "
+                             f"{activate_next(exc)}") from None
+
+    async def _steps(self, portal: PortalClient, plan: Plan) -> str:
+        """Steps 1 to 5: the move's id, with every server on it."""
         nothing = " Nothing was created."
         no_move = (" No move was created (the server removes the unfinished draft within a "
                    "day).")
         try:
-            content = from_to_csv(plan)
+            content = await asyncio.to_thread(from_to_csv, plan)
         except TooLarge:
             raise StepFailed(f"A From-To list of {plan.servers:,} servers is larger than the "
                              "server accepts (20 MB), so nothing was created. Use fewer "
@@ -307,7 +370,11 @@ class Setup:
             draft = await portal.start_move_draft(plan.name, plan.origin.id,
                                                   plan.destination.id)
         except Exception as exc:
-            raise StepFailed(f"The server did not start the move: {refusal(exc)}{nothing}") \
+            # never resent: an answer lost after the server made the draft leaves one behind
+            unsure = isinstance(exc, CallFailed) and (exc.status is None or exc.status >= 500)
+            after = (" No move was created (if the server did start one, it removes the "
+                     "unfinished draft within a day)." if unsure else nothing)
+            raise StepFailed(f"The server did not start the move: {refusal(exc)}{after}") \
                 from None
 
         self._step("assets")
@@ -345,8 +412,8 @@ class Setup:
         except Exception as exc:
             raise StepFailed(f"The server did not create the move: {refusal(exc)}{no_move}") \
                 from None
-        lost = (f' It may still finish: look for "{plan.name}" in the portal\'s moves before '
-                "trying again.")
+        lost = (f' It may still finish: look for "{plan.name}" in the portal\'s moves. Pressing '
+                "Create again would make a second move.")
         try:
             job = await self._wait(lambda: portal.move_draft(draft), DRAFT_FINAL)
         except StepFailed as failed:
@@ -359,28 +426,19 @@ class Setup:
             why = (" ".join(r for r in reasons if isinstance(r, str))
                    if isinstance(reasons, list) and reasons else "it did not finish.")
             raise StepFailed(f"The server could not create the move: {why}{nothing}")
-        move_id = str(job["initiative_id"])
+        move_id = self._made = str(job["initiative_id"])
 
         made = f'The move "{plan.name}" was created'
+        unready = f"It was not set In progress and has no move password. {SECOND_MOVE}"
         self._step("verify")
         try:
             servers = len(await portal.roster(move_id))
         except Exception as exc:
             raise StepFailed(f"{made}, but its servers could not be counted: {refusal(exc)} "
-                             "It was not set In progress and has no move password. Check it "
-                             "in the portal.") from None
+                             f"{unready}") from None
         if servers != plan.servers:
             raise StepFailed(f"{made}, but it has {servers:,} servers, not {plan.servers:,}. "
-                             "It was not set In progress and has no move password. Check it "
-                             "in the portal.")
-
-        self._step("activate")
-        try:
-            await portal.activate_move(move_id, password)
-        except Exception as exc:
-            raise StepFailed(f"{made} with {plan.servers:,} servers, but {refusal(exc)} It is "
-                             "not In progress yet: set its move password and In progress on "
-                             "the move in the portal.") from None
+                             f"{unready}")
         return move_id
 
     async def _wait(self, read: Callable[[], Awaitable[dict]], final: tuple[str, ...]) -> dict:
@@ -401,6 +459,7 @@ class Setup:
                 if mark != last:
                     last, since = mark, self.clock.now()
             if self.clock.now() - since >= STALL_SECONDS:
-                raise StepFailed(f"The server did not move on for {STALL_SECONDS / 60:.0f} "
-                                 "minutes. Check that its import worker is running.")
+                raise StepFailed(f"The server stopped making progress for "
+                                 f"{STALL_SECONDS / 60:.0f} minutes. Ask whoever runs the "
+                                 "server to check it.")
             await self.clock.sleep(POLL_SECONDS)

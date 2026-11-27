@@ -145,10 +145,11 @@ def register_setup_routes(fake: FakeBaseCamp) -> None:
     # ── helpers ──
 
     def guard(request: Request):
-        """require_permission("initiatives", "add"), then _guard."""
+        """require_permission("initiatives", "add"), then _guard (require_bulk_rank: a
+        global actor of admin rank; then containers and trucks add)."""
         user = fake.require(request, "initiatives", "add")
         perms = fake.perms_of(user)
-        if user.rank < GATE_BYPASS_RANK:
+        if not user.is_global or user.rank < GATE_BYPASS_RANK:
             raise _err(403, "forbidden")
         if not (perms.get("containers", {}).get("add") and perms.get("trucks", {}).get("add")):
             raise _err(403, "forbidden")
@@ -382,6 +383,8 @@ def register_setup_routes(fake: FakeBaseCamp) -> None:
                                 request: Request) -> dict:
         user = fake.require(request, "initiatives", "change")
         move = fake.initiative(initiative_id)
+        if not user.is_global:              # _require_global, after the row is found
+            raise _err(403, "forbidden")
         wants_password = "kiosk_password" in body.model_fields_set
         data = body.model_dump(exclude_unset=True)
         data.pop("kiosk_password", None)

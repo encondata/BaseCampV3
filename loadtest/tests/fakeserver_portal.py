@@ -173,7 +173,7 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
         body = fake._issue(family, response)
         body.update(person={"id": user.person_id, "display_name": user.email},
                     roles=["super_admin"], perms=perms_of(user), max_rank=user.rank,
-                    scope={"global": True, "client_ids": [], "partner_ids": [],
+                    scope={"global": user.is_global, "client_ids": [], "partner_ids": [],
                            "restricted_client_ids": []},
                     totp={"enrolled": user.totp == "verify", "enrolled_at": None,
                           "required": user.totp is not None, "backup_codes_remaining": 10},
@@ -228,7 +228,7 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
                 "must_change_password": False, "must_change_reason": None,
                 "password_expires_at": None, "preferences": {}, "perms": perms_of(user),
                 "max_rank": user.rank,
-                "scope": {"global": True, "client_ids": [], "partner_ids": [],
+                "scope": {"global": user.is_global, "client_ids": [], "partner_ids": [],
                           "restricted_client_ids": []},
                 "password_min_length": 8,
                 "totp": {"enrolled": user.totp == "verify", "enrolled_at": None,

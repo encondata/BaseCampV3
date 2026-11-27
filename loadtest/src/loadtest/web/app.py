@@ -148,6 +148,7 @@ async def event_stream(runner, is_disconnected: Callable[[], Awaitable[bool]], *
         first += [_event("feed", feed_event(line)) for line in safely(runner.recent, [])]
         loop = asyncio.get_running_loop()
         last_snapshot = last_comment = loop.time()
+        was_busy = runner.phase in ACTIVE or getattr(runner, "setting_up", False)
         for chunk in first:
             yield chunk
         if stopping is not None:
@@ -156,7 +157,8 @@ async def event_stream(runner, is_disconnected: Callable[[], Awaitable[bool]], *
             now = loop.time()
             busy = runner.phase in ACTIVE or getattr(runner, "setting_up", False)
             every = active_every if busy else idle_every
-            if now - last_snapshot >= every:
+            ended, was_busy = was_busy and not busy, busy     # a run or set-up just ended
+            if ended or now - last_snapshot >= every:
                 last_snapshot = now
                 for chunk in snapshot_event():
                     yield chunk

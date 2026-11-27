@@ -298,6 +298,7 @@ class _PortalUser:
     code: str
     permissions: set[str] | None
     rank: int = 100                     # max_rank; Bulk Actions and move passwords need 60
+    is_global: bool = True              # False: a client-anchored account
     person_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -479,12 +480,14 @@ class FakeBaseCamp:
 
     def add_portal_user(self, email: str, password: str, *,
                         totp: Literal["verify", "enroll"] | None = None, code: str = "123456",
-                        permissions: set[str] | None = None, rank: int = 100) -> None:
+                        permissions: set[str] | None = None, rank: int = 100,
+                        is_global: bool = True) -> None:
         """`permissions` holds "resource:action" strings; None holds every one the
         portal routes check (fakeserver_portal.PORTAL_PERMISSIONS). `rank` is the
-        account's max_rank (an admin's is 60 or more)."""
+        account's max_rank (an admin's is 60 or more); `is_global=False` makes a
+        client-anchored account, which bulk tools and initiative writes refuse."""
         self.portal_users[email.lower()] = _PortalUser(email, password, totp, code, permissions,
-                                                       rank)
+                                                       rank, is_global)
 
     def process_scans(self, *, duplicate_on_replay: bool = True) -> None:
         """Drain raw scans into processed scans, like the scan-matching worker.

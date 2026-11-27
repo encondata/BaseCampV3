@@ -7,8 +7,12 @@ import random
 import pytest
 from conftest import FAKE_BASE_URL
 
+from loadtest.client.kiosk import KioskDevice
+from loadtest.metrics import Metrics
+
 from loadtest.client.portal import PortalClient, SiteChoice
 from loadtest.connection import RunnerError
+from loadtest.profile import RetrySpec
 from loadtest.setup import (
     CONTAINER_TYPE,
     HEADERS,
@@ -143,13 +147,13 @@ def plan_on(fake, servers=45, containers=3, trucks=1, name="Load test move AB"):
 
 
 async def run_setup(fake, clock, portal, plan, *, password=MOVE_PASSWORD, worker=True,
-                    limit=None):
-    setup = Setup(clock)
+                    limit=None, setup=None):
+    setup = setup or Setup(clock)
     done: list[str] = []
     seen: list[str] = []
 
-    async def on_done(move_id: str) -> None:
-        done.append(move_id)
+    async def on_done(move_id: str, ready: bool) -> None:
+        done.append((move_id, ready))
 
     async def tick():
         while setup.working:
@@ -175,7 +179,7 @@ async def test_the_move_is_made_in_progress_with_its_password(fake, clock, porta
     view = setup.snapshot()
     assert view["state"] == "done", view
     move_id = view["move_id"]
-    assert done == [move_id]
+    assert done == [(move_id, True)]
     assert view == {"state": "done", "step": "done", "step_label": "The move is ready",
                     "message": "", "move_id": move_id, "name": "Load test move AB",
                     "servers": 45, "containers": 3, "trucks": 1}
@@ -233,11 +237,13 @@ async def test_a_weak_password_leaves_the_move_made_but_not_in_progress(fake, cl
     assert (view["state"], view["step"], view["move_id"]) == ("error", "activate", None)
     assert view["message"].startswith('The move "Load test move AB" was created with 45 '
                                       "servers, but the server refused its move password")
-    assert "too short" in view["message"] and "in the portal" in view["message"]
+    assert view["message"].endswith(
+        "it is too short. It is not In progress yet. Type another move password and press "
+        "Create again: the same move is used, no second one is made.")
     assert "short" not in view["message"].replace("too short", "")
     (move,) = fake.moves.values()
     assert (move["status"], move["password"]) == ("planned", None)
-    assert done == []
+    assert done == [(move["id"], False)]        # listed, as Planned
 
 
 async def test_a_short_roster_is_reported_and_the_move_left_planned(fake, clock, portal,
@@ -254,6 +260,8 @@ async def test_a_short_roster_is_reported_and_the_move_left_planned(fake, clock,
     view = setup.snapshot()
     assert (view["state"], view["step"]) == ("error", "verify")
     assert "has 44 servers, not 45" in view["message"]
+    assert view["message"].endswith("Pressing Create again would make a second move; look at "
+                                    "this move in the portal instead.")
     (move,) = fake.moves.values()
     assert move["status"] == "planned"
 
@@ -264,7 +272,9 @@ async def test_a_stalled_worker_gives_up_and_says_where_to_look(fake, clock, por
                                   limit=STALL_SECONDS + 60)
     view = setup.snapshot()
     assert (view["state"], view["step"]) == ("error", "assets")
-    assert "import worker" in view["message"]
+    assert view["message"].startswith("The server stopped making progress for 10 minutes. "
+                                      "Ask whoever runs the server to check it.")
+    assert "worker" not in view["message"]
 
 
 async def test_polls_ride_out_a_server_blip(fake, clock, portal):
@@ -278,10 +288,158 @@ async def test_cancel_ends_the_task(fake, clock, portal):
     plan = plan_on(fake)
     setup = Setup(clock)
 
-    async def on_done(move_id):
+    async def on_done(move_id, ready):
         raise AssertionError("not reached")
 
     setup.start(portal, plan, MOVE_PASSWORD, on_done=on_done)
     assert setup.working
     await setup.cancel()
     assert not setup.working
+
+
+# ── fix round 1: no second move after a late failure, and the rest ─────
+
+
+def same_entries(plan, tag="FFFFFF"):
+    """A new set-up with the same entries: only the random tag differs."""
+    return Plan(plan.name, plan.origin, plan.destination, plan.servers, plan.containers,
+                plan.trucks, tag)
+
+
+async def kiosk_signs_in(fake, clock, password) -> bool:
+    device = KioskDevice(base_url=FAKE_BASE_URL, serial="CHECK-1", name="Check", kind="handheld",
+                         metrics=Metrics(), clock=clock, retry=RetrySpec(1, ()), timeout=5.0,
+                         transport=fake.transport())
+    try:
+        await clock.run(device.sign_in(password))
+        return True
+    except Exception:
+        return False
+    finally:
+        await device.close()
+
+
+async def test_a_refused_password_is_fixed_on_the_same_move(fake, clock, portal):
+    plan = plan_on(fake)
+    setup, _, _ = await run_setup(fake, clock, portal, plan, password="short")
+    assert setup.snapshot()["state"] == "error"
+    (first,) = fake.moves
+    setup, done, seen = await run_setup(fake, clock, portal, same_entries(plan),
+                                        password="a-better-pass-2", setup=setup)
+    view = setup.snapshot()
+    assert (view["state"], view["move_id"]) == ("done", first)
+    assert set(seen) <= {"activate"}
+    assert list(fake.moves) == [first] and fake.moves[first]["status"] == "in_progress"
+    assert len(fake.trucks) == 1
+    assert done == [(first, True)]
+    assert await kiosk_signs_in(fake, clock, "a-better-pass-2")
+    for text in (repr(setup.snapshot()), repr(setup), repr(vars(setup))):
+        assert "a-better-pass-2" not in text and "short" not in text.replace("Short", "")
+
+
+@pytest.mark.parametrize("change", [{"name": "Another move"}, {"servers": 46},
+                                    {"containers": 4}, {"trucks": 2}, {"swap": True}])
+async def test_any_changed_entry_makes_a_new_move(fake, clock, portal, change):
+    plan = plan_on(fake)
+    setup, _, _ = await run_setup(fake, clock, portal, plan, password="short")
+    again = same_entries(plan)
+    if change.pop("swap", False):
+        again = Plan(plan.name, plan.destination, plan.origin, plan.servers, plan.containers,
+                     plan.trucks, "FFFFFF")
+    again = Plan(**{**again.__dict__, **change})
+    setup, _, _ = await run_setup(fake, clock, portal, again, password="a-better-pass-2",
+                                  setup=setup)
+    assert setup.snapshot()["state"] == "done"
+    assert len(fake.moves) == 2
+
+
+async def test_forget_drops_the_move_to_carry_on(fake, clock, portal):
+    plan = plan_on(fake)
+    setup, _, _ = await run_setup(fake, clock, portal, plan, password="short")
+    setup.forget()
+    assert setup.snapshot() is None
+    setup, _, _ = await run_setup(fake, clock, portal, same_entries(plan),
+                                  password="a-better-pass-2", setup=setup)
+    assert setup.snapshot()["state"] == "done" and len(fake.moves) == 2
+
+
+async def test_a_403_at_step_6_says_to_finish_in_the_portal(fake, clock, portal):
+    plan = plan_on(fake)
+    from fakeserver_portal import PORTAL_PERMISSIONS
+    fake.portal_users[EMAIL].permissions = set(PORTAL_PERMISSIONS) - {"initiatives:change"}
+    setup, _, _ = await run_setup(fake, clock, portal, plan)
+    message = setup.snapshot()["message"]
+    assert "not allowed to do this" in message
+    assert message.endswith("with an admin account. Pressing Create again with the same "
+                            "entries uses this same move (no second one is made), but this "
+                            "sign-in would be refused again.")
+
+
+async def test_a_lost_create_answer_still_ends_done_with_one_move(fake, clock, portal):
+    plan = plan_on(fake)
+    fake.fail("POST", r"/bulk/move-setup/[^/]+/create", status=503, after_effect=True)
+    setup, _, _ = await run_setup(fake, clock, portal, plan)
+    assert setup.snapshot()["state"] == "done"
+    assert len(fake.moves) == 1
+    assert ("POST", f"/bulk/move-setup/{next(iter(fake.import_jobs))}/create") in fake.requests
+
+
+@pytest.mark.parametrize("status,ending", [
+    (503, "No move was created (if the server did start one, it removes the unfinished "
+          "draft within a day)."),
+    (422, "Nothing was created."),
+])
+async def test_a_step_1_failure_says_only_what_is_known(fake, clock, portal, status, ending):
+    plan = plan_on(fake)
+    fake.fail("POST", "/bulk/move-setup", status=status)
+    setup, _, _ = await run_setup(fake, clock, portal, plan)
+    assert setup.snapshot()["message"].endswith(ending)
+
+
+async def test_a_stalled_create_says_create_again_makes_a_second_move(fake, clock, portal,
+                                                                      monkeypatch):
+    plan = plan_on(fake)
+    real = fake.process_jobs
+
+    def checks_only():
+        for job in fake.import_jobs.values():
+            if job["kind"] == "move_setup" and job["status"] == "queued":
+                return              # the create is never picked up
+        real()
+    monkeypatch.setattr(fake, "process_jobs", checks_only)
+    setup, _, _ = await run_setup(fake, clock, portal, plan, limit=STALL_SECONDS + 120)
+    view = setup.snapshot()
+    assert (view["state"], view["step"]) == ("error", "create")
+    assert view["message"].endswith(
+        'It may still finish: look for "Load test move AB" in the portal\'s moves. Pressing '
+        "Create again would make a second move.")
+
+
+async def test_an_unexpected_problem_never_prints_a_password(fake, clock, portal, capsys,
+                                                             monkeypatch):
+    plan = plan_on(fake)
+
+    async def broken(move_id, password):
+        raise RuntimeError(f"boom {password} {PASSWORD}")
+    monkeypatch.setattr(portal, "activate_move", broken)
+    setup, _, _ = await run_setup(fake, clock, portal, plan)
+    view = setup.snapshot()
+    assert view["state"] == "error" and "unexpected problem" in view["message"]
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err
+    assert MOVE_PASSWORD not in err and PASSWORD not in err
+    assert MOVE_PASSWORD not in view["message"]
+
+
+async def test_the_from_to_is_built_off_the_event_loop(fake, clock, portal, monkeypatch):
+    import threading
+    import loadtest.setup as setup_module
+    threads = []
+    real = setup_module.from_to_csv
+
+    def spy(plan):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(plan)
+    monkeypatch.setattr(setup_module, "from_to_csv", spy)
+    setup, _, _ = await run_setup(fake, clock, portal, plan_on(fake))
+    assert setup.snapshot()["state"] == "done" and threads == [False]

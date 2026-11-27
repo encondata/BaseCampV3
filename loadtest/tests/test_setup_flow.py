@@ -31,7 +31,8 @@ def osrm():
 class Tool:
     def __init__(self, fake, clock, tmp_path):
         self.fake, self.clock = fake, clock
-        self.runner = Runner(runs_dir=tmp_path / "runs", clock=clock,
+        self.runs_dir = tmp_path / "runs"
+        self.runner = Runner(runs_dir=self.runs_dir, clock=clock,
                              router_url="https://router.test", transport=fake.transport(),
                              router_transport=osrm())
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(create_app(self.runner)),
@@ -196,12 +197,22 @@ async def test_a_move_is_set_up_then_checked_and_run_to_pass(tool, fake):
     assert check["can_start"] is True, check["checks"]
     assert check["summary"] == {"servers": 45, "containers": 3, "trucks": 1,
                                 "containers_needed": 3, "trucks_needed": 1}
+    assert (await tool.state())["setup"]["state"] == "done"      # kept through the check
     got = await tool.post("/api/start")
     assert got.status_code == 202
+    assert (await tool.state())["setup"] is None                 # forgotten once a run starts
+    got = await tool.post("/api/setup", tool.body(name="During the run"))
+    assert (got.status_code, got.json()["code"]) == (409, "bad_phase")
     await tool.clock.run(tool.runner.wait())
     result = (await tool.get("/api/result")).json()
     assert result["verdict"] == "Pass", result["findings"]
     assert MOVE_PASSWORD not in json.dumps(await tool.state())
+    files = [p for p in (tool.runs_dir).rglob("*") if p.is_file()]
+    assert files
+    for path in files:
+        data = path.read_bytes()
+        assert MOVE_PASSWORD.encode() not in data and PASSWORD.encode() not in data, path
+    assert len(fake.moves) == 1
 
 
 async def test_an_error_keeps_its_message_until_the_next_sign_in(tool, fake):
@@ -240,3 +251,111 @@ async def test_the_event_stream_paces_snapshots_fast_while_setting_up(tool):
 
     await asyncio.wait_for(read(), 5)
     assert all(c.startswith("event: snapshot") for c in seen)
+
+
+# ── fix round 1 ────────────────────────────────────────────────────────
+
+
+async def test_a_refused_password_then_create_again_uses_the_same_move(tool, fake):
+    await tool.connect()
+    tool.work()
+    assert (await tool.post("/api/setup", tool.body(move_password="short"))).status_code == 202
+    await tool.until_set_up()
+    state = await tool.state()
+    assert state["setup"]["state"] == "error"
+    (move_id,) = fake.moves
+    # the move is listed, and Planned
+    assert [m for m in state["moves"] if m["id"] == move_id] == [
+        {"id": move_id, "name": "Load test move KC", "status": "planned"}]
+    assert fake.moves[move_id]["status"] == "planned"
+
+    assert (await tool.post("/api/setup", tool.body(move_password="much-better-1"))
+            ).status_code == 202
+    await tool.until_set_up()
+    state = await tool.state()
+    assert (state["setup"]["state"], state["setup"]["move_id"]) == ("done", move_id)
+    assert list(fake.moves) == [move_id]
+    assert (fake.moves[move_id]["status"], fake.moves[move_id]["password"]) == (
+        "in_progress", "much-better-1")
+    assert [m["status"] for m in state["moves"] if m["id"] == move_id] == ["in_progress"]
+    text = json.dumps(state)
+    assert "much-better-1" not in text and '"short"' not in text and PASSWORD not in text
+
+
+async def test_a_new_sign_in_forgets_the_move_to_carry_on(tool, fake):
+    await tool.connect()
+    tool.work()
+    await tool.post("/api/setup", tool.body(move_password="short"))
+    await tool.until_set_up()
+    await tool.connect()
+    await tool.post("/api/setup", tool.body(move_password="much-better-1"))
+    await tool.until_set_up()
+    assert (await tool.state())["setup"]["state"] == "done"
+    assert len(fake.moves) == 2
+
+
+async def test_two_set_ups_at_once_start_one(tool, fake):
+    await tool.connect()
+    first, second = await tool.clock.run(asyncio.gather(
+        tool.client.post("/api/setup", headers=PAGE, json=tool.body()),
+        tool.client.post("/api/setup", headers=PAGE, json=tool.body(name="Other"))))
+    assert sorted([first.status_code, second.status_code]) == [202, 409]
+    refused = first if first.status_code == 409 else second
+    assert refused.json()["code"] in ("bad_phase", "setup_working")
+    tool.work()
+    await tool.until_set_up()
+    assert len(fake.moves) == 1
+
+
+async def test_a_client_anchored_account_is_told_plainly(tool, fake):
+    fake.portal_users[EMAIL.lower()].is_global = False
+    await tool.connect()
+    await tool.post("/api/setup", tool.body())
+    await tool.until_set_up()
+    setup = (await tool.state())["setup"]
+    assert (setup["state"], setup["step"]) == ("error", "draft")
+    assert setup["message"] == (
+        "The server did not start the move: the portal account is not allowed to do this. "
+        "Creating a move needs an admin account that can add moves, containers and trucks. "
+        "Nothing was created.")
+    assert fake.import_jobs == {} and fake.moves == {}
+
+
+async def test_the_stream_sends_a_snapshot_as_soon_as_a_set_up_ends():
+    class Stub:
+        phase = "connected"
+        setting_up = True
+
+        def __init__(self):
+            self.n = 0
+            self.queue = asyncio.Queue()
+
+        def snapshot(self):
+            self.n += 1
+            return {"n": self.n, "setting_up": self.setting_up}
+
+        def subscribe(self):
+            return self.queue
+
+        def unsubscribe(self, q):
+            pass
+
+        def recent(self):
+            return []
+
+    stub = Stub()
+    seen: list[dict] = []
+
+    async def gone():
+        return len(seen) >= 2
+
+    async def read():
+        async for chunk in event_stream(stub, gone, active_every=0.05, idle_every=60.0,
+                                        keep_alive=60.0):
+            if chunk.startswith("event: snapshot"):
+                seen.append(json.loads(chunk.split("data: ", 1)[1]))
+                if len(seen) == 1:
+                    stub.setting_up = False     # the set-up ends right after the first one
+
+    await asyncio.wait_for(read(), 2)        # far less than idle_every
+    assert seen[1]["setting_up"] is False

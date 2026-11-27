@@ -297,6 +297,7 @@ class Runner:
     def _launch(self, run, action: str, subject: str) -> None:
         self.events = run.events
         self._unfinished.forget_cache()
+        self._setup.forget()        # an old set-up's state and move are for before a run
         self._driver.launch(run, action, subject)
 
     # ── create a move on the server ────────────────────────────────────
@@ -329,10 +330,13 @@ class Runner:
             raise RunnerError("bad_phase")
         self._setup.start(self._conn.portal, plan, move_password, on_done=self._setup_done)
 
-    async def _setup_done(self, move_id: str) -> None:
-        """The move list now has the new move."""
+    async def _setup_done(self, move_id: str, ready: bool) -> None:
+        """The move list now has the new move, ready (In progress) or not."""
+        if not self._conn.connected:
+            return
         name = (self._setup.snapshot() or {}).get("name", "")
-        await self._conn.list_moves(also={"id": move_id, "name": name, "status": "in_progress"})
+        await self._conn.list_moves(also={"id": move_id, "name": name,
+                                          "status": "in_progress" if ready else "planned"})
 
     # ── stop, shutdown, wait ───────────────────────────────────────────
 
