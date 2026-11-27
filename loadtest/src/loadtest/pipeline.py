@@ -329,12 +329,12 @@ class Pipeline:
             ok = await self._perform(Step("depart", "trip", 0, truck_id=truck_id))
             self._record({"t": "departed", "truck": truck_id, "ok": ok})
         trip = self.profile.trip
-        lo, hi = trip.pause_seconds
-        fixed = lo == hi  # real time: updates keep to the clock since departure
+        fixed = trip.real_time  # real time: updates keep to the clock since departure
+        every = trip.update_minutes * 60
         # Indexes already sent or already journaled as skipped are never counted again.
         first = max(truck.updates_sent, truck.skipped_through) + 1
-        if fixed and lo > 0:
-            due = math.floor((self.clock.now() - truck.departed_at) / lo) + 1
+        if fixed:
+            due = math.floor((self.clock.now() - truck.departed_at) / every) + 1
             last = min(due, trip.updates + 1) - 1  # last index that fell while down
             if last >= first:
                 self._record({"t": "location_skipped", "truck": truck_id, "through": last,
@@ -342,7 +342,7 @@ class Pipeline:
                 first = due
         for index in range(first, trip.updates + 1):
             if fixed:
-                wait = max(0.0, truck.departed_at + lo * index - self.clock.now())
+                wait = max(0.0, truck.departed_at + every * index - self.clock.now())
             else:
                 wait = self._draw(trip.pause_seconds)
             await self.clock.sleep(wait)

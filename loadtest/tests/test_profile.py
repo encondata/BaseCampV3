@@ -156,6 +156,23 @@ def test_trip_hours_must_divide_into_whole_updates(tmp_path):
             "update_minutes")
 
 
+def test_a_fixed_pause_must_match_the_update_interval(tmp_path):
+    """Real time: the trip is paced by update_minutes, and a fixed pause_seconds that says
+    something else would silently stretch or shorten it."""
+    _expect(tmp_path, lambda t: t.replace("update_minutes = 15", "update_minutes = 30"),
+            "pause_seconds", "update_minutes", "1800")
+
+
+def test_a_fixed_pause_that_matches_the_interval_loads(tmp_path):
+    text = profile_path("real-time").read_text().replace(
+        "update_minutes = 15", "update_minutes = 30").replace(
+        "pause_seconds = [900, 900]", "pause_seconds = [1800, 1800]")
+    path = tmp_path / "real-time.toml"
+    path.write_text(text)
+    trip = load_profile(path).trip
+    assert trip.updates == 34 and trip.pause_seconds == (1800.0, 1800.0)
+
+
 def test_retry_attempts_at_least_one(tmp_path):
     _expect(tmp_path, lambda t: t.replace("attempts = 5", "attempts = 0"), "attempts")
 

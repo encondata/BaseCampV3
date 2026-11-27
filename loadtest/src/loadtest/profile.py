@@ -39,7 +39,13 @@ class StageSpec:
 class TripSpec:
     hours: float
     update_minutes: float
+    # [low, high]: a random pause between updates (fast); the same number twice means
+    # real time, paced by update_minutes (the profile check makes the two agree)
     pause_seconds: tuple[float, float]
+
+    @property
+    def real_time(self) -> bool:
+        return self.pause_seconds[0] == self.pause_seconds[1]
 
     @property
     def updates(self) -> int:
@@ -285,10 +291,13 @@ def profile_from_raw(raw: dict, *, name: str = "custom") -> Profile:
             "trip: hours * 60 / update_minutes must be a whole number of at least 1 "
             "(check hours and update_minutes)"
         )
-    trip = TripSpec(
-        hours=hours, update_minutes=minutes,
-        pause_seconds=_pair("trip", "pause_seconds", t["pause_seconds"]),
-    )
+    pause = _pair("trip", "pause_seconds", t["pause_seconds"])
+    if pause[0] == pause[1] and pause[0] != minutes * 60:
+        raise ProfileError(
+            f"trip: a fixed pause_seconds ({pause[0]:g}) is the time between location "
+            f"updates, so it must equal update_minutes × 60 ({minutes * 60:g}); change one "
+            "of them")
+    trip = TripSpec(hours=hours, update_minutes=minutes, pause_seconds=pause)
     raw_stages = raw["stage"]
     if not isinstance(raw_stages, list) or not all(isinstance(s, dict) for s in raw_stages):
         raise ProfileError("stage: must be a list of [[stage]] tables")

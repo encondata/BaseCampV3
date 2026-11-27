@@ -189,7 +189,15 @@ At the top of the file:
   workers and progress.
 - `[retry]`: how many times a failed call is tried, and the waits between
   tries.
-- `[trip]`: trip length in hours and minutes between location updates.
+- `[trip]`: the truck trip.
+  - `hours`: how long the trip lasts (17).
+  - `update_minutes`: minutes between location updates (15). The trip
+    sends `hours × 60 / update_minutes` updates, which must be a whole
+    number.
+  - `pause_seconds`: the wait between updates, as `[low, high]`. At fast
+    speed it is a random short pause. At real time it is the same number
+    twice, and it must equal `update_minutes × 60` (900); the check names
+    both keys when they disagree.
 
 ## The road route
 
