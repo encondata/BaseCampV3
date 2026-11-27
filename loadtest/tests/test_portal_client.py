@@ -16,7 +16,7 @@ from loadtest.client.portal import (
 )
 from loadtest.http import CallFailed
 
-EMAIL = "ops@example.test"
+EMAIL = "ops@example.com"
 PASSWORD = "portal-pass-1"
 
 
@@ -81,6 +81,14 @@ async def test_enroll_challenge_raises(fake, clock, portal):
     p = portal()
     with pytest.raises(TotpEnrollRequired):
         await clock.run(p.login(EMAIL, PASSWORD))
+
+
+async def test_special_use_email_domain_is_refused_like_emailstr(fake, clock, portal):
+    fake.add_portal_user("ops@example.test", PASSWORD)
+    p = portal()
+    with pytest.raises(CallFailed) as caught:
+        await clock.run(p.login("ops@example.test", PASSWORD))
+    assert caught.value.status == 422
 
 
 async def test_wrong_password_raises_without_the_password(fake, clock, portal, metrics):
@@ -226,6 +234,11 @@ async def test_roster_containers_trucks(fake, clock, portal):
                      "loaded_in_system") in roster
     assert len(roster) == 3
 
+    fake.containers[crates[1]["id"]]["archived_at"] = "2026-11-01T00:00:00+00:00"
+    archived = await clock.run(p.containers(move_id))
+    assert [c.id for c in archived] == [crates[0]["id"]]
+    fake.containers[crates[1]["id"]]["archived_at"] = None
+
     containers = {c.id: c for c in await clock.run(p.containers(move_id))}
     assert containers[crates[0]["id"]] == ContainerInfo(crates[0]["id"], crates[0]["name"], 1,
                                                         truck["id"])
@@ -340,3 +353,45 @@ async def test_retried_truck_location_is_counted(fake, clock, portal, metrics):
     assert await clock.run(p.add_truck_location(truck["id"], 33.0, -90.0)) is True
     assert metrics.counters()["locations_retried"] == 1
     assert metrics.calls()["truck-location"]["retries"] == 1
+
+
+async def test_location_after_503_then_401_counts_as_retried(fake, clock, portal, metrics):
+    p = await signed_in(fake, clock, portal)
+    move_id = fake.add_move(servers=1, containers=0, trucks=1)
+    truck = next(t for t in fake.trucks.values() if t["initiative_id"] == move_id)
+    fake.fail("POST", r"/trucks/[^/]+/updates", status=503)
+    fake.fail("POST", r"/trucks/[^/]+/updates", status=401)
+    assert await clock.run(p.add_truck_location(truck["id"], 33.0, -90.0)) is True
+    assert count(fake, "POST", f"/trucks/{truck['id']}/updates") == 3
+    assert count(fake, "POST", "/auth/refresh") == 1
+    assert metrics.counters()["locations_retried"] == 1
+    assert metrics.calls()["truck-location"]["retries"] == 1
+    assert metrics.calls()["truck-location"]["failures"] == 0
+
+
+async def test_location_after_503_then_401_and_failed_renew(fake, clock, portal, metrics):
+    p = await signed_in(fake, clock, portal)
+    move_id = fake.add_move(servers=1, containers=0, trucks=1)
+    truck = next(t for t in fake.trucks.values() if t["initiative_id"] == move_id)
+    fake.fail("POST", r"/trucks/[^/]+/updates", status=503)
+    fake.fail("POST", r"/trucks/[^/]+/updates", status=401)
+    fake.fail("POST", r"/auth/refresh", status=503)
+    fake.fail("POST", r"/auth/login", status=400, times=3)
+    assert await clock.run(p.add_truck_location(truck["id"], 33.0, -90.0)) is False
+    call = metrics.calls()["truck-location"]
+    assert (call["count"], call["failures"], call["retries"]) == (1, 1, 1)
+
+
+async def test_untimed_failures_add_no_latency_samples(fake, clock, portal, metrics):
+    p = await signed_in(fake, clock, portal)
+    fake.add_move(servers=1, containers=0, trucks=0)
+    await clock.run(p.moves())
+    await clock.run(clock.sleep(20 * 60))
+    fake.fail("POST", r"/auth/refresh", status=401)          # a 401 refresh: never timed
+    fake.portal_users[EMAIL].password = "changed"              # and the new sign-in fails
+    with pytest.raises(CallFailed):
+        await clock.run(p.moves())
+    reads, refresh = metrics.calls()["portal-read"], metrics.calls()["portal-refresh"]
+    assert (reads["count"], reads["failures"]) == (2, 1)
+    assert len(metrics._times["portal-read"]) == 1
+    assert (refresh["count"], refresh["failures"], refresh["max_ms"]) == (1, 1, None)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -119,3 +119,52 @@ async def timed_call(
         if backoff:
             await clock.sleep(backoff[min(attempt, len(backoff) - 1)])
     raise AssertionError("unreachable")
+
+
+async def renewing_call(
+    name: str,
+    *,
+    metrics: Metrics,
+    ensure_token: Callable[[], Awaitable[None]],
+    current_token: Callable[[], str | None],
+    renew_after_401: Callable[[str | None], Awaitable[None]],
+    send: Callable[[int], Awaitable[tuple[httpx.Response, int]]],
+) -> tuple[httpx.Response, int]:
+    """A call under a sign-in: renew first when due; on a 401 renew once and redo the
+    call once. Every logical call is recorded exactly once, even when a sign-in step
+    is what failed (with no latency sample: nothing was timed).
+
+    `send(prior_attempts)` makes one timed try and returns (response, requests sent);
+    on CallFailed or TokenExpired it puts the requests sent on the exception as
+    `attempts`. Requests before a 401 were retryable failures whose work may have
+    landed, so they ride on to the redo (`prior_attempts`), its count, and any
+    CallFailed raised here (`attempts`)."""
+    try:
+        await ensure_token()
+    except CallFailed as exc:
+        metrics.record(name, None, False)
+        raise CallFailed(name, exc.status, exc.code, 0) from None
+    used = current_token()
+    try:
+        return await send(0)
+    except TokenExpired as exc:
+        landed = exc.attempts - 1
+    try:
+        await renew_after_401(used)
+    except CallFailed as exc:
+        metrics.record(name, None, False, landed)
+        failed = CallFailed(name, exc.status, exc.code, landed)
+        failed.attempts = landed
+        raise failed from None
+    try:
+        response, sent = await send(landed)
+    except CallFailed as exc:
+        exc.attempts = getattr(exc, "attempts", 0) + landed
+        raise
+    except TokenExpired as exc:
+        landed += exc.attempts - 1
+        metrics.record(name, None, False, landed)
+        failed = CallFailed(name, 401, None, landed)
+        failed.attempts = landed
+        raise failed from None
+    return response, sent + landed

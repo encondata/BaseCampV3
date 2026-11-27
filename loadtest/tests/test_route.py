@@ -108,16 +108,22 @@ async def test_fetch_route_rounds_to_five_places():
                      "?overview=full&geometries=geojson")]
 
 
-@pytest.mark.parametrize("response", [
-    httpx.Response(200, json=_osrm([], code="NoRoute")),
-    httpx.Response(200, json=_osrm([[-96.8, 32.7]])),
-    httpx.Response(400, json={"code": "InvalidQuery"}),
-    httpx.Response(200, text="not json"),
+@pytest.mark.parametrize(("response", "message"), [
+    (httpx.Response(200, json=_osrm([], code="NoRoute")),
+     "The road-routing service found no route (NoRoute)."),
+    (httpx.Response(200, json=_osrm([[-96.8, 32.7]])),
+     "The road-routing service sent a route with fewer than 2 points."),
+    (httpx.Response(400, json={"code": "InvalidQuery"}),
+     "The road-routing service answered 400."),
+    (httpx.Response(200, text="not json"),
+     "The road-routing service sent an answer that is not JSON."),
+    (httpx.Response(200, json={"code": "Ok", "routes": []}),
+     "The road-routing service sent a route without a road line."),
 ])
-async def test_fetch_route_errors(response):
+async def test_fetch_route_errors(response, message):
     with pytest.raises(RouteError) as caught:
         await fetch_route(DALLAS, ATLANTA, transport=httpx.MockTransport(lambda r: response))
-    assert str(caught.value)
+    assert str(caught.value) == message
 
 
 async def test_fetch_route_retries_transport_errors_twice():
@@ -136,6 +142,7 @@ async def test_fetch_route_retries_transport_errors_twice():
         calls.append(1)
         raise httpx.ConnectError("refused", request=request)
 
-    with pytest.raises(RouteError):
+    with pytest.raises(RouteError) as caught:
         await fetch_route(DALLAS, ATLANTA, transport=httpx.MockTransport(down))
+    assert str(caught.value) == "Could not reach the road-routing service."
     assert len(calls) == 3

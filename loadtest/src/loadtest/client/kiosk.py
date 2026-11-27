@@ -22,7 +22,7 @@ from typing import Literal
 import httpx
 
 from ..clock import Clock
-from ..http import CallFailed, TokenExpired, sendable_cookie, timed_call
+from ..http import CallFailed, TokenExpired, renewing_call, sendable_cookie, timed_call
 from ..metrics import Metrics
 from ..profile import DeviceKind, RetrySpec
 
@@ -248,42 +248,17 @@ class KioskDevice:
     async def _bearer_call(self, method: str, url: str, *, name: str,
                            already_done: Callable[[httpx.Response], bool] | None = None,
                            **kwargs) -> tuple[httpx.Response, int]:
-        """A call under the sign-in: refresh first when due; on a 401 renew once and
-        redo the call once. Every logical call is recorded exactly once, even when
-        the sign-in step is what failed."""
-        try:
-            await self._ensure_token()
-        except CallFailed as exc:
-            self.metrics.record(name, None, False)
-            raise CallFailed(name, exc.status, exc.code, 0) from None
-        used = self._token
-        try:
+        """A call under the sign-in (http.renewing_call): refresh first when due; on a
+        401 renew once and redo the call once, recorded exactly once."""
+        async def send(prior: int) -> tuple[httpx.Response, int]:
             return await self._timed(method, url, name=name, headers=self._bearer(),
-                                     already_done=already_done, **kwargs)
-        except TokenExpired as exc:
-            # every request before the 401 was a retryable failure that may have landed
-            landed = exc.attempts - 1
-        try:
-            await self._renew_after_401(used)
-        except CallFailed as exc:
-            self.metrics.record(name, None, False, landed)
-            failed = CallFailed(name, exc.status, exc.code, landed)
-            failed.attempts = landed
-            raise failed from None
-        try:
-            response, sent = await self._timed(
-                method, url, name=name, headers=self._bearer(), already_done=already_done,
-                prior_attempts=landed, **kwargs)
-        except CallFailed as exc:
-            exc.attempts += landed
-            raise
-        except TokenExpired as exc:
-            landed += exc.attempts - 1
-            self.metrics.record(name, None, False, landed)
-            failed = CallFailed(name, 401, None, landed)
-            failed.attempts = landed
-            raise failed from None
-        return response, sent + landed
+                                     already_done=already_done, prior_attempts=prior,
+                                     **kwargs)
+
+        return await renewing_call(
+            name, metrics=self.metrics, ensure_token=self._ensure_token,
+            current_token=lambda: self._token, renew_after_401=self._renew_after_401,
+            send=send)
 
     async def _station_call(self, url: str, *, name: str, json: dict) -> tuple[httpx.Response, int]:
         """A station-key call. A 401 means the key is gone; it is a plain failure."""

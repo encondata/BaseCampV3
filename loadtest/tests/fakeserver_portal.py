@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import Header, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from fakeserver import FakeBaseCamp, _PortalUser
@@ -35,6 +35,7 @@ RAW_TEXT_COLUMNS = ("primary", "scan_type", "status", "device", "operator", "sit
                     "location", "source")
 RAW_DATE_COLUMNS = ("scanned", "ingested")
 DASH = "—"
+SPECIAL_DOMAINS = (".test", ".local", ".invalid")
 
 # What a user with `permissions=None` holds: every (resource, action) these routes check.
 PORTAL_PERMISSIONS = frozenset({
@@ -47,6 +48,16 @@ class LoginIn(BaseModel):
     email: str
     password: str
     client: Literal["portal", "kiosk"] = "portal"
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        """The real field is an EmailStr: it refuses special-use domains (422), so a
+        test address must not end in one."""
+        local, at, domain = v.rpartition("@")
+        if not (local and at and "." in domain) or domain.lower().endswith(SPECIAL_DOMAINS):
+            raise ValueError("not a deliverable email address")
+        return v
 
 
 class TotpVerifyIn(BaseModel):
@@ -308,7 +319,8 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
                  "status_label": c["status"].title(), "status_color": "#51606f",
                  "site_id": c["site_id"], "site_name": site_name(c["site_id"]),
                  "initiative_id": c["initiative_id"], "location_detail": "",
-                 "asset_count": fake._asset_count(c["id"]), "archived_at": None,
+                 "asset_count": fake._asset_count(c["id"]),
+                 "archived_at": c.get("archived_at"),
                  "created_at": fake._iso(now())}
                 for c in fake.containers.values()
                 if initiative_id is None or c["initiative_id"] == str(initiative_id)]

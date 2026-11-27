@@ -22,7 +22,7 @@ from typing import Literal
 import httpx
 
 from ..clock import Clock
-from ..http import CallFailed, TokenExpired, sendable_cookie, timed_call
+from ..http import CallFailed, TokenExpired, renewing_call, sendable_cookie, timed_call
 from ..metrics import Metrics
 from ..profile import RetrySpec
 
@@ -205,7 +205,7 @@ class PortalClient:
                     metrics=self.metrics, clock=self.clock, retry=NO_RETRY,
                     params={"client": "portal"})
             except TokenExpired:
-                self.metrics.record("portal-refresh", 0.0, False)
+                self.metrics.record("portal-refresh", None, False)
             except CallFailed:
                 pass
             else:
@@ -230,14 +230,17 @@ class PortalClient:
             else:
                 await self._refresh_locked()
 
-    async def _timed(self, method: str, url: str, *, name: str, retry: RetrySpec,
+    async def _timed(self, method: str, url: str, *, name: str, prior_attempts: int,
                      **kwargs) -> tuple[httpx.Response, int]:
+        """timed_call, also returning how many requests it sent. On CallFailed or
+        TokenExpired the count rides on the exception as `attempts`."""
         box = [0]
         reset = _attempts.set(box)
         try:
             response = await timed_call(
                 self._client, method, url, name=name, metrics=self.metrics, clock=self.clock,
-                retry=retry, headers={"Authorization": f"Bearer {self._token}"}, **kwargs)
+                retry=self.retry, headers={"Authorization": f"Bearer {self._token}"},
+                prior_attempts=prior_attempts, **kwargs)
         except (CallFailed, TokenExpired) as exc:
             exc.attempts = box[0]
             raise
@@ -247,31 +250,17 @@ class PortalClient:
 
     async def _call(self, method: str, url: str, *, name: str,
                     **kwargs) -> tuple[httpx.Response, int]:
-        """A call under the sign-in: refresh first when due; on a 401 renew once and
-        redo the call once. Every logical call is recorded exactly once. Returns the
-        response and how many requests the last try sent."""
-        try:
-            await self._ensure_token()
-        except CallFailed as exc:
-            self.metrics.record(name, 0.0, False)
-            raise CallFailed(name, exc.status, exc.code, 0) from None
-        used = self._token
-        try:
-            return await self._timed(method, url, name=name, retry=self.retry, **kwargs)
-        except TokenExpired:
-            pass
-        try:
-            await self._renew_after_401(used)
-        except CallFailed as exc:
-            self.metrics.record(name, 0.0, False)
-            raise CallFailed(name, exc.status, exc.code, 0) from None
-        try:
-            return await self._timed(method, url, name=name, retry=self.retry, **kwargs)
-        except TokenExpired as exc:
-            self.metrics.record(name, 0.0, False)
-            failed = CallFailed(name, 401, None, 0)
-            failed.attempts = exc.attempts
-            raise failed from None
+        """A call under the sign-in (http.renewing_call): refresh first when due; on a
+        401 renew once and redo the call once, recorded exactly once. Returns the
+        response and every request sent that may have landed, the answered one
+        included."""
+        async def send(prior: int) -> tuple[httpx.Response, int]:
+            return await self._timed(method, url, name=name, prior_attempts=prior, **kwargs)
+
+        return await renewing_call(
+            name, metrics=self.metrics, ensure_token=self._ensure_token,
+            current_token=lambda: self._token, renew_after_401=self._renew_after_401,
+            send=send)
 
     async def _get(self, url: str, *, name: str = "portal-read", **kwargs):
         response, _ = await self._call("GET", url, name=name, **kwargs)
@@ -315,7 +304,8 @@ class PortalClient:
                           r["asset"].get("rfid_tag"), r.get("status")) for r in rows]
 
     async def containers(self, move_id: str) -> list[ContainerInfo]:
-        """The move's containers. The list has no truck, so each loaded truck's detail
+        """The move's containers that are not archived (the route does not filter
+        `archived_at` itself). The list has no truck, so each loaded truck's detail
         (GET /trucks/{id}, its `containers`) says which crates are on it."""
         rows = await self._get("/containers", params={"initiative_id": move_id})
         on_truck: dict[str, str] = {}
@@ -325,7 +315,8 @@ class PortalClient:
                 for c in detail.get("containers") or []:
                     on_truck[str(c["id"])] = t.id
         return [ContainerInfo(str(r["id"]), r["name"], int(r.get("asset_count") or 0),
-                              on_truck.get(str(r["id"]))) for r in rows]
+                              on_truck.get(str(r["id"]))) for r in rows
+                if r.get("archived_at") is None]
 
     async def trucks(self, move_id: str) -> list[TruckInfo]:
         rows = await self._get("/trucks", params={"initiative_id": move_id})
