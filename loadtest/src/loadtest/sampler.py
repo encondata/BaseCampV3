@@ -13,6 +13,7 @@ from .clock import Clock
 from .metrics import Metrics
 
 T = TypeVar("T")
+CATCH_UP_POLL_SECONDS = 1.0
 
 
 async def _read(call: Awaitable[T]) -> tuple[bool, T | None]:
@@ -49,25 +50,28 @@ class Sampler:
 
     async def wait_for_catch_up(self, *, quiet_samples: int = 6,
                                 timeout: float = 3600) -> float | None:
-        """Seconds from this call until no scan is waiting. None when the count has not
-        gone below its lowest reading for `quiet_samples` readings in a row (a failed
-        reading counts as one), or when the next reading would fall past `timeout`."""
+        """Seconds from this call until no scan is waiting, read every second (or every
+        sample interval, when that is shorter) so a quick catch-up is not rounded up to a
+        whole interval. None when the count has not gone below its lowest reading for
+        `quiet_samples` sample intervals (failed readings included), or when the next
+        reading would fall past `timeout`."""
         start = self.clock.now()
+        poll = min(self.every, CATCH_UP_POLL_SECONDS)
+        quiet_window = quiet_samples * self.every
         lowest: int | None = None
-        quiet = 0
+        lowest_at = start
         while True:
             waiting = await self._read_waiting()
+            now = self.clock.now()
             if waiting == 0:
-                return self.clock.now() - start
+                return now - start
             if waiting is not None and (lowest is None or waiting < lowest):
-                lowest, quiet = waiting, 0
-            else:
-                quiet += 1
-                if quiet >= quiet_samples:
-                    return None
-            if self.clock.now() - start + self.every > timeout:
+                lowest, lowest_at = waiting, now
+            elif now - lowest_at >= quiet_window:
                 return None
-            await self.clock.sleep(self.every)
+            if now - start + poll > timeout:
+                return None
+            await self.clock.sleep(poll)
 
     async def _read_waiting(self) -> int | None:
         ok, waiting = await _read(self.portal.waiting_scans())

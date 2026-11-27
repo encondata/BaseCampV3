@@ -114,14 +114,31 @@ async def test_catch_up_returns_the_virtual_seconds_until_zero(fake, clock, setu
         add_raw(fake, value)
 
     async def worker():
-        await clock.sleep(35)
+        await clock.sleep(35.5)
         fake.process_scans()
 
     async def both():
         result = await asyncio.gather(setup.sampler.wait_for_catch_up(), worker())
         return result[0]
 
-    assert await clock.run(both()) == 40.0                # readings at 0, 10, 20, 30, 40
+    # read every second while catching up, not every sample interval: on the real server
+    # a 0.4 s catch-up read as a full 10 s interval on every run
+    assert await clock.run(both()) == 36.0                # readings at 0, 1, 2, … 36
+
+
+async def test_catch_up_reads_at_the_sample_interval_when_it_is_shorter(fake, clock, setup):
+    setup.sampler.every = 0.5
+    add_raw(fake, "NOPE-1")
+
+    async def worker():
+        await clock.sleep(2.2)
+        fake.raw_scans.clear()
+
+    async def both():
+        result = await asyncio.gather(setup.sampler.wait_for_catch_up(), worker())
+        return result[0]
+
+    assert await clock.run(both()) == 2.5                 # readings every 0.5 s
 
 
 async def test_catch_up_is_none_when_scans_stay_unmatched(fake, clock, setup):
@@ -130,7 +147,7 @@ async def test_catch_up_is_none_when_scans_stay_unmatched(fake, clock, setup):
     fake.process_scans()                                  # tried, no match: they stay
     start = clock.now()
     assert await clock.run(setup.sampler.wait_for_catch_up(quiet_samples=6)) is None
-    assert clock.now() - start == 60.0                    # first reading + 6 that did not shrink
+    assert clock.now() - start == 60.0                    # 6 sample intervals without shrinking
 
 
 async def test_catch_up_gives_up_at_the_timeout(fake, clock, setup):
@@ -151,4 +168,4 @@ async def test_catch_up_gives_up_at_the_timeout(fake, clock, setup):
 
     start = clock.now()
     assert await clock.run(catch_up()) is None
-    assert clock.now() - start == 40.0                    # the last reading inside 45 s
+    assert clock.now() - start == 45.0                    # the last reading inside 45 s
