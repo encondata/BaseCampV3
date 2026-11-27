@@ -276,8 +276,9 @@ class _Access:
     printed link `/?key=<key>` sets that cookie and redirects to `/`."""
 
     def __init__(self, app, *, allowed_hosts: set[str], access_key: str | None,
-                 cookie_name: str) -> None:
+                 cookie_name: str, local_skip: bool) -> None:
         self.app = app
+        self.local_skip = local_skip
         self.allowed = allowed_hosts
         self.key = access_key
         self.cookie = cookie_name
@@ -309,7 +310,7 @@ class _Access:
                 return
         client = scope.get("client")
         # this machine: a loopback client, not forwarded by a proxy, under a local name
-        here = (_is_loopback(client[0] if client else None)
+        here = (self.local_skip and _is_loopback(client[0] if client else None)
                 and not any(h in headers for h in PROXY_HEADERS)
                 and host in LOCAL_NAMES)
         cookie = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get(self.cookie)
@@ -353,10 +354,14 @@ class _NoStoreFiles(StaticFiles):
 
 
 def create_app(runner, *, allowed_hosts: list[str] | None = None,
-               access_key: str | None = None, cookie_name: str = KEY_COOKIE) -> FastAPI:
+               access_key: str | None = None, cookie_name: str = KEY_COOKIE,
+               local_skip: bool = True, stop_wait: float = 35.0) -> FastAPI:
     """`allowed_hosts`: Host names accepted besides this machine's localhost names.
     `access_key`: when set, clients other than this machine need it (see `_Access`).
-    `cookie_name`: the key's cookie (one per port, since cookies ignore ports)."""
+    `cookie_name`: the key's cookie (one per port, since cookies ignore ports).
+    `local_skip`: False when a proxy is declared; then this machine needs the key too,
+    since a proxy on this machine makes every visitor look local.
+    `stop_wait`: seconds shutdown waits for a stop in flight before cancelling it."""
     stopping = asyncio.Event()
     allowed = {_host_name(h) for h in (*LOCAL_NAMES, *(allowed_hosts or ()))}
 
@@ -367,8 +372,14 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
         finally:            # Ctrl-C interrupts a run so it can be continued, never lost
             stopping.set()
             await runner.shutdown()
-            if app.state.stop_task is not None:
-                await asyncio.gather(app.state.stop_task, return_exceptions=True)
+            task = app.state.stop_task
+            if task is not None and not task.done():
+                await asyncio.wait({task}, timeout=stop_wait)
+                if not task.done():
+                    task.cancel()
+                    _log_internal({"method": "POST", "path": "/api/stop"},
+                                  TimeoutError("stop did not end"))
+                await asyncio.gather(task, return_exceptions=True)
 
     app = FastAPI(title="Move load test", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
@@ -376,7 +387,7 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
     app.state.stop_task = None          # the stop in flight, kept so it is never lost
     app.add_middleware(_Guard)
     app.add_middleware(_Access, allowed_hosts=allowed, access_key=access_key,
-                       cookie_name=cookie_name)  # outermost
+                       cookie_name=cookie_name, local_skip=local_skip)  # outermost
 
     def stop_in_flight() -> bool:
         return app.state.stop_task is not None and not app.state.stop_task.done()

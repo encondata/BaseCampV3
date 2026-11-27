@@ -689,6 +689,60 @@ def test_no_access_log_and_no_proxy_headers(monkeypatch, tmp_path):
     assert config.access_log is False and config.proxy_headers is False
 
 
+@pytest.mark.parametrize("extra,skip", [([], True), (["--allow-host", "proxy.example"], False)])
+def test_allow_host_turns_off_the_local_skip(monkeypatch, tmp_path, extra, skip):
+    import socket
+
+    import uvicorn
+
+    from loadtest import __main__ as cli
+    from loadtest.web import app as web
+    seen = {}
+    real = web.create_app
+
+    def spy(runner, **kwargs):
+        seen.update(kwargs)
+        return real(runner, **kwargs)
+
+    class Fake(uvicorn.Server):
+        def run(self, sockets=None):
+            for s in sockets or ():
+                s.close()
+
+    monkeypatch.setattr(uvicorn, "Server", Fake)
+    monkeypatch.setattr(web, "create_app", spy)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    cli.main(["--host", "127.0.0.1", "--port", str(port), *extra,
+              "--runs-dir", str(tmp_path / "runs")])
+    assert seen["local_skip"] is skip
+
+
+async def test_without_the_local_skip_this_machine_needs_the_key(stub):
+    async with tool(stub, access_key=KEY, local_skip=False) as c:
+        assert (await c.get("/api/state")).status_code == 403
+        assert (await c.get("/")).status_code == 403
+        got = await c.get("/", params={"key": KEY})
+        assert got.status_code == 303
+        assert (await c.get("/api/state")).status_code == 200
+        assert (await c.post("/api/start", headers=PAGE)).status_code == 202
+
+
+async def test_shutdown_gives_up_on_a_stop_that_never_ends(stub, capsys):
+    app = create_app(stub, stop_wait=0.05)
+    stub.phase = "running"
+    stub.stop_gate = asyncio.Event()           # never set: the stop never returns
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                     base_url="http://localhost") as c:
+            assert (await c.post("/api/stop", headers=PAGE)).status_code == 202
+    assert app.state.stop_task.cancelled()
+    assert stub.shut_down
+    assert "TimeoutError" in capsys.readouterr().err
+
+
 def test_allow_host_on_loopback_prints_a_keyed_link(monkeypatch, tmp_path, capsys):
     import socket
 
@@ -713,9 +767,11 @@ def test_allow_host_on_loopback_prints_a_keyed_link(monkeypatch, tmp_path, capsy
                   "--runs-dir", str(tmp_path / "runs")])
         out = capsys.readouterr().out.splitlines()
         if keyed:
-            assert out[0].startswith(f"Move load test: http://127.0.0.1:{port}/?key=")
+            assert len(out) == 2
+            assert out[0].startswith(f"Move load test: http://localhost:{port}/?key=")
             assert len(out[0].rsplit("=", 1)[1]) >= 32
-            assert out[1] == f"On this machine: http://localhost:{port}"
+            assert out[1] == ("A proxy name was allowed, so every visitor needs the key, on "
+                              "this machine too.")
         else:
             assert out == [f"On this machine: http://localhost:{port}"]
 

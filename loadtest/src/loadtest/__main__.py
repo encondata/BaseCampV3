@@ -25,8 +25,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--allow-host", action="append", default=[], metavar="NAME",
-                        help="another name the page may be opened by, such as a reverse "
-                             "proxy's (repeatable)")
+                        help="a reverse proxy's name the page may be opened by "
+                             "(repeatable). The proxy must reach the tool on this machine. "
+                             "Everyone, on this machine too, then needs the keyed link: put "
+                             "/?key=... after the proxy's own address")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR,
                         help="folder for run results (default: the runs folder next to the "
                              "tool)")
@@ -106,7 +108,8 @@ def main(argv: list[str] | None = None) -> None:
     keyed = not is_loopback(args.host) or bool(args.allow_host)
     access_key = secrets.token_urlsafe(24) if keyed else None
     app = create_app(runner, allowed_hosts=allowed_hosts(args.host, lan, args.allow_host),
-                     access_key=access_key, cookie_name=f"loadtest_key_{args.port}")
+                     access_key=access_key, cookie_name=f"loadtest_key_{args.port}",
+                     local_skip=not args.allow_host)
 
     class _Server(uvicorn.Server):
         def handle_exit(self, sig, frame) -> None:
@@ -127,13 +130,22 @@ def main(argv: list[str] | None = None) -> None:
                             access_log=False, proxy_headers=False)
     server = _Server(config)
 
-    if access_key is not None:
-        shown = lan if args.host in WILDCARD else args.host
+    local = args.host in WILDCARD or is_loopback(args.host)
+    if args.allow_host:
+        shown = "localhost" if local else args.host
         if ":" in shown:
             shown = f"[{shown}]"
         print(f"Move load test: http://{shown}:{args.port}/?key={access_key}", flush=True)
-    if args.host in WILDCARD or is_loopback(args.host):
-        print(f"On this machine: http://localhost:{args.port}", flush=True)
+        print("A proxy name was allowed, so every visitor needs the key, on this machine too.",
+              flush=True)
+    else:
+        if access_key is not None:
+            shown = lan if args.host in WILDCARD else args.host
+            if ":" in shown:
+                shown = f"[{shown}]"
+            print(f"Move load test: http://{shown}:{args.port}/?key={access_key}", flush=True)
+        if local:
+            print(f"On this machine: http://localhost:{args.port}", flush=True)
     server.run(sockets=[sock])
 
 
