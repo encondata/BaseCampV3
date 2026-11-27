@@ -143,12 +143,6 @@
   .choice-icon svg { width: 20px; height: 20px; }
   .choice-title { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
   .choice-text { font-size: 13.5px; font-weight: 300; color: var(--text-mute); line-height: 1.5; }
-  .chip-soon {
-    position: absolute; top: 22px; right: 22px;
-    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--text-mute); background: var(--surface-2); border: 1px solid var(--paper-line);
-    padding: 3px 9px; border-radius: 999px;
-  }
 
   /* ── segmented (portal directory.css) — used for tabs and theme ── */
   .segmented {
@@ -165,17 +159,12 @@
   }
   .segmented button:hover { color: var(--text-dark); }
   .segmented button.on { background: var(--surface); color: var(--text-dark); font-weight: 500; box-shadow: 0 1px 3px rgba(27, 33, 41, 0.08); }
-  .tabs { margin: 22px 0 18px; }
 
   /* ── cards + form ── */
   .card { background: var(--surface); border: 1px solid var(--paper-line); border-radius: 12px; padding: 18px 20px; }
   .card + .card { margin-top: 16px; }
   .eyebrow-sm { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--text-mute); margin: 0 0 14px; }
   .fields { display: grid; grid-template-columns: minmax(140px, 180px) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-  .fields.sw-fields { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .field-group { grid-column: span 2; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 12px 14px 4px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface-2); }
-  .field-group .eyebrow-sm { grid-column: 1 / -1; margin: 0; }
-  .field-group .field input { background: var(--surface); }
   .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .field label { font-size: 12.5px; font-weight: 500; color: var(--text-dark); }
   .field input {
@@ -189,7 +178,6 @@
   .field input.bad { border-color: var(--c-red); }
   .field .err { font-size: 12px; color: var(--c-red); min-height: 0; }
   .help { margin: 14px 0 0; font-size: 12.5px; font-weight: 300; color: var(--text-mute); line-height: 1.6; }
-  .help code { font-family: var(--font-mono); font-size: 12px; color: var(--text-dark); background: var(--surface-2); border: 1px solid var(--paper-line); border-radius: 5px; padding: 1px 5px; white-space: nowrap; }
   .actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 
   .btn-solid {
@@ -213,7 +201,6 @@
   .progress { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; max-width: 460px; }
   .progress-track { height: 6px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--paper-line); overflow: hidden; }
   .progress-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width 0.12s ease; }
-  .progress-label { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); }
 
   .banner-err {
     margin-top: 16px; padding: 12px 16px; border-radius: 10px;
@@ -221,18 +208,11 @@
   }
 
   /* ── results ── */
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
-  .stat { background: var(--surface-2); border: 1px solid var(--paper-line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
-  .stat-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-mute); }
-  .stat-value { margin-top: 6px; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
-  .stat-sub { margin-top: 3px; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); overflow-wrap: anywhere; }
-  .mix { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
   .chip {
     display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px;
     border-radius: 999px; border: 1px solid var(--c-slate-bd); background: var(--surface-2);
     font-size: 12px; color: var(--text-dark);
   }
-  .chip .n { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
 
   .results-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
   .results-head .eyebrow-sm { margin: 0; }
@@ -251,16 +231,9 @@
   tbody tr:hover td { background: rgba(var(--accent-rgb), 0.05); }
   td.mono { font-family: var(--font-mono); font-size: 12px; }
   td.num, th.num { text-align: right; }
-  td.dim { color: var(--text-mute); }
-  .table-note { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mute); }
 
-  @media (max-width: 1100px) {
-    .fields.sw-fields { grid-template-columns: 1fr 1fr; }
-    .fields.sw-fields > .field:first-child { grid-column: 1 / -1; }
-  }
   @media (max-width: 760px) {
-    .fields, .fields.sw-fields { grid-template-columns: 1fr; }
-    .field-group { grid-column: auto; }
+    .fields { grid-template-columns: 1fr; }
     .results-head .btn-solid { margin-left: 0; }
   }
 </style>
@@ -285,14 +258,14 @@
   <section id="view-start">
     <div class="eyebrow">Start</div>
     <h1 class="page-title">What do you want to do?</h1>
-    <p class="page-hint">Generate runs in this page and sends nothing anywhere. Simulate runs a move against a BaseCamp server.</p>
+    <p class="page-hint">Generate creates a move on a BaseCamp server. Simulate runs a move against a BaseCamp server.</p>
     <div class="choices">
       <button class="choice" type="button" data-go="generate">
         <span class="choice-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 13h6M9 17h6"/></svg>
         </span>
         <span class="choice-title">Generate</span>
-        <span class="choice-text">Build test files to import: From-To lists of racked servers, and of whole pods with their switches.</span>
+        <span class="choice-text">Create a move on a BaseCamp server: its servers, containers and trucks, ready to simulate.</span>
       </button>
       <button class="choice" type="button" data-go="simulate">
         <span class="choice-icon">
@@ -304,163 +277,76 @@
     </div>
   </section>
 
-  <!-- ── generate ── -->
+  <!-- ── generate (driven by simulate.js, which shares the Simulate view's sign-in) ── -->
   <section id="view-generate" hidden>
     <button class="back" type="button" data-go="start">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       Start
     </button>
     <div class="eyebrow">Generate</div>
-    <h1 class="page-title">Generate</h1>
-    <p class="page-hint">Pick what to build. Each file downloads in the same layout the portal imports.</p>
+    <h1 class="page-title" id="gen-title" tabindex="-1">Generate</h1>
+    <p class="page-hint">Sign in to a BaseCamp server, then create a move on it: its servers, containers and trucks.</p>
 
-    <div class="segmented tabs" role="tablist" aria-label="Generators">
-      <button type="button" role="tab" class="on" aria-selected="true" data-tab="ft">From-To list</button>
-      <button type="button" role="tab" aria-selected="false" data-tab="sw">Switch From-To</button>
-    </div>
+    <div id="gen-notices"></div>
 
-    <div id="tab-ft">
-      <form class="card" id="ft-form" novalidate>
-        <p class="eyebrow-sm">From-To list</p>
-        <div class="fields">
-          <div class="field">
-            <label for="ft-count">Devices</label>
-            <input id="ft-count" type="number" min="1" step="1" value="100" inputmode="numeric">
-            <div class="err" id="ft-count-err"></div>
+    <div id="gen-body" hidden>
+      <!-- step 1: the Simulate view's sign-in card is moved here while this view shows -->
+      <div id="gen-signin"></div>
+
+      <!-- step 2: the move -->
+      <form class="card" id="gen-form" novalidate autocomplete="off">
+        <p class="eyebrow-sm">Step 2 · Create the move</p>
+        <p class="sim-text" id="gen-blocked" hidden></p>
+        <fieldset class="sim-set" id="gen-set" disabled>
+          <div class="fields sim-fields">
+            <div class="field">
+              <label for="gen-name">Move name</label>
+              <input id="gen-name" type="text" spellcheck="false" autocomplete="off" maxlength="200">
+              <div class="err" id="gen-name-err"></div>
+            </div>
+            <div class="field">
+              <label for="gen-origin">Origin site</label>
+              <select id="gen-origin"></select>
+              <div class="err" id="gen-origin-err"></div>
+            </div>
+            <div class="field">
+              <label for="gen-destination">Destination site</label>
+              <select id="gen-destination"></select>
+              <div class="err" id="gen-destination-err"></div>
+            </div>
+            <div class="field">
+              <label for="gen-servers">Servers</label>
+              <input id="gen-servers" type="number" min="1" step="1" inputmode="numeric" autocomplete="off">
+              <div class="err" id="gen-servers-err"></div>
+            </div>
+            <div class="field">
+              <label for="gen-containers">Containers</label>
+              <input id="gen-containers" type="number" min="1" step="1" inputmode="numeric" autocomplete="off">
+              <div class="err" id="gen-containers-err"></div>
+            </div>
+            <div class="field">
+              <label for="gen-trucks">Trucks</label>
+              <input id="gen-trucks" type="number" min="1" step="1" inputmode="numeric" autocomplete="off">
+              <div class="err" id="gen-trucks-err"></div>
+            </div>
+            <div class="field">
+              <label for="gen-move-password">Move password</label>
+              <input id="gen-move-password" class="mono" type="text" spellcheck="false" autocomplete="off" maxlength="200">
+              <div class="err" id="gen-move-password-err"></div>
+            </div>
           </div>
-          <div class="field">
-            <label for="ft-src">Source rack pattern</label>
-            <input id="ft-src" class="mono" type="text" value="AZxxx" spellcheck="false" autocomplete="off">
-            <div class="err" id="ft-src-err"></div>
+          <div class="sim-stick">
+            <div class="actions">
+              <button class="btn-solid" type="submit" id="gen-go">Create</button>
+            </div>
+            <div class="progress" id="gen-progress" hidden>
+              <div class="progress-track" id="gen-progress-bar" role="progressbar" aria-label="Creating the move" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="gen-progress-fill"></div></div>
+              <div class="sim-text" id="gen-step" aria-live="polite"></div>
+            </div>
+            <div class="banner-err" id="gen-err" hidden></div>
           </div>
-          <div class="field">
-            <label for="ft-dst">Destination rack pattern</label>
-            <input id="ft-dst" class="mono" type="text" value="BJxxx" spellcheck="false" autocomplete="off">
-            <div class="err" id="ft-dst-err"></div>
-          </div>
-        </div>
-        <p class="help">
-          A run of lowercase <code>x</code> is the rack number, and its length sets the zero padding: <code>AZxxx</code> gives AZ001, AZ002… Other text stays as typed, as in <code>DH1-R-xx</code>.
-          Braces list prefixes: <code>{AZ,BC}xxx</code> gives each prefix the same number of racks, filling every AZ rack first, then the BC racks. A range covers every prefix between its ends: <code>{AA-AZ}xxx</code> is AA, AB… AZ, and ranges mix with plain prefixes, as in <code>{AA-AD,BC}xxx</code>.
-          Each rack holds one model, picked at random, and fills from RU 1 up in pairs with one empty RU after each pair, never above RU 36: 24 servers for a 1U model, 14 for a 2U model. Only each prefix’s last rack is partly full. The R640 and DL360 take 1U, and the R740 and DL380 take 2U.
-          Each device lands in the same RU of the matching destination rack.
-        </p>
-        <div class="actions">
-          <button class="btn-solid" type="submit" id="ft-go">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
-            <span id="ft-go-label">Generate</span>
-          </button>
-        </div>
-        <div class="progress" id="ft-gen-progress" role="progressbar" aria-label="Generating" aria-valuemin="0" aria-valuemax="100" hidden>
-          <div class="progress-track"><div class="progress-fill" id="ft-gen-progress-fill"></div></div>
-          <div class="progress-label" id="ft-gen-progress-label"></div>
-        </div>
-        <div class="banner-err" id="ft-err" hidden></div>
+        </fieldset>
       </form>
-
-      <section class="card" id="ft-results" hidden>
-        <div class="results-head">
-          <p class="eyebrow-sm">Result</p>
-          <button class="btn-solid" type="button" id="ft-download">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
-            Download .xlsx
-          </button>
-        </div>
-        <div class="progress" id="ft-dl-progress" role="progressbar" aria-label="Building file" aria-valuemin="0" aria-valuemax="100" hidden style="margin: 0 0 14px auto">
-          <div class="progress-track"><div class="progress-fill" id="ft-dl-progress-fill"></div></div>
-          <div class="progress-label" id="ft-dl-progress-label"></div>
-        </div>
-        <div class="stats" id="ft-stats"></div>
-        <div class="mix" id="ft-mix"></div>
-        <p class="help" id="ft-line"></p>
-        <div class="table-wrap" style="margin-top:16px">
-          <table>
-            <thead id="ft-head"></thead>
-            <tbody id="ft-rows"></tbody>
-          </table>
-        </div>
-        <p class="table-note" id="ft-note" hidden></p>
-      </section>
-    </div>
-
-    <div id="tab-sw" hidden>
-      <form class="card" id="sw-form" novalidate>
-        <p class="eyebrow-sm">Switch From-To</p>
-        <div class="fields sw-fields">
-          <div class="field">
-            <label for="sw-pods">Pods</label>
-            <input id="sw-pods" type="number" min="1" step="1" value="2" inputmode="numeric">
-            <div class="err" id="sw-pods-err"></div>
-          </div>
-          <div class="field-group">
-            <p class="eyebrow-sm">Source</p>
-            <div class="field">
-              <label for="sw-src-nap">NAP</label>
-              <input id="sw-src-nap" class="mono" type="text" value="14" inputmode="numeric" autocomplete="off">
-              <div class="err" id="sw-src-nap-err"></div>
-            </div>
-            <div class="field">
-              <label for="sw-src-sector">Starting sector</label>
-              <input id="sw-src-sector" class="mono" type="number" min="1" step="1" value="1" inputmode="numeric">
-              <div class="err" id="sw-src-sector-err"></div>
-            </div>
-          </div>
-          <div class="field-group">
-            <p class="eyebrow-sm">Destination</p>
-            <div class="field">
-              <label for="sw-dst-nap">NAP</label>
-              <input id="sw-dst-nap" class="mono" type="text" value="9" inputmode="numeric" autocomplete="off">
-              <div class="err" id="sw-dst-nap-err"></div>
-            </div>
-            <div class="field">
-              <label for="sw-dst-sector">Starting sector</label>
-              <input id="sw-dst-sector" class="mono" type="number" min="1" step="1" value="3" inputmode="numeric">
-              <div class="err" id="sw-dst-sector-err"></div>
-            </div>
-          </div>
-        </div>
-        <p class="help">
-          Racks are named NAP.Sector.Pod.Row.Rack, as in <code>14.01.09B.02.03</code>. A sector holds 40 pods: pods 01–10 in each of the pod rows A–D, written <code>09B</code> for pod 09 in row B.
-          Pods fill a sector in order (01A–10A, 01B–10B, through 10D), then the next sector.
-          A pod is 20 racks of 51 RU, racks 01–10 in rows 01 and 02. Rack 02-05 is the network rack: 1U switches at RU 51, 49, 48, 46, 45, 43 and 42, and 2U switches at 39–40, 37–38, 34–35 and 32–33.
-          Every other rack has 1U switches at RU 49, 50 and 51 and 25 servers of one 1U model (R640 or DL360): one at every other RU from 1 to 29, then 10 stacked directly at RU 31–40.
-          Each device keeps its pod, row, rack and RU at the destination; only the NAP and sector change.
-        </p>
-        <div class="actions">
-          <button class="btn-solid" type="submit" id="sw-go">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
-            <span id="sw-go-label">Generate</span>
-          </button>
-        </div>
-        <div class="progress" id="sw-gen-progress" role="progressbar" aria-label="Generating" aria-valuemin="0" aria-valuemax="100" hidden>
-          <div class="progress-track"><div class="progress-fill" id="sw-gen-progress-fill"></div></div>
-          <div class="progress-label" id="sw-gen-progress-label"></div>
-        </div>
-        <div class="banner-err" id="sw-err" hidden></div>
-      </form>
-
-      <section class="card" id="sw-results" hidden>
-        <div class="results-head">
-          <p class="eyebrow-sm">Result</p>
-          <button class="btn-solid" type="button" id="sw-download">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
-            Download .xlsx
-          </button>
-        </div>
-        <div class="progress" id="sw-dl-progress" role="progressbar" aria-label="Building file" aria-valuemin="0" aria-valuemax="100" hidden style="margin: 0 0 14px auto">
-          <div class="progress-track"><div class="progress-fill" id="sw-dl-progress-fill"></div></div>
-          <div class="progress-label" id="sw-dl-progress-label"></div>
-        </div>
-        <div class="stats" id="sw-stats"></div>
-        <div class="mix" id="sw-mix"></div>
-        <div class="table-wrap" style="margin-top:16px">
-          <table>
-            <thead id="sw-head"></thead>
-            <tbody id="sw-rows"></tbody>
-          </table>
-        </div>
-        <p class="table-note" id="sw-note" hidden></p>
-      </section>
     </div>
   </section>
 
@@ -474,7 +360,7 @@
     <h1 class="page-title" id="sim-title" tabindex="-1">Simulate</h1>
     <p class="page-hint">Sign in to a BaseCamp server, check that it is ready, then run a whole move against it.</p>
 
-    <div class="banner-err sim-notice" id="sim-forbidden" hidden>Open the link printed when the tool started. It includes a key.</div>
+    <div class="banner-err sim-notice" id="sim-forbidden" hidden>The load test tool refused this page. Open the page by the address the tool printed when it started.</div>
     <div class="banner-err sim-notice sim-offline" id="sim-offline" hidden>
       <span>The load test tool is not answering. Is it still running?</span>
       <button class="btn-ghost" type="button" id="sim-retry">Retry</button>
@@ -726,713 +612,6 @@ document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', 
 }));
 window.addEventListener('hashchange', showView);
 showView();
-
-/* ───────────── random ───────────── */
-function randInt(n) {
-  const buf = new Uint32Array(1);
-  crypto.getRandomValues(buf);
-  return buf[0] % n;
-}
-const pick = arr => arr[randInt(arr.length)];
-function randChars(n, alphabet) {
-  let s = '';
-  for (let i = 0; i < n; i++) s += alphabet[randInt(alphabet.length)];
-  return s;
-}
-
-/* ───────────── devices + serials ─────────────
-   Dell service tag: 7 characters, digits and consonants (Dell leaves
-   vowels out), e.g. 4XK2BV2.
-   HPE serial: 10 characters — a 3-character country/site code, a year
-   digit, a 2-digit build week, then 4 sequence characters, e.g. CZJ4310K7N. */
-const DELL_ALPHABET = '0123456789BCDFGHJKLMNPQRSTVWXYZ';
-const HPE_SITES = ['CZJ', 'CZ2', 'MXQ', 'MXA', 'SGH', '2M2', 'USE'];
-const ALNUM = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-
-const MODELS = [
-  { make: 'Dell', model: 'PowerEdge R640', u: 1, serial: () => randChars(7, DELL_ALPHABET) },
-  { make: 'Dell', model: 'PowerEdge R740', u: 2, serial: () => randChars(7, DELL_ALPHABET) },
-  { make: 'HPE', model: 'ProLiant DL360 Gen11', u: 1, serial: hpeSerial },
-  { make: 'HPE', model: 'ProLiant DL380 Gen11', u: 2, serial: hpeSerial },
-];
-function hpeSerial() {
-  // Gen11 shipped 2023 onward: year digit 3-5, build week 01-52
-  const year = String(3 + randInt(3));
-  const week = String(1 + randInt(52)).padStart(2, '0');
-  return pick(HPE_SITES) + year + week + randChars(4, ALNUM);
-}
-
-/* ───────────── rack patterns ───────────── */
-const RACK_TOP = 36;
-
-// One brace entry -> its prefixes. "AA-AZ" counts letters the way
-// spreadsheet columns do (…AY, AZ, BA…; Z then AA), "1-12" and "01-12"
-// count digits (equal-width ends keep the zero padding). Anything else,
-// hyphens included, is a plain prefix.
-const MAX_PREFIXES = 10000;
-const lettersToNum = s => [...s].reduce((n, c) => n * 26 + (c.toUpperCase().charCodeAt(0) - 64), 0);
-function numToLetters(n, lower) {
-  let s = '';
-  for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
-  return lower ? s.toLowerCase() : s;
-}
-function expandRange(opt) {
-  const m = /^([A-Z]+|[a-z]+|\d+)-([A-Z]+|[a-z]+|\d+)$/.exec(opt);
-  if (!m) return [opt];
-  const [, a, b] = m;
-  const digits = /^\d/.test(a);
-  if (digits !== /^\d/.test(b) || (!digits && (a === a.toUpperCase()) !== (b === b.toUpperCase()))) {
-    throw new Error(`Both ends of ${opt} need to be letters of the same case, or both numbers.`);
-  }
-  const from = digits ? Number(a) : lettersToNum(a);
-  const to = digits ? Number(b) : lettersToNum(b);
-  if (from > to) throw new Error(`The range ${opt} runs backward. Put the lower end first.`);
-  if (to - from + 1 > MAX_PREFIXES) throw new Error(`The range ${opt} makes more than ${fmt(MAX_PREFIXES)} prefixes.`);
-  const width = digits && a.length === b.length ? a.length : 0;
-  const lower = !digits && a === a.toLowerCase();
-  return Array.from({ length: to - from + 1 }, (_, i) =>
-    digits ? String(from + i).padStart(width, '0') : numToLetters(from + i, lower));
-}
-
-// "{AZ,BC}xxx" -> [{ before: 'AZ', after: '', pad: 3 }, { before: 'BC', ... }]
-function parsePattern(raw) {
-  const text = raw.trim();
-  if (!text) throw new Error('Enter a rack pattern, like AZxxx.');
-  let variants = [''];
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === '{') {
-      const close = text.indexOf('}', i);
-      if (close < 0) throw new Error('A { has no matching }.');
-      const inner = text.slice(i + 1, close);
-      if (inner.includes('{')) throw new Error('Braces can’t be nested.');
-      const opts = inner.split(',').map(s => s.trim()).filter(Boolean).flatMap(expandRange);
-      if (!opts.length) throw new Error('Put at least one prefix inside the braces, like {AZ,BC}.');
-      if (new Set(opts).size !== opts.length) throw new Error('A prefix is listed twice inside the braces.');
-      variants = variants.flatMap(v => opts.map(o => v + o));
-      i = close + 1;
-    } else if (ch === '}') {
-      throw new Error('A } has no matching {.');
-    } else {
-      variants = variants.map(v => v + ch);
-      i++;
-    }
-  }
-  return variants.map(v => {
-    const m = /x+(?!.*x)/.exec(v);
-    if (!m) throw new Error('Add lowercase x’s where the rack number goes, like AZxxx.');
-    return { before: v.slice(0, m.index), after: v.slice(m.index + m[0].length), pad: m[0].length };
-  });
-}
-const rackName = (g, n) => g.before + String(n).padStart(g.pad, '0') + g.after;
-const groupLabel = g => g.before + 'x'.repeat(g.pad) + g.after;
-
-// Split n into k near-equal parts, extras to the first parts.
-function splitEven(n, k) {
-  const base = Math.floor(n / k), extra = n % k;
-  return Array.from({ length: k }, (_, i) => base + (i < extra ? 1 : 0));
-}
-
-function checkPadding(group, count, side) {
-  if (count > 10 ** group.pad - 1) {
-    throw new Error(`${side} pattern ${groupLabel(group)} only counts to ${rackName(group, 10 ** group.pad - 1)}, but ${count} racks are needed. Add another x.`);
-  }
-}
-
-// Server j of a rack (0-based): servers stack from RU 1 up in pairs, one
-// empty RU after each pair. Every rack holds a single model, so the two
-// servers of a pair always match.
-const slotRU = (m, j) => 1 + Math.floor(j / 2) * (2 * m.u + 1) + (j % 2) * m.u;
-const rackCapacity = (m, top = RACK_TOP) => {
-  let j = 0;
-  while (slotRU(m, j) + m.u - 1 <= top) j++;
-  return j;   // up to RU 36: 24 for a 1U model, 14 for a 2U model
-};
-
-// Every prefix gets the same number of racks R, each rack a model drawn at
-// random. All of a prefix's racks are full except its last one, so a prefix
-// holds between (capacity of its first R-1 racks) + 1 and (capacity of all
-// R racks) servers. Take the smallest R whose ranges can add up to the
-// device count; when the ranges skip over it (rare: the count falls just
-// past R-1 full racks everywhere), draw the models again.
-// Returns, per prefix, [{ m: model, n: servers in that rack }].
-function planRacks(count, groups) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const models = Array.from({ length: groups }, () => []);
-    const full = Array.from({ length: groups }, () => [0]);   // full[g][r]: capacity of g's first r racks
-    for (let R = 1; ; R++) {
-      for (let g = 0; g < groups; g++) {
-        const m = pick(MODELS);
-        models[g].push(m);
-        full[g].push(full[g][R - 1] + rackCapacity(m));
-      }
-      const lo = full.map(f => f[R - 1] + 1);
-      const hi = full.map(f => f[R]);
-      const sumLo = lo.reduce((a, b) => a + b, 0);
-      if (hi.reduce((a, b) => a + b, 0) < count) continue;
-      if (sumLo > count) break;
-      // Each prefix takes its minimum, then the rest goes round-robin so
-      // the last racks fill about evenly.
-      const take = lo.slice();
-      let rest = count - sumLo;
-      while (rest > 0) {
-        for (let g = 0; g < groups && rest > 0; g++) if (take[g] < hi[g]) { take[g]++; rest--; }
-      }
-      return models.map((ms, g) => ms.map((m, r) => ({ m, n: r < R - 1 ? rackCapacity(m) : take[g] - full[g][R - 1] })));
-    }
-  }
-  throw new Error('Couldn’t give every prefix the same number of racks for this count. Try a device count a little higher or lower.');
-}
-
-// Long runs hand control back to the browser every PROGRESS_STEP rows so
-// the progress bar can paint.
-const PROGRESS_STEP = 2000;
-const nextFrame = () => new Promise(resolve => setTimeout(resolve, 0));
-
-async function generateFT(count, srcPattern, dstPattern, onProgress = () => {}) {
-  const srcGroups = parsePattern(srcPattern);
-  const dstGroups = parsePattern(dstPattern);
-  if (count < srcGroups.length) {
-    throw new Error(`The source pattern has ${srcGroups.length} prefixes, so it needs at least ${srcGroups.length} devices.`);
-  }
-  const plan = planRacks(count, srcGroups.length);
-  const srcRackCounts = plan.map(racks => racks.length);
-  const totalRacks = srcRackCounts.reduce((a, b) => a + b, 0);
-
-  // Destination racks mirror the source racks one for one. Same number of
-  // prefixes on both sides: group i maps to group i. Otherwise the racks are
-  // split evenly across the destination prefixes, in order. Both sides'
-  // rack names are checked here, before the slow part.
-  const dstCounts = dstGroups.length === srcGroups.length
-    ? srcRackCounts
-    : splitEven(totalRacks, dstGroups.length);
-  srcGroups.forEach((g, gi) => checkPadding(g, srcRackCounts[gi], 'Source'));
-  dstGroups.forEach((g, gi) => checkPadding(g, dstCounts[gi], 'Destination'));
-
-  const serials = new Set();
-  const rows = [];
-  const srcRacks = [];          // in fill order: all of group 1, then group 2…
-
-  for (const [gi, g] of srcGroups.entries()) {
-    for (const [r, { m, n }] of plan[gi].entries()) {
-      const name = rackName(g, r + 1);
-      srcRacks.push(name);
-      for (let j = 0; j < n; j++) {
-        let serial;
-        do { serial = m.serial(); } while (serials.has(serial));
-        serials.add(serial);
-        rows.push({ serial, make: m.make, model: m.model, u: m.u,
-                    srcRack: name, srcIndex: srcRacks.length - 1, ru: slotRU(m, j) });
-        if (rows.length % PROGRESS_STEP === 0) { onProgress(rows.length, count); await nextFrame(); }
-      }
-    }
-  }
-  onProgress(count, count);
-
-  const dstRacks = [];
-  dstGroups.forEach((g, gi) => {
-    for (let n = 1; n <= dstCounts[gi]; n++) dstRacks.push(rackName(g, n));
-  });
-  rows.forEach(r => { r.dstRack = dstRacks[r.srcIndex]; });
-
-  const rangeText = (groups, counts) => groups
-    .map((g, i) => counts[i] === 0 ? null
-      : counts[i] === 1 ? rackName(g, 1)
-      : `${rackName(g, 1)}–${rackName(g, counts[i])}`)
-    .filter(Boolean).join(', ');
-
-  return {
-    rows,
-    srcRackCount: srcRacks.length,
-    dstRackCount: dstRacks.length,
-    srcRange: rangeText(srcGroups, srcRackCounts),
-    dstRange: rangeText(dstGroups, dstCounts),
-  };
-}
-
-/* ───────────── Switch From-To ─────────────
-   Racks are NAP.Sector.Pod.Row.Rack, as in 14.01.09B.02.03. A sector holds
-   40 pods: pod rows A–D with pods 01–10 in each, written pod then row
-   (09B). A pod is 20 racks of 51 RU, rows 01 and 02 with racks 01–10.
-   Rack 02-05 is the network rack and holds switches only. Every other rack
-   has 1U switches at RU 49–51 and 25 servers of one 1U model: one at every
-   other RU from 1 to 29, then 10 stacked directly at RU 31–40. */
-const PODS_PER_SECTOR = 40;
-const POD_SERVER_MODELS = MODELS.filter(m => m.u === 1);
-const POD_SERVER_RUS = [
-  ...Array.from({ length: 15 }, (_, i) => 1 + 2 * i),    // 1, 3, 5 … 29
-  ...Array.from({ length: 10 }, (_, i) => 31 + i),       // 31–40
-];
-const switchSerial = () => 'GSW' + randChars(7, ALNUM);
-const SWITCH_1U = { make: 'Generic', model: 'Switch (1u)', u: 1, serial: switchSerial };
-const SWITCH_2U = { make: 'Generic', model: 'Switch (2u)', u: 2, serial: switchSerial };
-const RACK_SWITCHES = [49, 50, 51].map(ru => ({ m: SWITCH_1U, ru }));
-const NETWORK_SWITCHES = [
-  ...[32, 34, 37, 39].map(ru => ({ m: SWITCH_2U, ru })),          // 2U: written by the bottom RU
-  ...[42, 43, 45, 46, 48, 49, 51].map(ru => ({ m: SWITCH_1U, ru })),
-].sort((a, b) => a.ru - b.ru);
-const isNetworkRack = (row, rack) => row === 2 && rack === 5;
-const pad2 = n => String(n).padStart(2, '0');
-
-// Pod i (0-based, across sectors): 01A…10A, 01B…10B, … 10D, then the next sector.
-function podAt(i) {
-  const inSector = i % PODS_PER_SECTOR;
-  return { sectorOffset: Math.floor(i / PODS_PER_SECTOR),
-           id: pad2(inSector % 10 + 1) + 'ABCD'[Math.floor(inSector / 10)] };
-}
-
-async function generateSW({ pods, srcNap, srcSector, dstNap, dstSector }, onProgress = () => {}) {
-  // Draw every server rack's model first so the device total is known.
-  const plan = [];
-  let total = 0;
-  for (let p = 0; p < pods; p++) {
-    const racks = [];
-    for (let row = 1; row <= 2; row++) {
-      for (let rack = 1; rack <= 10; rack++) {
-        let devices = NETWORK_SWITCHES;
-        if (!isNetworkRack(row, rack)) {
-          const m = pick(POD_SERVER_MODELS);
-          devices = [...POD_SERVER_RUS.map(ru => ({ m, ru })), ...RACK_SWITCHES];
-        }
-        racks.push({ row, rack, devices });
-        total += devices.length;
-      }
-    }
-    plan.push(racks);
-  }
-
-  onProgress(0, total);
-  const serials = new Set();
-  const rows = [];
-  for (const [p, racks] of plan.entries()) {
-    const pod = podAt(p);
-    const srcPod = `${srcNap}.${pad2(srcSector + pod.sectorOffset)}.${pod.id}`;
-    const dstPod = `${dstNap}.${pad2(dstSector + pod.sectorOffset)}.${pod.id}`;
-    for (const { row, rack, devices } of racks) {
-      const tail = `.${pad2(row)}.${pad2(rack)}`;
-      for (const { m, ru } of devices) {
-        let serial;
-        do { serial = m.serial(); } while (serials.has(serial));
-        serials.add(serial);
-        rows.push({ serial, make: m.make, model: m.model, u: m.u, ru,
-                    srcPod: pod.id, srcRack: srcPod + tail, dstPod: pod.id, dstRack: dstPod + tail });
-        if (rows.length % PROGRESS_STEP === 0) { onProgress(rows.length, total); await nextFrame(); }
-      }
-    }
-  }
-  onProgress(total, total);
-
-  const last = podAt(pods - 1);
-  const podRange = (nap, sector) => {
-    const first = `${nap}.${pad2(sector)}.01A`;
-    return pods === 1 ? first : `${first} – ${nap}.${pad2(sector + last.sectorOffset)}.${last.id}`;
-  };
-  const switches = rows.filter(r => r.make === 'Generic').length;
-  return {
-    rows, pods, switches,
-    servers: rows.length - switches,
-    racks: pods * 20,
-    srcRange: podRange(srcNap, srcSector),
-    dstRange: podRange(dstNap, dstSector),
-  };
-}
-
-/* ───────────── xlsx writer ─────────────
-   A minimal SpreadsheetML package in a stored (uncompressed) zip:
-   no library, works offline, header row bold and frozen. Blank values are
-   left out entirely so they import as true empty cells. */
-const TEMPLATE_HEADERS = [
-  'Serial Number', 'Asset Name', 'Asset Make', 'Asset Model', 'RFID Tag',
-  'Priority', 'Disposition', 'Owner', 'Source Pod', 'Source Rack',
-  'Source RU', 'Source Position', 'Destination Pod', 'Destination Rack',
-  'Destination RU', 'Destination Position', 'Data 1', 'Data 2', 'Data 3',
-  'Data 4', 'Data 5', 'Data 6', 'Mgmt 1', 'Mgmt 2', 'Vendor Involvement',
-];
-// The Reference sheet the portal's own template carries.
-const REFERENCE_ROWS = [
-  ['Required column'],
-  ['Serial Number (or enable serial generation with a non-blank Asset Name)'],
-  [],
-  ['Make/model modes'],
-  ['fuzzy — match catalog + aliases; unmatched rows need review'],
-  ['force — always create missing make/models'],
-  ['hybrid — match first, create when unmatched'],
-];
-
-const xmlEsc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function colName(i) {
-  let s = '';
-  for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s;
-  return s;
-}
-async function sheetXml(rows, { boldHeader, freeze, widths }, onProgress) {
-  const out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];
-  out.push(freeze
-    ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
-    : '<sheetViews><sheetView workbookViewId="0"/></sheetViews>');
-  out.push('<sheetFormatPr defaultRowHeight="15"/>');
-  if (widths) {
-    out.push('<cols>' + widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>');
-  }
-  out.push('<sheetData>');
-  for (const [r, row] of rows.entries()) {
-    if (r && r % PROGRESS_STEP === 0) { onProgress(r, rows.length); await nextFrame(); }
-    const cells = [];
-    row.forEach((v, c) => {
-      if (v === '' || v == null) return;
-      const ref = colName(c) + (r + 1);
-      const style = boldHeader && r === 0 ? ' s="1"' : '';
-      if (typeof v === 'number') cells.push(`<c r="${ref}"${style}><v>${v}</v></c>`);
-      else cells.push(`<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`);
-    });
-    out.push(`<row r="${r + 1}">${cells.join('')}</row>`);
-  }
-  out.push('</sheetData></worksheet>');
-  return out.join('');
-}
-
-// onProgress follows the first sheet, which holds the data rows.
-async function buildWorkbook(sheets, onProgress = () => {}) {
-  const files = [];
-  const ct = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
-    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
-    '<Default Extension="xml" ContentType="application/xml"/>',
-    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
-    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
-    ...sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`),
-    '</Types>'].join('');
-  files.push(['[Content_Types].xml', ct]);
-  files.push(['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
-    '</Relationships>']);
-  files.push(['xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-    '<bookViews><workbookView/></bookViews><sheets>' +
-    sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') +
-    '</sheets></workbook>']);
-  files.push(['xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-    sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
-    `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
-    '</Relationships>']);
-  files.push(['xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts>' +
-    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
-    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
-    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>' +
-    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
-    '</styleSheet>']);
-  for (const [i, s] of sheets.entries()) {
-    files.push([`xl/worksheets/sheet${i + 1}.xml`, await sheetXml(s.rows, s, i === 0 ? onProgress : () => {})]);
-  }
-  onProgress(sheets[0].rows.length, sheets[0].rows.length);
-  return zipStore(files);
-}
-
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-function crc32(bytes) {
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
-function zipStore(files) {
-  const enc = new TextEncoder();
-  const now = new Date();
-  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
-  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-  const parts = [], central = [];
-  let offset = 0;
-  for (const [name, text] of files) {
-    const nameBytes = enc.encode(name), data = enc.encode(text), crc = crc32(data);
-    const local = new DataView(new ArrayBuffer(30));
-    local.setUint32(0, 0x04034b50, true);
-    local.setUint16(4, 20, true);
-    local.setUint16(6, 0x0800, true);          // UTF-8 names
-    local.setUint16(8, 0, true);               // stored
-    local.setUint16(10, dosTime, true);
-    local.setUint16(12, dosDate, true);
-    local.setUint32(14, crc, true);
-    local.setUint32(18, data.length, true);
-    local.setUint32(22, data.length, true);
-    local.setUint16(26, nameBytes.length, true);
-    parts.push(new Uint8Array(local.buffer), nameBytes, data);
-
-    const cen = new DataView(new ArrayBuffer(46));
-    cen.setUint32(0, 0x02014b50, true);
-    cen.setUint16(4, 20, true);
-    cen.setUint16(6, 20, true);
-    cen.setUint16(8, 0x0800, true);
-    cen.setUint16(10, 0, true);
-    cen.setUint16(12, dosTime, true);
-    cen.setUint16(14, dosDate, true);
-    cen.setUint32(16, crc, true);
-    cen.setUint32(20, data.length, true);
-    cen.setUint32(24, data.length, true);
-    cen.setUint16(28, nameBytes.length, true);
-    cen.setUint32(42, offset, true);
-    central.push(new Uint8Array(cen.buffer), nameBytes);
-    offset += 30 + nameBytes.length + data.length;
-  }
-  const cenSize = central.reduce((n, p) => n + p.length, 0);
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true);
-  end.setUint16(8, files.length, true);
-  end.setUint16(10, files.length, true);
-  end.setUint32(12, cenSize, true);
-  end.setUint32(16, offset, true);
-  return new Blob([...parts, ...central, new Uint8Array(end.buffer)],
-    { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-}
-
-function ftWorkbook(rows, onProgress) {
-  const sheet = [TEMPLATE_HEADERS];
-  for (const r of rows) {
-    const rec = Object.fromEntries(TEMPLATE_HEADERS.map(h => [h, '']));
-    rec['Serial Number'] = r.serial;
-    rec['Asset Make'] = r.make;
-    rec['Asset Model'] = r.model;
-    rec['Source Pod'] = r.srcPod ?? '';
-    rec['Source Rack'] = r.srcRack;
-    rec['Source RU'] = r.ru;
-    rec['Destination Pod'] = r.dstPod ?? '';
-    rec['Destination Rack'] = r.dstRack;
-    rec['Destination RU'] = r.ru;
-    sheet.push(TEMPLATE_HEADERS.map(h => rec[h]));
-  }
-  const widths = TEMPLATE_HEADERS.map(h => Math.max(12, h.length + 3));
-  widths[0] = 16; widths[3] = 24;
-  return buildWorkbook([
-    { name: 'Move Assets', rows: sheet, boldHeader: true, freeze: true, widths },
-    { name: 'Reference', rows: REFERENCE_ROWS, widths: [72] },
-  ], onProgress && ((done, total) => onProgress(Math.max(0, done - 1), total - 1)));   // count devices, not the header
-}
-
-/* ───────────── page wiring ───────────── */
-const PREVIEW_LIMIT = 1000;
-const $ = id => document.getElementById(id);
-const fmt = n => n.toLocaleString('en-US');
-
-document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('[data-tab]').forEach(t => {
-    const on = t === b;
-    t.classList.toggle('on', on);
-    t.setAttribute('aria-selected', String(on));
-    $('tab-' + t.dataset.tab).hidden = !on;
-  });
-}));
-
-function fieldError(inputId, msg) {
-  $(inputId).classList.toggle('bad', !!msg);
-  $(inputId + '-err').textContent = msg || '';
-}
-function wholeNumber(id) {
-  const raw = $(id).value.trim();
-  if (!/^\d+$/.test(raw) || Number(raw) < 1) { fieldError(id, 'Enter a whole number of 1 or more.'); return null; }
-  fieldError(id, '');
-  return Number(raw);
-}
-
-// Generate and Download each drive a progress bar; while either runs, both
-// of that tab's buttons are disabled.
-function progressBar(id, verb) {
-  const update = (done, total) => {
-    const pct = total ? Math.floor((done / total) * 100) : 100;
-    $(id).hidden = false;
-    $(id).setAttribute('aria-valuenow', pct);
-    $(id + '-fill').style.width = pct + '%';
-    $(id + '-label').textContent = `${verb} ${pct}% · ${fmt(done)} of ${fmt(total)} devices`;
-  };
-  update.start = () => {
-    $(id).hidden = false;
-    $(id).setAttribute('aria-valuenow', 0);
-    $(id + '-fill').style.width = '0';
-    $(id + '-label').textContent = `${verb}…`;
-  };
-  update.hide = () => { $(id).hidden = true; $(id + '-fill').style.width = '0'; };
-  return update;
-}
-
-const stat = (label, value, sub) =>
-  `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div>${sub ? `<div class="stat-sub">${xmlEsc(sub)}</div>` : ''}</div>`;
-const modelMix = (rows, models) => models.map(m =>
-  [`${m.make} ${m.model}`, rows.reduce((n, r) => n + (r.model === m.model ? 1 : 0), 0)]);
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-};
-
-// One generator tab: `read` checks the form and returns the input (or null),
-// `generate` builds the rows, `summary` gives the stat tiles and model mix,
-// `columns` the preview table.
-function wireTool(prefix, { read, generate, summary, line, columns, fileName }) {
-  const genProgress = progressBar(`${prefix}-gen-progress`, 'Generating');
-  const dlProgress = progressBar(`${prefix}-dl-progress`, 'Building file');
-  const setBusy = on => { $(`${prefix}-go`).disabled = on; $(`${prefix}-download`).disabled = on; };
-  let result = null;
-
-  $(`${prefix}-head`).innerHTML = '<tr><th class="num">#</th>' +
-    columns.map(c => `<th${/num/.test(c.cls || '') ? ' class="num"' : ''}>${c.label}</th>`).join('') + '</tr>';
-
-  function render(res) {
-    const { stats, mix } = summary(res);
-    $(`${prefix}-stats`).innerHTML = stats.map(s => stat(...s)).join('');
-    $(`${prefix}-mix`).innerHTML = mix.map(([name, n]) =>
-      `<span class="chip">${xmlEsc(name)} <span class="n">${fmt(n)}</span></span>`).join('');
-    if (line) $(`${prefix}-line`).textContent = line(res);
-    $(`${prefix}-rows`).innerHTML = res.rows.slice(0, PREVIEW_LIMIT).map((r, i) =>
-      `<tr><td class="num dim">${i + 1}</td>` +
-      columns.map(c => `<td${c.cls ? ` class="${c.cls}"` : ''}>${xmlEsc(c.get(r))}</td>`).join('') + '</tr>').join('');
-    $(`${prefix}-note`).hidden = res.rows.length <= PREVIEW_LIMIT;
-    $(`${prefix}-note`).textContent = `Showing the first ${fmt(PREVIEW_LIMIT)} of ${fmt(res.rows.length)} rows. The download has every row.`;
-    $(`${prefix}-results`).hidden = false;
-  }
-
-  $(`${prefix}-form`).addEventListener('submit', async e => {
-    e.preventDefault();
-    if ($(`${prefix}-go`).disabled) return;
-    $(`${prefix}-err`).hidden = true;
-    const input = read();
-    if (!input) return;
-    setBusy(true);
-    genProgress.start();
-    await nextFrame();
-    try {
-      result = await generate(input, genProgress);
-      render(result);
-      $(`${prefix}-go-label`).textContent = 'Generate again';
-    } catch (err) {
-      $(`${prefix}-err`).textContent = err.message;
-      $(`${prefix}-err`).hidden = false;
-    } finally {
-      genProgress.hide();
-      setBusy(false);
-    }
-  });
-
-  $(`${prefix}-download`).addEventListener('click', async () => {
-    if (!result) return;
-    setBusy(true);
-    dlProgress(0, result.rows.length);
-    await nextFrame();
-    let blob;
-    try {
-      blob = await ftWorkbook(result.rows, dlProgress);
-    } finally {
-      dlProgress.hide();
-      setBusy(false);
-    }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = fileName(result);
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  });
-}
-
-const COMMON_COLUMNS = [
-  { label: 'Serial Number', cls: 'mono', get: r => r.serial },
-  { label: 'Asset Make', get: r => r.make },
-  { label: 'Asset Model', get: r => r.model },
-  { label: 'U', cls: 'num dim', get: r => r.u + 'U' },
-];
-
-/* ───────────── From-To tab ───────────── */
-wireTool('ft', {
-  read() {
-    const count = wholeNumber('ft-count');
-    let ok = count !== null;
-    for (const id of ['ft-src', 'ft-dst']) {
-      try { parsePattern($(id).value); fieldError(id, ''); }
-      catch (err) { fieldError(id, err.message); ok = false; }
-    }
-    return ok ? { count, src: $('ft-src').value, dst: $('ft-dst').value } : null;
-  },
-  generate: (input, progress) => generateFT(input.count, input.src, input.dst, progress),
-  summary: res => ({
-    stats: [
-      ['Devices', fmt(res.rows.length), `${fmt(res.rows.reduce((n, r) => n + r.u, 0))} RU in use`],
-      ['Source racks', fmt(res.srcRackCount), res.srcRange],
-      ['Destination racks', fmt(res.dstRackCount), res.dstRange],
-    ],
-    mix: modelMix(res.rows, MODELS),
-  }),
-  // What to enter in the portal's move wizard for this many devices.
-  // The numbers come from the tool's profile when it serves this page (simulate.js puts
-  // them here); opened as a plain file, the profile's usual 20 and 15.
-  line: res => {
-    const sizes = window.loadtestSizes || {};
-    const size = sizes.container_size || 20;
-    const perTruck = sizes.containers_per_truck || 15;
-    const containers = Math.ceil(res.rows.length / size);
-    const trucks = Math.ceil(containers / perTruck);
-    return `Containers needed: ${fmt(containers)} · Trucks needed: ${fmt(trucks)} (${size} per container, ${perTruck} containers per truck)`;
-  },
-  columns: [
-    ...COMMON_COLUMNS,
-    { label: 'Source Rack', cls: 'mono', get: r => r.srcRack },
-    { label: 'Source RU', cls: 'num mono', get: r => pad2(r.ru) },
-    { label: 'Destination Rack', cls: 'mono', get: r => r.dstRack },
-    { label: 'Destination RU', cls: 'num mono', get: r => pad2(r.ru) },
-  ],
-  fileName: res => `from-to-${res.rows.length}-devices-${today()}.xlsx`,
-});
-
-/* ───────────── Switch From-To tab ───────────── */
-function napNumber(id) {
-  const raw = $(id).value.trim();
-  if (!/^\d+$/.test(raw)) { fieldError(id, 'Enter the NAP number, like 14.'); return null; }
-  fieldError(id, '');
-  return raw;
-}
-
-wireTool('sw', {
-  read() {
-    const input = {
-      pods: wholeNumber('sw-pods'),
-      srcNap: napNumber('sw-src-nap'),
-      srcSector: wholeNumber('sw-src-sector'),
-      dstNap: napNumber('sw-dst-nap'),
-      dstSector: wholeNumber('sw-dst-sector'),
-    };
-    return Object.values(input).includes(null) ? null : input;
-  },
-  generate: generateSW,
-  summary: res => ({
-    stats: [
-      ['Devices', fmt(res.rows.length), `${fmt(res.servers)} servers · ${fmt(res.switches)} switches`],
-      ['Source pods', fmt(res.pods), res.srcRange],
-      ['Destination pods', fmt(res.pods), res.dstRange],
-      ['Racks per side', fmt(res.racks), `${fmt(res.pods)} network ${res.pods === 1 ? 'rack' : 'racks'}`],
-    ],
-    mix: modelMix(res.rows, [...POD_SERVER_MODELS, SWITCH_1U, SWITCH_2U]),
-  }),
-  columns: [
-    ...COMMON_COLUMNS,
-    { label: 'Source Pod', cls: 'mono', get: r => r.srcPod },
-    { label: 'Source Rack', cls: 'mono', get: r => r.srcRack },
-    { label: 'Source RU', cls: 'num mono', get: r => pad2(r.ru) },
-    { label: 'Destination Pod', cls: 'mono', get: r => r.dstPod },
-    { label: 'Destination Rack', cls: 'mono', get: r => r.dstRack },
-    { label: 'Destination RU', cls: 'num mono', get: r => pad2(r.ru) },
-  ],
-  fileName: res => `switch-from-to-${res.pods}-pods-${today()}.xlsx`,
-});
 </script>
 <script src="/static/simulate.js"></script>
 </body>

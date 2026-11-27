@@ -1,7 +1,8 @@
 """The one object the page talks to: the phase machine and the public API.
 
 `Connection` holds the portal sign-in, `RunDriver` owns the run task, `UnfinishedRuns`
-reads runs left unfinished on disk, and `snapshot.py` builds what the page draws.
+reads runs left unfinished on disk, `Setup` creates a move on the server, and
+`snapshot.py` builds what the page draws.
 Passwords live in memory only while they are needed and never reach the snapshot, the
 journal, the feed or the result.
 """
@@ -44,6 +45,7 @@ from .profile import (
 )
 from .route import DEFAULT_ROUTER
 from .run_driver import ACTIVE, RunDriver
+from .setup import Setup, check_inputs, site_rows
 from .snapshot import build_snapshot
 from .state import Container, RunState, Server, Truck
 from .unfinished import UnfinishedRuns, last_at
@@ -102,12 +104,18 @@ class Runner:
         self._selected: dict | None = None      # {move_id, speed} of the last check
         self._unfinished = UnfinishedRuns(self.runs_dir, self.clock)
         self._sizes = _default_sizes()
+        self._setup = Setup(self.clock)
         self._driver = RunDriver(clock=self.clock, transport=transport, hub=self._hub,
                                  on_phase=self._on_phase, on_closed=self._on_run_closed)
 
     @property
     def error(self) -> str | None:
         return self._driver.error
+
+    @property
+    def setting_up(self) -> bool:
+        """A move is being created on the server."""
+        return self._setup.working
 
     def _on_phase(self, phase: Phase) -> None:
         self.phase = phase
@@ -135,6 +143,8 @@ class Runner:
     # ── guards ─────────────────────────────────────────────────────────
 
     def _require_free(self) -> None:
+        if self._setup.working:
+            raise RunnerError("setup_working")
         if self._shut or self._busy or self._driver.active or self.phase in ACTIVE:
             raise RunnerError("bad_phase")
 
@@ -148,6 +158,7 @@ class Runner:
         await self._conn.forget()
         self._report = self._profile = self._move_password = None
         self._selected = None
+        self._setup.forget()
         self._driver.forget_run()
         if self.phase not in ACTIVE:
             self.phase = "idle"
@@ -166,20 +177,19 @@ class Runner:
             if not await self._conn.sign_in(url, email, password, totp_code):
                 return {"status": "totp_required"}
             try:
-                moves = await self._conn.portal.moves()
+                await self._conn.list_moves()
             except Exception as exc:
                 await self._reset()
                 raise sign_in_error(exc, "password_refused") from None
             self.phase = "connected"
-            moves = sorted(moves, key=lambda m: m.status != "in_progress")
-            self._conn.moves = [{"id": m.id, "name": m.name, "status": m.status}
-                                for m in moves]
             return {"status": "ok", "moves": [dict(m) for m in self._conn.moves]}
         finally:
             await self._end_busy()
 
     async def check(self, move_id: str, move_password: str,
                     speed: Literal["real-time", "fast"]) -> CheckReport:
+        if self._setup.working:
+            raise RunnerError("setup_working")
         if (self._shut or self._busy or self.phase not in ("connected", "checked")
                 or not self._conn.connected):
             raise RunnerError("bad_phase")
@@ -212,6 +222,8 @@ class Runner:
         """Returns once the run task exists. No await before the phase changes, so two
         calls at once start one run. An unfinished run on disk must be continued or
         discarded first."""
+        if self._setup.working:
+            raise RunnerError("setup_working")
         if (self._shut or self._busy or self._driver.active
                 or self.phase not in ("connected", "checked")):
             raise RunnerError("bad_phase")
@@ -285,7 +297,46 @@ class Runner:
     def _launch(self, run, action: str, subject: str) -> None:
         self.events = run.events
         self._unfinished.forget_cache()
+        self._setup.forget()        # an old set-up's state and move are for before a run
         self._driver.launch(run, action, subject)
+
+    # ── create a move on the server ────────────────────────────────────
+
+    async def sites(self) -> dict:
+        """The signed-in server's sites, for the page's pickers."""
+        if not self._conn.connected:
+            raise RunnerError("not_connected")
+        return {"sites": site_rows(await self._conn.read_sites())}
+
+    async def start_setup(self, *, name: str, origin_site_id: str, destination_site_id: str,
+                          servers: int, containers: int, trucks: int,
+                          move_password: str) -> None:
+        """Checks the inputs against the server's sites, then creates the move in the
+        background (setup.py). Returns once that has begun."""
+        self._require_free()
+        if not self._conn.connected or self.phase not in ("connected", "checked"):
+            raise RunnerError("not_connected")
+        if self._unfinished.find() is not None:
+            raise RunnerError("unfinished_run")
+        self._busy = True
+        try:
+            plan = check_inputs(
+                sites=await self._conn.read_sites(), name=name, origin_site_id=origin_site_id,
+                destination_site_id=destination_site_id, servers=servers,
+                containers=containers, trucks=trucks, sizes=self._sizes)
+        finally:
+            await self._end_busy()
+        if self._shut or not self._conn.connected:
+            raise RunnerError("bad_phase")
+        self._setup.start(self._conn.portal, plan, move_password, on_done=self._setup_done)
+
+    async def _setup_done(self, move_id: str, ready: bool) -> None:
+        """The move list now has the new move, ready (In progress) or not."""
+        if not self._conn.connected:
+            return
+        name = (self._setup.snapshot() or {}).get("name", "")
+        await self._conn.list_moves(also={"id": move_id, "name": name,
+                                          "status": "in_progress" if ready else "planned"})
 
     # ── stop, shutdown, wait ───────────────────────────────────────────
 
@@ -298,6 +349,7 @@ class Runner:
         """For the web app's shutdown: an active run is interrupted, not stopped, so it
         can be continued the next time the tool starts."""
         self._shut = True
+        await self._setup.cancel()
         await self._driver.interrupt()
         if not self._busy:      # a busy call drops its sign-in itself when it returns
             await self._reset()
@@ -373,4 +425,4 @@ class Runner:
             report=self._report, check_profile=self._profile, selected=self._selected,
             result=self._driver.result,
             feed_write_errors=self.events.write_errors, unfinished=self.unfinished(),
-            now=self.clock.now(), sizes=self._sizes)
+            now=self.clock.now(), sizes=self._sizes, setup=self._setup.snapshot())

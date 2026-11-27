@@ -10,6 +10,7 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import secrets
 import sys
 import time
 import traceback
@@ -18,7 +19,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -36,6 +37,7 @@ from starlette.requests import cookie_parser
 
 from ..events import FeedLine
 from ..runner import ACTIVE, MESSAGES, RunnerError
+from .signin import NEED_SIGN_IN, WRONG, SignIn, read_form, sign_in_page
 
 STATIC = Path(__file__).parent / "static"
 NO_STORE = {"Cache-Control": "no-store"}
@@ -82,7 +84,19 @@ class ContinueBody(_Body):
     totp_code: _text(12) | None = None
 
 
-FIELD_NAMES = {name for model in (ConnectBody, CheckBody, ContinueBody)
+class SetupBody(_Body):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                           max_length=200)]
+    origin_site_id: _text(64)
+    destination_site_id: _text(64)
+    servers: Annotated[int, Field(ge=1)]
+    containers: int
+    trucks: int
+    # never altered; not empty, since an empty move password clears the move's
+    move_password: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+FIELD_NAMES = {name for model in (ConnectBody, CheckBody, ContinueBody, SetupBody)
                for name in model.model_fields}
 UNKNOWN_FIELD = "(unknown field)"
 
@@ -134,14 +148,17 @@ async def event_stream(runner, is_disconnected: Callable[[], Awaitable[bool]], *
         first += [_event("feed", feed_event(line)) for line in safely(runner.recent, [])]
         loop = asyncio.get_running_loop()
         last_snapshot = last_comment = loop.time()
+        was_busy = runner.phase in ACTIVE or getattr(runner, "setting_up", False)
         for chunk in first:
             yield chunk
         if stopping is not None:
             stopper = asyncio.ensure_future(stopping.wait())
         while not (stopping is not None and stopping.is_set()) and not await is_disconnected():
             now = loop.time()
-            every = active_every if runner.phase in ACTIVE else idle_every
-            if now - last_snapshot >= every:
+            busy = runner.phase in ACTIVE or getattr(runner, "setting_up", False)
+            every = active_every if busy else idle_every
+            ended, was_busy = was_busy and not busy, busy     # a run or set-up just ended
+            if ended or now - last_snapshot >= every:
                 last_snapshot = now
                 for chunk in snapshot_event():
                     yield chunk
@@ -236,12 +253,10 @@ class _Guard:
 
 
 LOCAL_NAMES = ("localhost", "127.0.0.1", "::1")
-KEY_COOKIE = "loadtest_key"
+SESSION_COOKIE = "loadtest_session"
+SIGN_IN_PATH = "/login"
 PROXY_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip")
-BAD_HOST = "This address is not allowed. Use the link printed when the tool started."
-NEED_KEY = "Open the link printed when the tool started. It includes a key."
-NEED_KEY_PAGE = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-                 "<title>Move load test</title></head><body><p>" + NEED_KEY + "</p></body></html>")
+BAD_HOST = "This address is not allowed. Open the page by the address the tool printed."
 
 
 def _host_name(value: str) -> str:
@@ -272,16 +287,20 @@ def _is_loopback(host: str | None) -> bool:
 
 class _Access:
     """Outermost: the Host header must name this machine (stops DNS rebinding), and when
-    an access key is set, a client that is not this machine needs the key's cookie. The
-    printed link `/?key=<key>` sets that cookie and redirects to `/`."""
+    a sign-in is set, a client that is not this machine needs this launch's session
+    cookie. `/login` shows the sign-in page; the right username and password set the
+    cookie and lead to `/`."""
 
-    def __init__(self, app, *, allowed_hosts: set[str], access_key: str | None,
-                 cookie_name: str, local_skip: bool) -> None:
+    def __init__(self, app, *, allowed_hosts: set[str], sign_in: SignIn | None,
+                 cookie_name: str, local_skip: bool, secure_cookie: bool) -> None:
         self.app = app
         self.local_skip = local_skip
         self.allowed = allowed_hosts
-        self.key = access_key
+        self.sign_in = sign_in
         self.cookie = cookie_name
+        self.secure = secure_cookie
+        # one per launch, kept in memory only: a restart signs everyone out
+        self.session = secrets.token_urlsafe(32)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "lifespan":
@@ -296,36 +315,64 @@ class _Access:
         if not host or host not in self.allowed:
             await PlainTextResponse(BAD_HOST, status_code=400)(scope, receive, send)
             return
-        if self.key is None:
+        path = scope["path"]
+        if self.sign_in is None:
+            if path == SIGN_IN_PATH:    # nothing to sign in to: the page itself
+                await RedirectResponse("/", status_code=303)(scope, receive, send)
+                return
             await self.app(scope, receive, send)
             return
-        path = scope["path"]
-        if scope["method"] == "GET" and path == "/":
-            given = parse_qs(scope.get("query_string", b"").decode("latin-1")).get("key")
-            if given and self._matches(given[-1]):
-                response = RedirectResponse("/", status_code=303)
-                response.set_cookie(self.cookie, self.key, path="/", httponly=True,
-                                    samesite="strict")
-                await response(scope, receive, send)
-                return
         client = scope.get("client")
         # this machine: a loopback client, not forwarded by a proxy, under a local name
         here = (self.local_skip and _is_loopback(client[0] if client else None)
                 and not any(h in headers for h in PROXY_HEADERS)
                 and host in LOCAL_NAMES)
         cookie = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get(self.cookie)
-        if here or (cookie and self._matches(cookie)):
+        signed_in = here or bool(cookie and self._is_session(cookie))
+        if path == SIGN_IN_PATH:
+            await self._sign_in(scope, receive, send, headers, signed_in)
+            return
+        if signed_in:
             await self.app(scope, receive, send)
             return
         if path.startswith("/api/"):
-            refused = JSONResponse({"code": "forbidden", "message": NEED_KEY}, status_code=403)
+            refused = JSONResponse(NEED_SIGN_IN, status_code=401)
+        elif scope["method"] in ("GET", "HEAD"):
+            refused = RedirectResponse(SIGN_IN_PATH, status_code=303)
         else:
-            refused = HTMLResponse(NEED_KEY_PAGE, status_code=403)
+            refused = PlainTextResponse(NEED_SIGN_IN["message"], status_code=401)
         refused.headers.update(NO_STORE)
         await refused(scope, receive, send)
 
-    def _matches(self, given: str) -> bool:
-        return hmac.compare_digest(given.encode("utf-8", "replace"), self.key.encode("utf-8"))
+    async def _sign_in(self, scope, receive, send, headers: dict, signed_in: bool) -> None:
+        method = scope["method"]
+        if method in ("GET", "HEAD"):
+            if signed_in:
+                response = RedirectResponse("/", status_code=303)
+            else:
+                response = HTMLResponse(sign_in_page())
+        elif method != "POST":
+            response = PlainTextResponse("Method not allowed.", status_code=405,
+                                         headers={"Allow": "GET, POST"})
+        elif b"origin" in headers and not _same_origin(
+                headers[b"origin"].decode("latin-1"), headers.get(b"host", b"").decode("latin-1")):
+            response = JSONResponse(FORBIDDEN, status_code=403)     # another site's form
+        else:
+            form = await read_form(receive)
+            username = (form or {}).get("username", "")
+            if form is not None and self.sign_in.matches(username, form.get("password", "")):
+                response = RedirectResponse("/", status_code=303)
+                response.set_cookie(self.cookie, self.session, path="/", httponly=True,
+                                    samesite="strict", secure=self.secure)
+            else:
+                response = HTMLResponse(sign_in_page(error=WRONG, username=username),
+                                        status_code=401)
+        response.headers.update(NO_STORE)
+        await response(scope, receive, send)
+
+    def _is_session(self, given: str) -> bool:
+        return hmac.compare_digest(given.encode("utf-8", "replace"),
+                                   self.session.encode("utf-8"))
 
 
 def _field_names(exc: RequestValidationError) -> list[str]:
@@ -354,13 +401,15 @@ class _NoStoreFiles(StaticFiles):
 
 
 def create_app(runner, *, allowed_hosts: list[str] | None = None,
-               access_key: str | None = None, cookie_name: str = KEY_COOKIE,
-               local_skip: bool = True, stop_wait: float = 35.0) -> FastAPI:
+               sign_in: SignIn | None = None, cookie_name: str = SESSION_COOKIE,
+               local_skip: bool = True, secure_cookie: bool = False,
+               stop_wait: float = 35.0) -> FastAPI:
     """`allowed_hosts`: Host names accepted besides this machine's localhost names.
-    `access_key`: when set, clients other than this machine need it (see `_Access`).
-    `cookie_name`: the key's cookie (one per port, since cookies ignore ports).
-    `local_skip`: False when a proxy is declared; then this machine needs the key too,
-    since a proxy on this machine makes every visitor look local.
+    `sign_in`: when set, clients other than this machine sign in with it (see `_Access`).
+    `cookie_name`: the session's cookie (one per port, since cookies ignore ports).
+    `local_skip`: False when a proxy is declared; then this machine signs in too, since
+    a proxy on this machine makes every visitor look local.
+    `secure_cookie`: True when the page is opened over https, so the cookie stays there.
     `stop_wait`: seconds shutdown waits for a stop in flight before cancelling it."""
     stopping = asyncio.Event()
     allowed = {_host_name(h) for h in (*LOCAL_NAMES, *(allowed_hosts or ()))}
@@ -386,8 +435,9 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
     app.state.stopping = stopping
     app.state.stop_task = None          # the stop in flight, kept so it is never lost
     app.add_middleware(_Guard)
-    app.add_middleware(_Access, allowed_hosts=allowed, access_key=access_key,
-                       cookie_name=cookie_name, local_skip=local_skip)  # outermost
+    app.add_middleware(_Access, allowed_hosts=allowed, sign_in=sign_in,
+                       cookie_name=cookie_name, local_skip=local_skip,
+                       secure_cookie=secure_cookie)                     # outermost
 
     def stop_in_flight() -> bool:
         return app.state.stop_task is not None and not app.state.stop_task.done()
@@ -403,6 +453,9 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
 
     @app.exception_handler(RunnerError)
     async def runner_error(request: Request, exc: RunnerError) -> JSONResponse:
+        if exc.fields:          # a problem in what was typed, like a bad body
+            return JSONResponse({"code": exc.code, "message": exc.message,
+                                 "fields": list(exc.fields)}, status_code=422)
         return JSONResponse({"code": exc.code, "message": exc.message}, status_code=409)
 
     @app.exception_handler(RequestValidationError)
@@ -454,6 +507,19 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
     async def continue_run(body: ContinueBody) -> dict:
         return await runner.continue_run(body.password, body.move_password, body.email,
                                          body.totp_code or None)
+
+    @app.get("/api/sites")
+    async def sites() -> JSONResponse:
+        return JSONResponse(await runner.sites(), headers=NO_STORE)
+
+    @app.post("/api/setup", status_code=202)
+    async def setup(body: SetupBody) -> dict:
+        """Answers once the move's creation has begun; the snapshot's `setup` follows it."""
+        await runner.start_setup(
+            name=body.name, origin_site_id=body.origin_site_id,
+            destination_site_id=body.destination_site_id, servers=body.servers,
+            containers=body.containers, trucks=body.trucks, move_password=body.move_password)
+        return {}
 
     @app.post("/api/discard")
     async def discard() -> dict:

@@ -1,19 +1,22 @@
-/* Simulate view. Built only from the page's own tokens and components (index.html):
-   every color is a var(--…) token, so light and dark follow the page's theme. */
+/* Simulate and Generate views. Built only from the page's own tokens and components
+   (index.html): every color is a var(--…) token, so light and dark follow the page's theme. */
 
-/* spacing between the blocks of each step, as between the generator's cards */
+/* spacing between the blocks of each step */
 #view-simulate .sim-run-grid > .card,
 #view-simulate .sim-result-grid > .card { margin-top: 0; }
 #view-simulate #sim-body > :not([hidden]) ~ :not([hidden]),
 #view-simulate #sim-setup > * + *,
 #view-simulate #sim-run > * + *,
 #view-simulate #sim-result > * + *,
-#view-simulate #sim-result-body > :not([hidden]) ~ :not([hidden]) { margin-top: 16px; }
+#view-simulate #sim-result-body > :not([hidden]) ~ :not([hidden]),
+#gen-body > * + * { margin-top: 16px; }
 #sim-unf-fields { margin-top: 14px; }
-#view-simulate .sim-notice { margin-top: 18px; margin-bottom: 16px; }
-#sim-body { margin-top: 22px; }
+#gen-blocked { margin-bottom: 14px; }
+/* the tool's notices show in whichever view holds them (simulate.js moves them) */
+.sim-notice { margin-top: 18px; margin-bottom: 16px; }
+#sim-body, #gen-body { margin-top: 22px; }
 
-/* ── form pieces the generator has no need for ── */
+/* ── form pieces beyond the page's own ── */
 .sim-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .sim-set { border: 0; margin: 0; padding: 0; min-width: 0; }
 .sim-label { font-size: 12.5px; font-weight: 500; color: var(--text-dark); }
@@ -49,7 +52,7 @@
 #sim-ready .sim-stick { border-top: 1px solid var(--paper-line); }
 .sim-stick .actions { margin-top: 10px; }
 .sim-stick > .actions:first-child { margin-top: 0; }
-#sim-move-set .sim-stick { margin-top: 4px; }
+#sim-move-set .sim-stick, #gen-set .sim-stick { margin-top: 4px; }
 .sim-stick .sim-summary + .sim-text { margin-top: 8px; }
 
 /* ── status chips (the page's .chip in the portal's status colors) ── */

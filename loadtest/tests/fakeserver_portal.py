@@ -41,6 +41,7 @@ SPECIAL_DOMAINS = (".test", ".local", ".invalid")
 PORTAL_PERMISSIONS = frozenset({
     "initiatives:view", "sites:view", "containers:view", "trucks:view", "trucks:change",
     "status_rules:view", "assets:view", "scans:view", "devtools:view",
+    "initiatives:add", "initiatives:change", "containers:add", "trucks:add",
 })
 
 
@@ -126,6 +127,7 @@ def _default_rules(statuses: dict[str, str]) -> list[dict]:
 
 def register_portal_routes(fake: FakeBaseCamp) -> None:
     from fakeserver import ASSET_STATUSES, _Family
+    from fakeserver_setup import register_setup_routes
 
     # ── portal state (tests change these directly) ──
     fake.status_rules = _default_rules(ASSET_STATUSES)
@@ -163,13 +165,15 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
             raise _err(403, "forbidden")
         return user
 
+    fake.perms_of, fake.require = perms_of, require
+
     def session(user: _PortalUser, response: Response) -> dict:
         family = _Family(id=str(uuid.uuid4()), person_id=user.person_id, client="portal",
                          initiative_id=None, expires_at=now() + fake.session_seconds)
         body = fake._issue(family, response)
         body.update(person={"id": user.person_id, "display_name": user.email},
-                    roles=["super_admin"], perms=perms_of(user), max_rank=100,
-                    scope={"global": True, "client_ids": [], "partner_ids": [],
+                    roles=["super_admin"], perms=perms_of(user), max_rank=user.rank,
+                    scope={"global": user.is_global, "client_ids": [], "partner_ids": [],
                            "restricted_client_ids": []},
                     totp={"enrolled": user.totp == "verify", "enrolled_at": None,
                           "required": user.totp is not None, "backup_codes_remaining": 10},
@@ -223,8 +227,8 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
                 "roles": ["super_admin"], "session_expires_at": fake._iso(family.expires_at),
                 "must_change_password": False, "must_change_reason": None,
                 "password_expires_at": None, "preferences": {}, "perms": perms_of(user),
-                "max_rank": 100,
-                "scope": {"global": True, "client_ids": [], "partner_ids": [],
+                "max_rank": user.rank,
+                "scope": {"global": user.is_global, "client_ids": [], "partner_ids": [],
                           "restricted_client_ids": []},
                 "password_min_length": 8,
                 "totp": {"enrolled": user.totp == "verify", "enrolled_at": None,
@@ -252,6 +256,8 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
         if move is None:
             raise _err(404, "initiative_not_found")
         return move
+
+    fake.initiative, fake.initiative_item = initiative, initiative_item
 
     def move_status(asset: dict) -> str:
         return asset["asset_status"] or ROSTER_DEFAULT_STATUS
@@ -505,3 +511,5 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
         return {"groups": [{"application_name": "serversherpa-api", "state": "idle",
                             "count": 10, "oldest_query_seconds": None,
                             "oldest_transaction_seconds": None, "waiting_on_lock": 0}]}
+
+    register_setup_routes(fake)

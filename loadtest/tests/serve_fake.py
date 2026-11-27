@@ -3,10 +3,11 @@
     .venv/bin/python tests/serve_fake.py [--port 8796] [--truck-rules]
 
 A 60-server move in progress (3 containers, 1 truck), a second move that is only
-planned, one portal user, and a ticker that processes waiting scans every second, the
-way the server's scan worker does. The same port answers the road-route question in
-the routing service's shape, so the tool can be started with
-`LOADTEST_ROUTER_URL=http://127.0.0.1:8796` and nothing leaves the machine.
+planned, three more sites with coordinates and one without (for Generate's site
+pickers), one admin portal user, and a ticker that processes waiting scans and import
+jobs every second, the way the server's scan and import workers do. The same port
+answers the road-route question in the routing service's shape, so the tool can be
+started with `LOADTEST_ROUTER_URL=http://127.0.0.1:8796` and nothing leaves the machine.
 
 By default the status rules for On Truck and Received are left out, so the readiness
 check and the result carry their warnings. `--truck-rules` keeps every rule.
@@ -26,12 +27,16 @@ EMAIL = "loadtest@example.com"
 PASSWORD = "fake-portal-pass"
 MOVE_PASSWORD = "move-pass-1"
 NO_RULE_STATUSES = ("on_truck", "received")
+SITES = (("Kansas City DC", "KC", 39.0997, -94.5786), ("Omaha DC", "OMA", 41.2565, -95.9345),
+         ("Dallas DC", "DAL", 32.7767, -96.797), ("Annex", None, None, None))
 
 
 def build(*, truck_rules: bool) -> FakeBaseCamp:
     fake = FakeBaseCamp(RealClock())
     fake.add_move(servers=60, containers=3, trucks=1, password=MOVE_PASSWORD)
     fake.add_move(servers=5, containers=1, trucks=1, status="planned", password="move-pass-2")
+    for name, code, lat, lng in SITES:
+        fake.add_site(name, code=code, lat=lat, lng=lng)
     fake.add_portal_user(EMAIL, PASSWORD)
     if not truck_rules:
         fake.status_rules = [r for r in fake.status_rules
@@ -58,12 +63,14 @@ async def main(port: int, truck_rules: bool) -> None:
         while True:
             await asyncio.sleep(1)
             fake.process_scans()
+            fake.process_jobs()
 
     print(f"Fake BaseCamp: http://127.0.0.1:{port}")
     print(f"  Server         http://127.0.0.1:{port}")
     print(f"  Portal email   {EMAIL}")
     print(f"  Password       {PASSWORD}")
     print(f"  Move           Load test move 1 (60 servers), move password {MOVE_PASSWORD}")
+    print(f"  Sites          {', '.join(name for name, *_ in SITES)}")
     print(f"  Status rules   {'all' if truck_rules else 'none for On Truck and Received'}")
     print(f"Start the tool with LOADTEST_ROUTER_URL=http://127.0.0.1:{port}", flush=True)
     ticker = asyncio.create_task(tick())

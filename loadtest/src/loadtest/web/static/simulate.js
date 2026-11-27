@@ -1,6 +1,8 @@
-/* Simulate: the page is a function of the tool's state. It reads /api/state on load and on
-   every reconnect, then follows the event stream; it never trusts its own memory of what
-   was happening. Passwords and 2FA codes live only in their fields and are never stored. */
+/* Simulate and Generate: the page is a function of the tool's state. It reads /api/state
+   on load and on every reconnect, then follows the event stream; it never trusts its own
+   memory of what was happening. Passwords and 2FA codes live only in their fields (and a
+   move password Generate made, in memory until Simulate's field takes it) and are never
+   stored. */
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
@@ -30,11 +32,12 @@
   }
 
   // No request may hold the page: one that takes too long is given up and treated as the
-  // tool not answering. Connect, check and continue sign in and read the server (retries
-  // included), so they get longer.
+  // tool not answering. Connect, check, continue and setup sign in or read the server
+  // (retries included), and so does the sites read, so they get longer.
   const WAIT_MS = 10000;
   const LONG_WAIT_MS = 300000;
-  const LONG_POSTS = ['/api/connect', '/api/check', '/api/continue'];
+  const LONG_POSTS = ['/api/connect', '/api/check', '/api/continue', '/api/setup'];
+  const LONG_GETS = ['/api/sites'];
   function deadline(ms) {
     const stop = new AbortController();
     const timer = setTimeout(() => stop.abort(), ms);
@@ -69,8 +72,13 @@
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
     const ours = !!data && typeof data === 'object';
+    if (res.status === 401 && ours && data.code === 'sign_in') {
+      block(false);
+      window.location.replace('/login');     // the session ended: the tool restarted
+      throw new ApiError('forbidden', '');
+    }
     if (res.status === 403 && ours && data.code === 'forbidden') {
-      block();
+      block(true);
       throw new ApiError('forbidden', '');
     }
     if (!ours || res.status >= 500) {
@@ -86,7 +94,7 @@
 
   /* reads only; every POST goes through post() above */
   async function get(path) {
-    const wait = deadline(WAIT_MS);
+    const wait = deadline(LONG_GETS.includes(path) ? LONG_WAIT_MS : WAIT_MS);
     try {
       let res;
       try {
@@ -101,7 +109,7 @@
     }
   }
 
-  let blocked = false;      // the access key is missing: nothing more is asked
+  let blocked = false;      // signed out, or refused by the tool: nothing more is asked
   let stateDown = false;    // the last request found the tool not answering, or in trouble
   let downMessage = OFFLINE; // what the notice says while stateDown
   let streamDown = false;   // the event stream closed for good and must be reopened
@@ -111,11 +119,12 @@
   let eventsRun = undefined; // the run the open stream was opened for
   let seq = 0, appliedSeq = 0; // an older /api/state answer never overwrites a newer state
 
-  function block() {
+  function block(say) {
     blocked = true;
-    $('sim-forbidden').hidden = false;
+    $('sim-forbidden').hidden = !say;
     $('sim-offline').hidden = true;
     $('sim-body').hidden = true;
+    $('gen-body').hidden = true;
     clearInterval(retryTimer);
     retryTimer = null;
     if (events) { events.close(); events = null; }
@@ -187,7 +196,7 @@
         streamDown = true;     // refused or not an event stream: reopened by the retry
         paintHealth();
       }
-      refresh();      // says why: the tool is down (notice and retry) or the key is missing
+      refresh();      // says why: the tool is down (notice and retry) or the session ended
     });
   }
   function reopenEvents() {
@@ -207,6 +216,7 @@
   let stopAsk = false;
   let unfOpen = false, unfAsk = false, unfTotp = false;
   let speed = recall('speed') === 'real-time' ? 'real-time' : 'fast';
+  let madeMove = null;      // the move Generate just created: Simulate's Move select picks it
   let result = null, resultFor = null, resultLoading = false, resultDrawn = null;
 
   function apply(state) {
@@ -220,9 +230,10 @@
     }
     const first = snap === null;
     snap = state;
-    // the Generate tab's containers-and-trucks line uses the profile's numbers
-    if (state.sizes) window.loadtestSizes = state.sizes;
     if (first && ACTIVE.includes(state.phase) && !location.hash) location.hash = 'simulate';
+    if (first && state.setup && state.setup.state === 'working' && !location.hash) {
+      location.hash = 'generate';
+    }
     render();
   }
 
@@ -237,6 +248,8 @@
   function render() {
     if (!snap || blocked) return;
     $('sim-body').hidden = false;
+    $('gen-body').hidden = false;
+    followSetup();
     const next = chooseView(snap);
     const changed = next !== view;
     view = next;
@@ -249,10 +262,11 @@
     $('sim-error').hidden = !err;
     $('sim-error').textContent = err || '';
     renderUnfinished();
-    if (next === 'connect') renderConnect();
-    else if (next === 'ready') renderReady();
+    renderConnect();      // the sign-in card also serves Generate, whatever Simulate shows
+    renderGenerate();
+    if (next === 'ready') renderReady();
     else if (next === 'run') renderRun();
-    else renderResult();
+    else if (next === 'result') renderResult();
     if (changed && next === 'run') {
       feedAtBottom = true;
       feed.scrollTop = feed.scrollHeight;
@@ -263,6 +277,7 @@
   }
 
   function focusView(next) {
+    if (onGenerate()) return;
     if ($('view-simulate').hidden) return;
     let target = $('sim-title');
     if (next === 'connect') {
@@ -324,7 +339,8 @@
   // An action's error is kept with the banners it may show in (first visible one wins)
   // and painted by every render, so no later snapshot can hide it. It goes when another
   // action starts or a field of that action's form is edited.
-  const BANNERS = ['sim-connect-err', 'sim-check-err', 'sim-ready-err', 'sim-unf-err', 'sim-stop-err'];
+  const BANNERS = ['sim-connect-err', 'sim-check-err', 'sim-ready-err', 'sim-unf-err', 'sim-stop-err',
+    'gen-err'];
   let actionError = null;   // { banners: [ids], message }
 
   function keepError(banners, message) {
@@ -341,7 +357,12 @@
       shown = actionError.banners.find(id => !$(id).parentElement.closest('[hidden]')) ||
         actionError.banners[0];
     }
-    BANNERS.forEach(id => showErr(id, id === shown ? actionError.message : ''));
+    // Generate's banner otherwise says why the sites could not be read, or why the last
+    // set-up failed (the tool keeps that message until the next one starts)
+    const failed = snap && snap.setup && snap.setup.state === 'error' ? snap.setup.message : '';
+    const genNote = sitesError || failed || '';
+    BANNERS.forEach(id => showErr(id, id === shown ? actionError.message
+      : id === 'gen-err' ? genNote : ''));
   }
   document.addEventListener('input', e => {
     if (!actionError || !e.target.closest) return;
@@ -486,7 +507,7 @@
     if (key === movesDrawn) return;
     movesDrawn = key;
     const select = $('sim-move');
-    const keep = (sel && sel.move_id) || select.value;
+    const keep = madeMove || (sel && sel.move_id) || select.value;
     if (sel && SPEED_NAMES[sel.speed]) speed = sel.speed;
     select.replaceChildren();
     if (!moves.length) {
@@ -503,6 +524,7 @@
       select.append(opt);
     }
     if (keep && moves.some(m => m.id === keep)) select.value = keep;
+    if (madeMove && moves.some(m => m.id === madeMove)) madeMove = null;
   }
 
   function paintSpeed() {
@@ -525,7 +547,8 @@
     $('sim-totp-field').hidden = !(totpAsked || snap.needs_totp);
     $('sim-move-set').disabled = !listed || !!busy;
     $('sim-check-go').disabled = !listed || !(snap.moves || []).length || !!busy;
-    $('sim-connect-go').disabled = !!busy;
+    // during a run the card is only seen on Generate, where it is locked like the rest
+    $('sim-connect-go').disabled = !!busy || ACTIVE.includes(snap.phase);
     $('sim-connect-go').textContent = busy === 'connect' ? 'Connecting…' : 'Connect';
     $('sim-check-go').textContent = busy === 'check' ? 'Checking…' : 'Check server';
     const line = listed ? `Connected to ${c.server} as ${c.email}.` : '';
@@ -536,6 +559,7 @@
 
   $('sim-connect').addEventListener('submit', e => {
     e.preventDefault();
+    if ($('sim-connect-go').disabled) return;
     const body = { server: value('sim-server'), email: value('sim-email'),
       password: $('sim-password').value };
     const asking = !$('sim-totp-field').hidden;
@@ -566,7 +590,8 @@
       $('sim-totp').value = '';
       await refresh(true);
     }).then(() => {
-      if (!$('sim-move-set').disabled) $('sim-move').focus();
+      if (onGenerate()) { if (!$('gen-set').disabled) $('gen-name').focus(); }
+      else if (!$('sim-move-set').disabled) $('sim-move').focus();
     });
   });
 
@@ -824,7 +849,7 @@
       ['scans', 'Scans from handhelds'], ['pack', 'Pack into container'],
       ['load', 'Load onto truck'], ['truck-status', 'Truck departs and arrives'],
       ['truck-location', 'Truck location update'], ['unload', 'Unload from truck'],
-      ['unpack', 'Unpack from container']]],
+      ['unpack', 'Unpack from container'], ['move-setup', 'Creating the move (Generate)']]],
     ['Background and checks', [
       ['heartbeat', 'Device heartbeat'], ['station-heartbeat', 'Station heartbeat'],
       ['waiting-scans', 'Check: scans waiting'], ['asset-totals', 'Check: move progress'],
@@ -988,8 +1013,256 @@
     render();
   });
 
+  /* ───────────── generate: create a move on the server ───────────── */
+  // One sign-in serves both views: the sign-in card and the tool's notices are moved into
+  // whichever of Simulate and Generate is showing.
+  const onGenerate = () => location.hash === '#generate';
+  function placeShared() {
+    const notices = [$('sim-forbidden'), $('sim-offline')];
+    if (onGenerate()) {
+      if ($('sim-connect').parentElement !== $('gen-signin')) {
+        $('gen-signin').append($('sim-connect'));
+        $('gen-notices').append(...notices);
+      }
+    } else if ($('sim-connect').parentElement !== $('sim-setup')) {
+      $('sim-setup').prepend($('sim-connect'));
+      $('sim-body').before(...notices);
+    }
+  }
+
+  const SETUP_FIELDS = { name: 'gen-name', origin_site_id: 'gen-origin',
+    destination_site_id: 'gen-destination', servers: 'gen-servers',
+    containers: 'gen-containers', trucks: 'gen-trucks', move_password: 'gen-move-password' };
+  const SETUP_STEPS = ['draft', 'assets', 'crates_trucks', 'create', 'verify', 'activate'];
+  const SITE_PICKERS = ['gen-origin', 'gen-destination'];
+
+  // The move password the page offers: random, shown so it can be read and copied, and
+  // never stored. Characters easy to misread (i, l, o, 0, 1) are left out.
+  const PASSWORD_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';
+  function newMovePassword() {
+    const out = [];
+    const byte = new Uint8Array(1);
+    const fair = 256 - (256 % PASSWORD_CHARS.length);     // no character more likely
+    while (out.length < 16) {
+      crypto.getRandomValues(byte);
+      if (byte[0] < fair) out.push(PASSWORD_CHARS[byte[0] % PASSWORD_CHARS.length]);
+    }
+    return out.join('');
+  }
+
+  let starting = false;     // the set-up POST is on its way: an older set-up's state is not ours
+  let following = false;    // this page started the set-up or saw it working
+  let madePassword = '';    // in memory only, until Simulate's move password field takes it
+  let setupSeen = false;    // the first state's set-up has been put back in the form
+  let refocus = '';         // a field to focus once the form is enabled again
+
+  // The set-up the page follows: on done, Simulate opens with the new move picked and its
+  // password filled in, ready for Check server. Nothing else is started.
+  function followSetup() {
+    const s = snap.setup;
+    if (!setupSeen) {
+      setupSeen = true;
+      if (s && s.state !== 'done' && !starting) {     // a reload: show what is being made
+        $('gen-name').value = s.name || '';
+        ['servers', 'containers', 'trucks'].forEach(k => {
+          $('gen-' + k).value = s[k] == null ? '' : String(s[k]);
+        });
+        if (s.state === 'working') $('gen-move-password').value = '';   // not known here
+      }
+    }
+    if (starting || !s) return;
+    if (s.state === 'working') { following = true; return; }
+    if (!following) return;
+    following = false;
+    const password = madePassword;
+    madePassword = '';
+    if (s.state !== 'done') {
+      // The error shows and every field keeps what was typed: Create again with the same
+      // entries carries on with the same move. Only an empty password field (after a
+      // reload, when it was not known here) gets a new one.
+      if (!$('gen-move-password').value) $('gen-move-password').value = newMovePassword();
+      if (s.step === 'activate') refocus = 'gen-move-password';   // the thing to change
+      return;
+    }
+    madeMove = s.move_id;
+    movesDrawn = null;
+    editing = true;                          // Simulate's step 2, not an older check's report
+    if (password) $('sim-move-password').value = password;
+    $('gen-name').value = '';                // ready for another move
+    $('gen-move-password').value = newMovePassword();
+    location.hash = 'simulate';
+  }
+
+  /* the server's sites: read once per sign-in, again each time Generate opens, and again
+     when a site list is opened after a failed read */
+  let sites = null, sitesFor = '', sitesLoading = false, sitesFailed = false;
+  let sitesError = '', sitesDrawn = null;
+  const signedIn = () => !!snap && !!snap.connected && ['connected', 'checked'].includes(snap.phase);
+  const signInKey = () => (signedIn() ? `${snap.connected.server}|${snap.connected.email}` : '');
+
+  async function loadSites(again) {
+    const key = signInKey();
+    if (!key || sitesLoading || (sitesFor === key && !(again && sitesFailed))) return;
+    sitesLoading = true;
+    sitesFor = key;
+    let got = null;
+    try {
+      got = await get('/api/sites');
+    } catch (err) {
+      if (signInKey() === key && err.code !== 'forbidden') {
+        sitesFailed = true;
+        // not answering: the notice at the top says so
+        sitesError = err.code === 'offline' ? '' : err.message || INTERNAL;
+      }
+    } finally {
+      sitesLoading = false;
+    }
+    if (got && signInKey() === key) {
+      sites = Array.isArray(got.sites) ? got.sites : [];
+      sitesFailed = false;
+      sitesError = '';
+    }
+    render();
+  }
+
+  function fillSites() {
+    const key = JSON.stringify(sites);
+    if (key === sitesDrawn) return;
+    sitesDrawn = key;
+    for (const id of SITE_PICKERS) {
+      const select = $(id);
+      const keep = select.value;
+      const none = el('option', null,
+        !sites ? '' : sites.length ? 'Choose a site' : 'No sites on this server');
+      none.value = '';
+      none.disabled = true;
+      none.selected = true;
+      select.replaceChildren(none);
+      for (const site of sites || []) {
+        // a truck needs a road route, so a site with no location cannot be picked
+        const opt = el('option', null, site.has_location ? site.name : `${site.name} (no map location)`);
+        opt.value = site.id;
+        opt.disabled = !site.has_location;
+        select.append(opt);
+      }
+      if (keep && (sites || []).some(x => x.id === keep)) select.value = keep;
+    }
+  }
+
+  // Containers and trucks follow the servers: each is put at its minimum unless a higher
+  // number was typed (the tool refuses anything below it).
+  const autoCounts = { 'gen-containers': '', 'gen-trucks': '' };
+  function followServers() {
+    const sizes = snap && snap.sizes;
+    const raw = value('gen-servers');
+    let need = null;
+    if (sizes && /^\d+$/.test(raw) && Number(raw) >= 1) {
+      const containers = Math.ceil(Number(raw) / sizes.container_size);
+      need = { 'gen-containers': containers,
+        'gen-trucks': Math.ceil(containers / sizes.containers_per_truck) };
+    }
+    for (const id of Object.keys(autoCounts)) {
+      const now = value(id);
+      const typed = /^\d+$/.test(now) ? Number(now) : null;
+      $(id).min = need ? String(need[id]) : '1';
+      if (!need) {
+        if (now === autoCounts[id]) $(id).value = autoCounts[id] = '';
+      } else if (now === '' || now === autoCounts[id] || typed === null || typed < need[id]) {
+        $(id).value = autoCounts[id] = String(need[id]);
+      }
+    }
+  }
+  $('gen-servers').addEventListener('input', followServers);
+
+  function renderGenerate() {
+    const s = snap.setup;
+    const working = !!s && s.state === 'working';
+    const signed = signedIn();
+    const held = ACTIVE.includes(snap.phase)
+      ? 'A run is in progress. Open Simulate to watch it; a move can be created once it ends.'
+      : snap.unfinished ? 'A run was interrupted. In Simulate, continue it or choose Start new ' +
+        'run, then create the move here.' : '';
+    setText('gen-blocked', held);
+    $('gen-blocked').hidden = !held;
+    if (!signed && sitesFor) {
+      sites = null;
+      sitesFor = '';
+      sitesFailed = false;
+      sitesError = '';
+    }
+    if (signed && onGenerate()) loadSites(false);
+    fillSites();
+    $('gen-set').disabled = !signed || working || !!held || !!busy;
+    setText('gen-go', working || busy === 'setup' ? 'Creating…' : 'Create');
+    $('gen-progress').hidden = !working;
+    if (working) {
+      // the share of the six steps done, the current one counted as half done
+      const i = Math.max(0, SETUP_STEPS.indexOf(s.step));
+      bar($('gen-progress-bar'), $('gen-progress-fill'),
+        Math.round(((i + 0.5) / SETUP_STEPS.length) * 100));
+      setText('gen-step', s.step_label || '');
+    }
+    if (refocus && !$('gen-set').disabled) {
+      if (onGenerate()) $(refocus).focus();
+      refocus = '';
+    }
+  }
+
+  SITE_PICKERS.forEach(id => $(id).addEventListener('focus', () => loadSites(true)));
+
+  $('gen-form').addEventListener('submit', e => {
+    e.preventDefault();
+    if (busy || !snap || $('gen-set').disabled) return;
+    const whole = id => (/^\d+$/.test(value(id)) && Number(value(id)) >= 1 ? Number(value(id)) : null);
+    const body = { name: value('gen-name'), origin_site_id: $('gen-origin').value,
+      destination_site_id: $('gen-destination').value, servers: whole('gen-servers'),
+      containers: whole('gen-containers'), trucks: whole('gen-trucks'),
+      move_password: $('gen-move-password').value };
+    let ok = true;
+    clearFields(SETUP_FIELDS);
+    if (!body.name) { fieldError('gen-name', 'Enter the move name.'); ok = false; }
+    if (!body.origin_site_id) { fieldError('gen-origin', 'Choose the origin site.'); ok = false; }
+    if (!body.destination_site_id) {
+      fieldError('gen-destination', 'Choose the destination site.');
+      ok = false;
+    }
+    for (const k of ['servers', 'containers', 'trucks']) {
+      if (body[k] === null) { fieldError('gen-' + k, 'Enter a whole number of 1 or more.'); ok = false; }
+    }
+    if (!body.move_password) { fieldError('gen-move-password', 'Enter a move password.'); ok = false; }
+    if (!ok) return;
+    act('setup', ['gen-err'], SETUP_FIELDS, async () => {
+      starting = true;
+      try {
+        await post('/api/setup', body);
+      } finally {
+        starting = false;
+      }
+      madePassword = body.move_password;
+      following = true;
+      await refresh(true);
+    });
+  });
+
+  function focusGenerate() {
+    const target = !$('gen-set').disabled ? $('gen-name')
+      : !$('sim-connected').hidden ? $('gen-title')
+        : ['sim-server', 'sim-email', 'sim-password'].map($).find(i => !i.value) || $('sim-password');
+    target.focus({ preventScroll: true });
+  }
+
+  $('gen-move-password').value = newMovePassword();
+  placeShared();
+
   /* ───────────── start ───────────── */
   $('sim-retry').addEventListener('click', refresh);
-  window.addEventListener('hashchange', () => { if (location.hash === '#simulate' && view) focusView(view); });
+  window.addEventListener('hashchange', () => {
+    placeShared();
+    if (!view) return;
+    if (onGenerate()) sitesFor = '';     // the server's sites are read again on each visit
+    render();
+    if (onGenerate()) focusGenerate();
+    else if (location.hash === '#simulate') focusView(view);
+  });
   refresh();
 })();

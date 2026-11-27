@@ -25,26 +25,35 @@ class TokenExpired(Exception):
 
 
 class CallFailed(Exception):
-    def __init__(self, call: str, status: int | None, code: str | None, retries: int) -> None:
+    """`detail` is the server's error detail (`{"code": ..., ...}`) of a refused call, kept
+    for callers that show its sentences; it is never part of the text or repr."""
+
+    def __init__(self, call: str, status: int | None, code: str | None, retries: int,
+                 detail: dict | None = None) -> None:
         super().__init__(call, status, code, retries)
         self.call = call
         self.status = status
         self.code = code
         self.retries = retries
+        self.detail = detail
 
     def __str__(self) -> str:
         return f"{self.call} failed (status={self.status}, code={self.code}, retries={self.retries})"
 
 
-def error_code(response: httpx.Response) -> str | None:
-    """The server's error code: its `_err` helper raises HTTPException(detail={"code": ...}),
-    which FastAPI sends as {"detail": {"code": ...}}. Anything else gives None."""
+def error_detail(response: httpx.Response) -> dict | None:
+    """The server's error detail: its `_err` helper raises HTTPException(detail={"code":
+    ...}), which FastAPI sends as {"detail": {"code": ...}}. Anything else gives None."""
     try:
         body = response.json()
     except ValueError:
         return None
     detail = body.get("detail") if isinstance(body, dict) else None
-    code = detail.get("code") if isinstance(detail, dict) else None
+    return detail if isinstance(detail, dict) else None
+
+
+def error_code(response: httpx.Response) -> str | None:
+    code = (error_detail(response) or {}).get("code")
     return code if isinstance(code, str) else None
 
 
@@ -115,7 +124,8 @@ async def timed_call(
                     metrics.record(name, ms, True, retries)
                     return response
                 metrics.record(name, ms, False, retries)
-                raise CallFailed(name, status, error_code(response), retries)
+                raise CallFailed(name, status, error_code(response), retries,
+                                 error_detail(response))
 
         if attempt == attempts - 1:
             metrics.record(name, ms, False, retries)

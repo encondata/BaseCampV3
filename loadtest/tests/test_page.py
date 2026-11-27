@@ -11,9 +11,10 @@ from loadtest.web.app import create_app
 
 STATIC = Path(__file__).resolve().parents[1] / "src" / "loadtest" / "web" / "static"
 ROUTES = ("/api/state", "/api/connect", "/api/check", "/api/start", "/api/stop",
-          "/api/continue", "/api/discard", "/api/result", "/api/events")
+          "/api/continue", "/api/discard", "/api/result", "/api/events", "/api/sites",
+          "/api/setup")
 POST_ROUTES = ("/api/connect", "/api/check", "/api/start", "/api/stop", "/api/continue",
-               "/api/discard")
+               "/api/discard", "/api/setup")
 
 
 def read(name: str) -> str:
@@ -39,7 +40,7 @@ async def client():
 async def test_page_keeps_generate_and_drops_coming_later(client):
     page = await client.get("/")
     assert page.status_code == 200
-    assert '<h1 class="page-title">Generate</h1>' in page.text
+    assert '<h1 class="page-title" id="gen-title" tabindex="-1">Generate</h1>' in page.text
     assert "What do you want to do?" in page.text
     assert "Coming later" not in page.text
     assert 'data-go="simulate"' in page.text
@@ -60,25 +61,11 @@ def test_index_loads_the_page_files_by_root_relative_url():
     assert '<script src="/static/simulate.js"></script>' in page
 
 
-def test_generate_gains_the_containers_and_trucks_line():
-    page, js = read("index.html"), read("simulate.js")
-    assert "Containers needed: ${fmt(containers)} · Trucks needed: ${fmt(trucks)}" in page
-    assert "(${size} per container, ${perTruck} containers per truck)" in page
-    assert "Math.ceil(res.rows.length / size)" in page
-    assert "Math.ceil(containers / perTruck)" in page
-    # the profile's numbers when the tool serves the page; 20 and 15 as a plain file
-    assert "const sizes = window.loadtestSizes || {};" in page
-    assert "const size = sizes.container_size || 20;" in page
-    assert "const perTruck = sizes.containers_per_truck || 15;" in page
-    assert "if (state.sizes) window.loadtestSizes = state.sizes;" in js
-
-
 def test_the_only_outside_requests_are_the_fonts_and_they_never_block():
     page = read("index.html")
     hosts = set(re.findall(r"https?://([^/\"'\s]+)", page))
-    # the xlsx writer's XML namespaces are names, and the server field's placeholder is a
-    # format hint: neither is a request
-    hosts -= {"schemas.openxmlformats.org", "api.example.com"}
+    # the server field's placeholder is a format hint, not a request
+    hosts -= {"api.example.com"}
     assert 'placeholder="https://api.example.com"' in page
     assert hosts == {"fonts.googleapis.com", "fonts.gstatic.com"}
     sheet = re.search(r'<link[^>]+fonts\.googleapis\.com/css2[^>]*>', page).group(0)
@@ -305,3 +292,104 @@ def test_the_container_scan_line_says_what_covers_them():
 def test_no_unused_helpers():
     js = read("simulate.js")
     assert "const percent =" not in js
+
+
+# ── Generate: the tool creates the move on the server ─────────────────
+
+
+def generate_view(page: str) -> str:
+    return page[page.index('<section id="view-generate"'):page.index('<section id="view-simulate"')]
+
+
+def test_the_old_file_builders_are_gone():
+    page = read("index.html")
+    for gone in ("ft-form", "sw-form", "From-To list", "Switch From-To", "Download .xlsx",
+                 "zipStore", "generateFT", "generateSW", "schemas.openxmlformats.org",
+                 "sends nothing anywhere"):
+        assert gone not in page, gone
+    # the inline script is the theme switch and the view routing, nothing else
+    inline = page[page.index("<script>"):page.index("</script>")]
+    assert "'data-generator.theme'" in inline                 # the sign-in page's key
+    assert "localStorage.setItem(THEME_KEY" in inline and "showView" in inline
+    assert "fetch(" not in inline and "innerHTML" not in inline
+
+
+def test_generate_has_exactly_the_briefs_inputs():
+    view = generate_view(read("index.html"))
+    ids = re.findall(r'<(?:input|select)[^>]*\bid="([^"]+)"', view)
+    assert ids == ["gen-name", "gen-origin", "gen-destination", "gen-servers", "gen-containers",
+                   "gen-trucks", "gen-move-password"]
+    buttons = re.findall(r'<button[^>]*>', view)
+    assert len(buttons) == 2                         # Start (back) and Create
+    assert re.search(r'<button[^>]*type="submit"[^>]*id="gen-go"[^>]*>Create</button>', view)
+    # step 1 is the Simulate view's own sign-in card, moved in by simulate.js
+    assert 'id="gen-signin"' in view and "sim-connect" not in view
+    assert "Step 2 · Create the move" in view
+    # the button sits in the sticky strip, so it never hides below a scroll
+    assert view.index('class="sim-stick"') < view.index('id="gen-go"')
+
+
+def test_the_generated_move_password_is_visible_and_never_autofilled():
+    view = generate_view(read("index.html"))
+    tag = re.search(r'<input[^>]*id="gen-move-password"[^>]*>', view).group(0)
+    assert 'type="text"' in tag and 'autocomplete="off"' in tag
+    js = without_comments(read("simulate.js"))
+    assert "crypto.getRandomValues(" in js and "Math.random" not in js
+    # handed to Simulate's move password field in memory, never to storage
+    assert re.search(r"\$\('sim-move-password'\)\.value = \w+", js)
+
+
+def test_one_sign_in_serves_both_views():
+    js = without_comments(read("simulate.js"))
+    assert re.search(r"\$\('gen-signin'\)\.append\(\$\('sim-connect'\)\)", js)
+    assert re.search(r"\$\('sim-setup'\)\.prepend\(\$\('sim-connect'\)\)", js)
+    assert "'gen-notices'" in js                    # "not answering" shows on Generate too
+    render = js[js.index("function render() {"):js.index("function focusView(")]
+    assert "renderConnect()" in render and "renderGenerate()" in render
+
+
+def test_connect_is_locked_while_a_run_is_active():
+    js = without_comments(read("simulate.js"))
+    line = next(l for l in js.splitlines() if "$('sim-connect-go').disabled =" in l)
+    assert "ACTIVE.includes(snap.phase)" in line
+
+
+def test_a_site_with_no_location_cannot_be_picked_and_says_why():
+    js = without_comments(read("simulate.js"))
+    fill = js[js.index("function fillSites() {"):js.index("const autoCounts")]
+    assert "disabled = !site.has_location" in fill
+    assert "(no map location)" in fill
+
+
+def test_the_set_up_follows_the_snapshot():
+    js = without_comments(read("simulate.js"))
+    for step in ("draft", "assets", "crates_trucks", "create", "verify", "activate"):
+        assert f"'{step}'" in js, step
+    assert "s.step_label" in js
+    # finished: Simulate opens on the new move; nothing else is started for him
+    follow = js[js.index("function followSetup() {"):js.index("let sites = null")]
+    assert "s.move_id" in follow and "location.hash = 'simulate'" in follow
+    assert "post(" not in follow
+    # an error leaves every typed value alone; only an empty password field is refilled
+    error = follow[follow.index("if (s.state !== 'done')"):follow.index("madeMove =")]
+    assert "gen-name" not in error and "gen-containers" not in error
+    assert "if (!$('gen-move-password').value)" in error
+    # a failed set-up's message shows until the next one starts
+    assert "snap.setup.message" in js
+
+
+def test_containers_and_trucks_follow_the_servers_from_the_profile():
+    js = without_comments(read("simulate.js"))
+    assert "sizes.container_size" in js and "sizes.containers_per_truck" in js
+    assert "Math.ceil(" in js
+    assert "window.loadtestSizes" not in js
+    # only typing the servers recomputes them, never a snapshot or an error
+    assert re.findall(r"followServers\b", js).count("followServers") == 2   # defined, bound
+
+
+def test_the_sites_read_and_the_setup_post_get_the_long_deadline():
+    js = without_comments(read("simulate.js"))
+    posts = re.search(r"const LONG_POSTS = \[([^\]]*)\]", js).group(1)
+    gets = re.search(r"const LONG_GETS = \[([^\]]*)\]", js).group(1)
+    assert "'/api/setup'" in posts and "'/api/sites'" in gets
+    assert re.findall(r"(\w+)\('/api/sites'", js) == ["get"]
