@@ -1184,6 +1184,18 @@ async def test_snapshot_moves_selection_and_devices_in_every_phase(world, fake, 
     assert page_keys(runner) == {"moves": [], "selected": selected, "devices": 32}
 
 
+async def test_the_portal_uses_the_profiles_request_timeout(world, clock, monkeypatch):
+    """Connect has no profile yet; from the check on, the profile's timeout applies."""
+    import loadtest.connection as connection_mod
+    monkeypatch.setattr(connection_mod, "CONNECT_TIMEOUT", 99.0)
+    runner = world.runner()
+    await world.ready(runner)
+    assert runner._conn.portal._client.timeout == httpx.Timeout(30.0)
+    await runner.start()
+    assert runner._driver.run.portal._client.timeout == httpx.Timeout(30.0)
+    await clock.run(runner.stop())
+
+
 async def test_snapshot_carries_the_default_profiles_sizes(world, monkeypatch):
     """The Generate tab's containers-and-trucks line reads them."""
     assert world.runner().snapshot()["sizes"] == {"container_size": 20,

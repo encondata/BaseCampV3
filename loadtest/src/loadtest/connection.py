@@ -42,7 +42,6 @@ MESSAGES = {
                    "connect again.",
     "not_ready": "Run the readiness check first; Start needs every line to pass.",
     "no_unfinished_run": "There is no unfinished run to continue.",
-    "bad_journal": "The unfinished run's journal could not be read, so it cannot be continued.",
     "cannot_write": "The run folder could not be written. Check that the disk has room and the "
                     "runs folder can be written.",
     "move_unreadable": "The run's move could not be read from the server.",

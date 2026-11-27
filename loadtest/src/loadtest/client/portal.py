@@ -135,6 +135,12 @@ class PortalClient:
     def has_refresh_cookie(self) -> bool:
         return sendable_cookie(self._client, REFRESH_COOKIE)
 
+    def use_profile(self, metrics: Metrics, retry: RetrySpec, timeout: float) -> None:
+        """From the readiness check on: the profile's retries and request timeout (the
+        connect before it has no profile yet), counted in `metrics`."""
+        self.metrics, self.retry = metrics, retry
+        self._client.timeout = httpx.Timeout(timeout)
+
     async def close(self) -> None:
         """Closes the connection and forgets the email, password, 2FA challenge and token."""
         self._email = self._password = self._challenge = self._token = None

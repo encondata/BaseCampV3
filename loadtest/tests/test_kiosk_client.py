@@ -234,7 +234,6 @@ async def test_unpack_lost_answer_counts_as_done(fake, clock, device, metrics):
     row = metrics.calls()["unpack"]
     assert (row["count"], row["retries"], row["failures"]) == (1, 1, 0)
     assert metrics.counters()["scans_retried"] == 1
-    assert d.retried_scan_ids == {scan.client_scan_id}
     assert sum(r["client_scan_id"] == str(scan.client_scan_id) for r in fake.raw_scans) == 1
 
 
@@ -250,7 +249,7 @@ async def test_unload_lost_answer_counts_as_done(fake, clock, device, metrics):
                                     scan=scan)) is True
     assert crate["id"] not in fake.truck_of
     assert metrics.calls()["unload"]["failures"] == 0
-    assert d.retried_scan_ids == {scan.client_scan_id}
+    assert metrics.counters()["scans_retried"] == 1
 
 
 async def test_failed_call_returns_false_and_notes_retried_scans(fake, clock, device, metrics):
@@ -261,7 +260,6 @@ async def test_failed_call_returns_false_and_notes_retried_scans(fake, clock, de
     assert await clock.run(d.send_scans(scans)) == 0
     assert metrics.calls()["scans"]["failures"] == 1
     assert metrics.counters()["scans_retried"] == 2
-    assert d.retried_scan_ids == {s.client_scan_id for s in scans}
 
 
 # ── tokens (Review Focus 3) ───────────────────────────────────────────
@@ -432,23 +430,20 @@ async def test_wrong_move_password_raises_with_its_code(fake, clock, device, met
         raise AssertionError("expected CallFailed")
     assert count(fake, "POST", "/kiosk/move-login") == 1      # a refused password is not retried
     assert metrics.calls()["move-login"]["failures"] == 1
-    assert d.last_sign_in_error == "invalid_move_password"
 
 
 async def test_move_inactive_mid_run_returns_short_count(fake, clock, device, metrics):
     d = device("handheld")
     move_id, site_id = await ready(fake, clock, d, status="qa")
-    assert d.last_sign_in_error is None
     await clock.run(clock.sleep(25 * 3600))            # the sign-in has ended
     fake.moves[move_id]["status"] = "completed"
     scan = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
     assert await clock.run(d.send_scans([scan])) == 0
-    assert d.last_sign_in_error == "move_not_active"
+    assert metrics.calls()["move-login"]["failures"] == 1     # refused: move_not_active
     assert metrics.calls()["scans"]["failures"] == 1
     assert ("POST", "/kiosk/scans") not in fake.requests
     fake.moves[move_id]["status"] = "in_progress"       # a later sign-in that works clears it
     assert await clock.run(d.send_scans([scan])) == 1
-    assert d.last_sign_in_error is None
 
 
 # ── follow-up 2 ───────────────────────────────────────────────────────
@@ -470,7 +465,6 @@ async def test_retries_before_a_401_carry_into_the_redo(fake, clock, device, met
     assert count(fake, "POST", f"/kiosk/containers/{crate['id']}/assets") == 3
     row = metrics.calls()["unpack"]
     assert (row["count"], row["retries"], row["failures"]) == (1, 1, 0)
-    assert d.retried_scan_ids == {scan.client_scan_id}
     assert metrics.counters()["scans_retried"] == 1
 
 
@@ -480,7 +474,7 @@ async def test_plain_401_redo_is_not_a_retry(fake, clock, device, metrics):
     fake.fail("POST", r"/kiosk/scans", status=401)
     scan = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
     assert await clock.run(d.send_scans([scan])) == 1
-    assert d.retried_scan_ids == set()
+    assert "scans_retried" not in metrics.counters()
     assert metrics.calls()["scans"]["retries"] == 0
 
 

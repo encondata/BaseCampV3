@@ -63,17 +63,23 @@ class Fleet:
         self._start_done: asyncio.Event | None = None    # set once start() has unwound
         self._stopping = False
         self._closed = False
+        readers = 0     # each RFID Station's own made-up reader, numbered across them
         for stage in profile.stages:
             if stage.device is None or stage.checkpoint is None:
                 continue
             site = move.origin if stage.site == "origin" else move.destination
             stage_devices = []
             for n in range(1, stage.devices + 1):
+                reader = None
+                if stage.device == "rfid_station":
+                    readers += 1
+                    reader = readers
                 device = KioskDevice(
                     base_url=base_url, serial=device_serial(stage.key, n),
                     name=device_name(stage.label, n, stage.devices), kind=stage.device,
                     metrics=metrics, clock=clock, retry=profile.retry,
-                    timeout=profile.request_timeout_seconds, transport=transport)
+                    timeout=profile.request_timeout_seconds, transport=transport,
+                    reader_number=reader)
                 self._setup[device.serial] = (site.id, stage.checkpoint)
                 stage_devices.append(device)
             self._by_stage[stage.key] = stage_devices

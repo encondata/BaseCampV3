@@ -192,7 +192,7 @@ class Runner:
             self.phase, self._report = "connected", None
             portal = self._conn.portal
             metrics = Metrics()
-            portal.metrics, portal.retry = metrics, profile.retry
+            portal.use_profile(metrics, profile.retry, profile.request_timeout_seconds)
             report = await run_checks(
                 portal=portal, profile=profile, base_url=self._conn.server, move_id=move_id,
                 move_password=move_password, metrics=metrics, clock=self.clock,

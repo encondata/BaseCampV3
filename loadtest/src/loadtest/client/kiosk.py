@@ -100,20 +100,20 @@ def _epoch(iso: str) -> float:
 class KioskDevice:
     def __init__(self, *, base_url: str, serial: str, name: str, kind: DeviceKind,
                  metrics: Metrics, clock: Clock, retry: RetrySpec, timeout: float,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 reader_number: int | None = None) -> None:
+        """`reader_number` numbers an RFID Station's made-up reader (the fleet numbers
+        them across its stations); without it, the serial's trailing number is used."""
         self.serial = serial
         self.name = name
         self.kind = kind
         self.metrics = metrics
         self.clock = clock
         self.retry = retry
-        self.retried_scan_ids: set[uuid.UUID] = set()
         self.initiative_id: str | None = None
         self.site_id: str | None = None
         self.scan_status: str | None = None
-        # the code of the last sign-in that failed (e.g. move_not_active); None after
-        # a sign-in that worked
-        self.last_sign_in_error: str | None = None
+        self._reader_number = reader_number
         self._client = httpx.AsyncClient(
             base_url=base_url, timeout=timeout, transport=transport,
             event_hooks={"request": [_count_attempt]})
@@ -156,14 +156,6 @@ class KioskDevice:
         """Move-login and the sign-in heartbeat. A 401 on either (a wrong move
         password, a token refused at once) is a plain CallFailed here: there is
         nothing left to renew."""
-        try:
-            await self._sign_in_steps()
-        except CallFailed as exc:
-            self.last_sign_in_error = exc.code
-            raise
-        self.last_sign_in_error = None
-
-    async def _sign_in_steps(self) -> None:
         if self._password is None:
             raise CallFailed("move-login", None, "not_signed_in", 0)
         # token_call=False: a 401 here is a refused password (invalid_move_password,
@@ -315,7 +307,7 @@ class KioskDevice:
 
     def _reader(self) -> tuple[str, str, str]:
         """This RFID Station's made-up FX9600: ip, serial, model."""
-        n = _number(self.serial)
+        n = self._reader_number or _number(self.serial)
         return f"10.254.0.{n}", f"LOADTEST-READER-{n}", "FX9600"
 
     def _reader_snapshot(self) -> dict:
@@ -376,7 +368,6 @@ class KioskDevice:
     def _note_retry(self, attempts: int, ids: list[uuid.UUID]) -> None:
         if attempts > 1:
             self.metrics.count("scans_retried", len(ids))
-            self.retried_scan_ids.update(ids)
 
     async def _scan_call(self, url: str, *, name: str, body: dict, scan_ids: list[uuid.UUID],
                          already_done: Callable[[httpx.Response], bool] | None = None,

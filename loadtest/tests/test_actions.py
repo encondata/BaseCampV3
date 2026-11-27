@@ -620,3 +620,14 @@ async def test_fleet_errors_use_plain_words(fake, clock, metrics, fail, words):
         await clock.run(fleet.start(MOVE_PASSWORD))
     assert str(caught.value) == f"{fleet.devices[0].name} {words}"
     await fleet.stop()
+
+
+async def test_each_rfid_station_has_its_own_reader(fake, clock, metrics, run):
+    """Numbered across the run's four stations, so the server keeps four fixed readers."""
+    r = await run(fast(), servers=5, containers=1, trucks=1)
+    stations = [d for d in r.fleet.devices if d.kind == "rfid_station"]
+    assert [d._reader() for d in stations] == [
+        (f"10.254.0.{n}", f"LOADTEST-READER-{n}", "FX9600") for n in (1, 2, 3, 4)]
+    for d in stations:
+        await clock.run(d.heartbeat())
+    assert sorted(fake.fixed_readers) == [f"LOADTEST-READER-{n}" for n in (1, 2, 3, 4)]

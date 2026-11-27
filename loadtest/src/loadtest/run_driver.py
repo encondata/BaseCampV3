@@ -142,7 +142,7 @@ class RunDriver:
             journal.close()
             events.close()
             raise RunnerError("cannot_write") from None
-        portal.metrics, portal.retry = metrics, profile.retry
+        portal.use_profile(metrics, profile.retry, profile.request_timeout_seconds)
         run = Run(state=state, profile=profile, move=move, run_dir=run_dir, journal=journal,
                   events=events, metrics=metrics, portal=portal, move_password=move_password,
                   secrets=secrets)
