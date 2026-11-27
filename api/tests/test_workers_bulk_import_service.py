@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy import func, select
 
 from serversherpa.db.models import (
-    AuditLog, Partner, Person, PersonRole, UserAccount, WorkerProfile,
+    AuditLog, Partner, Person, PersonRole, UserAccount, WorkerCertification,
+    WorkerProfile,
 )
 from serversherpa.people import bulk_import as bi
 
@@ -554,3 +555,167 @@ async def test_commit_is_all_or_nothing(db, admin):
         Person.last_name == "Row")) == 0
     with pytest.raises(bi.BulkImportError):
         await commit(db, admin, [])
+
+
+# ── person_id, travel, certifications ───────────────────────────────
+
+async def _cert_count(db, person_id):
+    return await db.scalar(select(func.count()).select_from(WorkerCertification).where(
+        WorkerCertification.person_id == person_id))
+
+
+async def test_person_id_matches_first(db, admin):
+    p = await mk_worker(db, email="r@x.example.com")
+    r = await one(db, admin, {"person_id": str(p.id), "first_name": "Robert", "last_name": "Smith"})
+    assert r["action"] == "unchanged" and r["matched_by"].startswith("person_id")
+
+
+async def test_person_id_disagreeing_with_email_is_an_error(db, admin):
+    a = await mk_worker(db, "Ann", "One", email="a@x.example.com")
+    await mk_worker(db, "Bea", "Two", email="b@x.example.com")
+    r = await one(db, admin, {"person_id": str(a.id), "first_name": "Bea", "last_name": "Two",
+                              "email": "b@x.example.com"})
+    assert r["action"] == "error"
+
+
+async def test_foreign_person_id_is_ignored_with_a_note(db, admin):
+    r = await one(db, admin, {"person_id": str(uuid.uuid4()), "first_name": "New", "last_name": "Person"})
+    assert r["action"] == "create" and r["notes"] == ["person_id not found here"] and not r["errors"]
+
+
+async def test_invalid_person_id_is_an_error(db, admin):
+    r = await one(db, admin, {"person_id": "nope", "first_name": "A", "last_name": "B"})
+    assert r["errors"] == ["person_id 'nope' is not valid"]
+
+
+async def test_duplicate_person_id_within_the_import(db, admin):
+    pid = str(uuid.uuid4())
+    out = await preview(db, admin, [
+        {"person_id": pid, "first_name": "A", "last_name": "One"},
+        {"person_id": pid.upper(), "first_name": "B", "last_name": "Two"}])
+    assert [r["errors"] for r in out["rows"]] == [
+        ["duplicate person_id within the import"]] * 2
+
+
+async def test_person_id_splits_a_shared_name(db, admin):
+    a = await mk_worker(db)
+    b = await mk_worker(db)
+    out = await preview(db, admin, [
+        {"person_id": str(a.id), "first_name": "Robert", "last_name": "Smith"},
+        {"person_id": str(b.id), "first_name": "Robert", "last_name": "Smith"}])
+    assert [(r["action"], r["person_id"]) for r in out["rows"]] == [
+        ("unchanged", str(a.id)), ("unchanged", str(b.id))]
+
+
+async def test_new_rows_have_empty_notes(db, admin):
+    r = await one(db, admin, {"first_name": "New", "last_name": "Person"})
+    assert r["notes"] == []
+
+
+async def test_will_travel_diff_and_apply(db, admin):
+    p = await mk_worker(db, email="t@x.example.com", profile={})
+    row = {"email": "t@x.example.com", "first_name": "Robert", "last_name": "Smith",
+           "will_travel": "No", "travel_region": "West"}
+    r = await one(db, admin, row)
+    assert r["diff"]["will_travel"] == {"old": None, "new": "no"}
+    await commit(db, admin, [r["cells"]], approved=[str(p.id)])
+    prof = await db.get(WorkerProfile, p.id); await db.refresh(prof)
+    assert prof.will_travel is False and prof.travel_region == "West"
+
+
+async def test_will_travel_same_value_is_unchanged_and_create_sets_it(db, admin):
+    await mk_worker(db, email="t@x.example.com", profile={"will_travel": True})
+    r = await one(db, admin, {"email": "t@x.example.com", "first_name": "Robert",
+                              "last_name": "Smith", "will_travel": "TRUE"})
+    assert r["action"] == "unchanged" and r["data"]["will_travel"] == "yes"
+    res = await commit(db, admin, [{"first_name": "C", "last_name": "D", "will_travel": "yes",
+                                    "travel_restrictions": "No flights"}])
+    prof = await db.get(WorkerProfile, uuid.UUID(res["rows"][0]["person_id"]))
+    assert prof.will_travel is True and prof.travel_restrictions == "No flights"
+
+
+def test_parse_will_travel_and_cert_key():
+    assert [bi.parse_will_travel(v) for v in ("", "Yes", "no", "TRUE", "false")] == [
+        None, True, False, True, False]
+    with pytest.raises(ValueError):
+        bi.parse_will_travel("maybe")
+    assert bi.cert_key(" CPR ", "Red  Cross") == "cpr|red cross"
+    assert bi.cert_key("CPR", None) == "cpr|"
+
+
+async def test_will_travel_invalid(db, admin):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "will_travel": "maybe"})
+    assert "will_travel must be yes or no" in r["errors"]
+
+
+async def test_certifications_added_on_create(db, admin):
+    res = await commit(db, admin, [{"first_name": "C", "last_name": "D",
+        "certifications": [{"name": "CPR", "issuer": "Red Cross", "expires_on": "2027-01-31"}]}])
+    pid = uuid.UUID(res["rows"][0]["person_id"])
+    certs = list(await db.scalars(select(WorkerCertification).where(WorkerCertification.person_id == pid)))
+    assert [(c.name, c.issuer, str(c.expires_on), c.source) for c in certs] == [("CPR", "Red Cross", "2027-01-31", "manual")]
+    entry = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_id == str(pid), AuditLog.action == "certification.add"))
+    assert entry.changes == {"name": {"from": None, "to": "CPR"}}
+
+
+async def test_certifications_on_update_need_the_tick_and_skip_existing(db, admin):
+    p = await mk_worker(db, email="c@x.example.com", profile={})
+    db.add(WorkerCertification(person_id=p.id, name="CPR", issuer="Red Cross")); await db.commit()
+    row = {"email": "c@x.example.com", "first_name": "Robert", "last_name": "Smith",
+           "certifications": [{"name": "cpr", "issuer": "red  cross"}, {"name": "OSHA 10"}]}
+    r = await one(db, admin, row)
+    assert r["action"] == "update" and r["diff"] == {"certifications": {"add": ["OSHA 10"]}}
+    await commit(db, admin, [r["cells"]])                       # not ticked → skipped
+    assert await _cert_count(db, p.id) == 1
+    await commit(db, admin, [r["cells"]], approved=[str(p.id)])
+    assert await _cert_count(db, p.id) == 2
+    assert (await one(db, admin, row))["action"] == "unchanged"  # re-run adds nothing
+
+
+async def test_duplicate_certifications_in_a_row_collapse(db, admin):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR", "issuer": "Red Cross", "source": "learning", "id": "x"},
+        {"name": "cpr", "issuer": "RED CROSS", "issued_on": "2025-01-01"}]})
+    assert r["data"]["certifications"] == [
+        {"name": "CPR", "issuer": "Red Cross", "issued_on": None, "expires_on": None}]
+    json.dumps(r["data"])                                       # stays serializable
+
+
+async def test_certification_only_row_skips_rank_guard(db, admin):
+    boss = await mk_worker(db, "Big", "Boss", email="boss@x.example.com", account=True, profile={})
+    db.add(PersonRole(person_id=boss.id, role="developer")); await db.commit()   # rank above admin's 60
+    r = await one(db, admin, {"email": "boss@x.example.com", "first_name": "Big", "last_name": "Boss",
+                              "certifications": [{"name": "CPR"}]})
+    assert r["action"] == "update" and not r["errors"]
+    r2 = await one(db, admin, {"email": "boss@x.example.com", "first_name": "Big", "last_name": "Boss",
+                               "job_title": "CEO", "certifications": [{"name": "CPR"}]})
+    assert "rank too low to edit this person" in r2["errors"]
+
+
+@pytest.mark.parametrize("value, error", [
+    ("x", "certifications must be a list"), ({"name": "a"}, "certifications must be a list"),
+    ([1], "certifications must be a list"), ([{"issuer": "X"}], "certification 1: name is required"),
+    ([{"name": "A", "issued_on": "3/1/25"}], "certification 1: issued_on '3/1/25' is not a date (YYYY-MM-DD)"),
+    ([{"name": "A"}, {"name": "B", "expires_on": "2027-02-30"}],
+     "certification 2: expires_on '2027-02-30' is not a date (YYYY-MM-DD)"),
+])
+async def test_bad_certifications_are_row_errors(db, admin, value, error):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": value})
+    assert error in r["errors"]
+
+
+async def test_commit_replays_certifications_once(db, admin):
+    r = await one(db, admin, {"first_name": "C", "last_name": "D",
+                              "certifications": [{"name": "CPR"}]})
+    assert r["cells"]["certifications"] == [{"name": "CPR"}]
+    res = await commit(db, admin, [r["cells"]])
+    assert await _cert_count(db, uuid.UUID(res["rows"][0]["person_id"])) == 1
+
+
+async def test_foreign_ids_match_by_email(db, admin):
+    p = await mk_worker(db, email="f@x.example.com")
+    r = await one(db, admin, {"person_id": str(uuid.uuid4()), "first_name": "Rob",
+                              "last_name": "Smith", "email": "f@x.example.com"})
+    assert r["action"] in ("update", "unchanged") and r["person_id"] == str(p.id)
+    assert r["matched_by"] == "email" and r["notes"] == ["person_id not found here"]
