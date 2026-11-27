@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import httpx
 import pytest
 from conftest import FAKE_BASE_URL
@@ -43,6 +45,29 @@ class SecureCookies(httpx.AsyncBaseTransport):
         return httpx.Response(response.status_code, headers=headers, content=body)
 
 
+class StripCookies(httpx.AsyncBaseTransport):
+    """A server that sets no cookie at all."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def handle_async_request(self, request):
+        response = await self.inner.handle_async_request(request)
+        body = await response.aread()
+        headers = [(k, v) for k, v in response.headers.raw if k.lower() != b"set-cookie"]
+        return httpx.Response(response.status_code, headers=headers, content=body)
+
+
+class Switch(httpx.AsyncBaseTransport):
+    """A transport whose server can be swapped after the sign-in."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def handle_async_request(self, request):
+        return await self.inner.handle_async_request(request)
+
+
 class Setup:
     def __init__(self, fake, clock, portal, metrics, profile):
         self.fake, self.clock, self.metrics, self.profile = fake, clock, metrics, profile
@@ -51,12 +76,13 @@ class Setup:
         self.move = fake.moves[self.move_id]
 
     async def check(self, *, password=MOVE_PASSWORD, router=None, user=None,
-                    transport=None, **extra):
+                    transport=None, base_url=FAKE_BASE_URL, **extra):
         self.fake.add_portal_user(EMAIL, PASSWORD, **(user or {}))
-        portal_client = self.portal_factory(transport=transport or self.fake.transport())
+        portal_client = self.portal_factory(transport=transport or self.fake.transport(),
+                                            base_url=base_url)
         await self.clock.run(portal_client.login(EMAIL, PASSWORD))
         report = await self.clock.run(run_checks(
-            portal=portal_client, profile=self.profile, base_url=FAKE_BASE_URL,
+            portal=portal_client, profile=self.profile, base_url=base_url,
             move_id=self.move_id, move_password=password, metrics=self.metrics,
             clock=self.clock, router_url=ROUTER, transport=transport or self.fake.transport(),
             router_transport=router or osrm(), **extra))
@@ -170,6 +196,41 @@ async def test_sign_in_failure_codes(setup, monkeypatch, code, text):
     assert by_key(report)["move_password"].status == "fail"
 
 
+async def test_heartbeat_failure_after_the_password_was_accepted(setup):
+    setup.fake.fail("POST", "/kiosk/heartbeat", status=503, times=9)
+    report = await setup.check()
+    assert by_key(report)["move_password"].detail == (
+        "The move password was accepted, but the kiosk could not finish signing in (the "
+        "server answered 503). Check the server, then check again.")
+    assert setup.fake.requests.count(("POST", "/kiosk/move-login")) == 1
+
+
+async def test_password_for_a_different_move(setup):
+    setup.fake.add_move(servers=0, containers=0, trucks=0, password="other-pass")
+    report = await setup.check(password="other-pass")
+    assert by_key(report)["move_password"].detail == (
+        "That password signs in to a different move. Enter the password for Load test move 1.")
+    assert not report.can_start
+    assert setup.fake.requests.count(("POST", "/kiosk/move-login")) == 1
+
+
+async def test_kiosk_setup_failure_for_the_first_checkpoint(setup):
+    setup.profile = replace(setup.profile, stages=tuple(
+        replace(s, checkpoint="no_such_status") if s.key == setup.profile.stages[0].key else s
+        for s in setup.profile.stages))
+    detail = by_key(await setup.check())["move_password"].detail
+    assert detail.startswith("The profile's first checkpoint (no_such_status) is not an active")
+
+
+async def test_password_accepted_but_move_unreadable(setup):
+    setup.fake.fail("GET", r"/initiatives/.*", status=500, times=9)
+    got = by_key(await setup.check())
+    assert got["move_password"].status == "fail"
+    assert got["move_password"].detail.startswith(
+        "The move password was accepted, but this tool could not confirm it is for this move")
+    assert got["move_status"].status == "fail"
+
+
 async def test_sign_in_unknown_failure_gives_status(setup):
     setup.fake.fail("POST", "/kiosk/move-login", status=503, times=9)
     report = await setup.check()
@@ -198,6 +259,40 @@ async def test_cookies_not_kept_with_2fa_fails(setup):
         "server's https address.")
 
 
+async def test_https_with_no_cookie_kept(setup):
+    transport = StripCookies(setup.fake.transport())
+    report = await setup.check(transport=transport, base_url="https://fake.test")
+    got = by_key(report)["sign_in_cookies"]
+    assert got.status == "warn" and report.can_start
+    assert got.detail == ("The server did not keep the sign-in, so devices would sign in "
+                          "again about every 15 minutes.")
+    assert "http" not in got.detail.replace("https", "")
+    report = await setup.check(transport=transport, base_url="https://fake.test",
+                               used_totp=True)
+    assert only_failure(report, "sign_in_cookies") == (
+        "The server did not keep the sign-in, and the portal account uses a 2FA code, so "
+        "the run would stop at its first re-sign-in.")
+
+
+async def test_a_web_page_instead_of_the_server_does_not_raise(setup):
+    switch = Switch(setup.fake.transport())
+    setup.fake.add_portal_user(EMAIL, PASSWORD)
+    p = setup.portal_factory(transport=switch)
+    await setup.clock.run(p.login(EMAIL, PASSWORD))
+    switch.inner = httpx.MockTransport(lambda r: httpx.Response(
+        200, text="<html>Welcome</html>", headers={"content-type": "text/html"}))
+    report = await setup.clock.run(run_checks(
+        portal=p, profile=setup.profile, base_url=FAKE_BASE_URL, move_id=setup.move_id,
+        move_password=MOVE_PASSWORD, metrics=setup.metrics, clock=setup.clock,
+        router_url=ROUTER, transport=switch, router_transport=osrm()))
+    got = by_key(report)
+    assert not report.can_start
+    assert "does not understand" in got["portal_access"].detail
+    assert "does not understand" in got["move_password"].detail
+    assert "does not understand" in got["server_ready"].detail
+    assert got["move_status"].detail.endswith("Check the server address, then check again.")
+
+
 async def test_move_not_in_progress(setup):
     setup.move["status"] = "planned"
     report = await setup.check()
@@ -212,8 +307,19 @@ async def test_server_with_a_tag_and_one_without_serial(setup):
     second["serial_number"] = None
     report = await setup.check()
     detail = only_failure(report, "servers")
-    assert "1 of 45 servers have no serial number" in detail
-    assert "1 of 45 servers already have an RFID tag" in detail
+    assert "1 of 45 servers has no serial number" in detail
+    assert "1 of 45 servers already has an RFID tag" in detail
+
+
+async def test_servers_plural_forms(setup):
+    items = list(setup.fake.assets.values())
+    for a in items[:2]:
+        a["serial_number"] = " "
+    for a in items[2:5]:
+        a["rfid_tag"] = "ABC"
+    detail = by_key(await setup.check())["servers"].detail
+    assert "2 of 45 servers have no serial number" in detail
+    assert "3 of 45 servers already have an RFID tag" in detail
 
 
 async def test_no_servers(setup):
@@ -237,7 +343,31 @@ async def test_container_not_empty(setup):
     cid = next(iter(setup.fake.containers))
     setup.fake.container_of[aid] = cid
     report = await setup.check()
-    assert "1 container already holds servers" in only_failure(report, "containers")
+    detail = only_failure(report, "containers")
+    assert detail.startswith("1 of 3 containers holds servers: Crate 1-001 (1 server).")
+    assert "All containers on the move must be empty before a run." in detail
+
+
+async def test_surplus_container_that_is_not_empty_still_fails(setup):
+    cid = "extra-container"
+    setup.fake.containers[cid] = {"id": cid, "name": "Extra", "initiative_id": setup.move_id,
+                                  "site_id": None, "status": "available"}
+    for a in list(setup.fake.assets.values())[:2]:
+        setup.fake.container_of[a["id"]] = cid
+    detail = only_failure(await setup.check(), "containers")
+    assert detail.startswith("1 of 4 containers holds servers: Extra (2 servers).")
+
+
+async def test_many_full_containers_are_named_up_to_five(setup):
+    for i in range(7):
+        cid = f"full-{i}"
+        setup.fake.containers[cid] = {"id": cid, "name": f"Full {i}",
+                                      "initiative_id": setup.move_id, "site_id": None,
+                                      "status": "available"}
+        setup.fake.container_of[list(setup.fake.assets)[i]] = cid
+    detail = only_failure(await setup.check(), "containers")
+    assert detail.startswith("7 of 10 containers hold servers: Full 0 (1 server)")
+    assert "and 2 more" in detail
 
 
 async def test_more_containers_and_trucks_than_needed_pass(setup):
@@ -259,7 +389,25 @@ async def test_truck_already_departed(setup):
     next(iter(setup.fake.trucks.values()))["status"] = "in_transit"
     report = await setup.check()
     detail = only_failure(report, "trucks")
-    assert "1 truck already left (Truck 1-01)" in detail
+    assert "1 truck already left (Truck 1-01). Set it back" in detail
+    assert "Add" not in detail          # one truck is enough: only the departure is wrong
+
+
+async def test_enough_trucks_but_one_at_destination(setup):
+    next(iter(setup.fake.trucks.values()))["status"] = "at_destination"
+    detail = only_failure(await setup.check(), "trucks")
+    assert detail.endswith("or use a new truck.")
+
+
+async def test_two_departed_trucks_plural(setup):
+    setup.fake.trucks["extra"] = {"id": "extra", "name": "Extra truck",
+                                  "initiative_id": setup.move_id, "status": "in_transit",
+                                  "start_site_id": None, "end_site_id": None}
+    for t in setup.fake.trucks.values():
+        t["status"] = "in_transit"
+    detail = only_failure(await setup.check(), "trucks")
+    assert "2 trucks already left (Truck 1-01, Extra truck). Set them back" in detail
+    assert detail.endswith("or use new trucks.")
 
 
 async def test_too_few_trucks(setup):
@@ -272,23 +420,87 @@ async def test_site_without_coordinates(setup):
     setup.fake.sites[setup.move["origin_site_id"]]["latitude"] = None
     report = await setup.check()
     detail = only_failure(report, "route")
-    assert "the origin site (Origin 1)" in detail and "latitude and longitude" in detail
+    assert detail == ("The origin site (Origin 1) has no latitude and longitude. "
+                      "Add them to the site in the portal.")
     assert report.route == []
+
+
+async def test_both_sites_without_coordinates(setup):
+    for key in ("origin_site_id", "destination_site_id"):
+        setup.fake.sites[setup.move[key]]["longitude"] = None
+    detail = only_failure(await setup.check(), "route")
+    assert detail == ("The origin site (Origin 1) has no latitude and longitude. Add them to "
+                      "the site in the portal. The destination site (Destination 1) has no "
+                      "latitude and longitude. Add them to the site in the portal.")
+
+
+async def test_origin_site_missing(setup):
+    setup.move["origin_site_id"] = None
+    report = await setup.check()
+    assert by_key(report)["route"].detail == (
+        "The move has no origin site. Set an origin site on the move in the portal.")
+    assert "no origin site. Set an origin site" in by_key(report)["move_password"].detail
+    assert report.route == []
+
+
+async def test_destination_site_missing(setup):
+    setup.move["destination_site_id"] = None
+    detail = only_failure(await setup.check(), "route")
+    assert detail == ("The move has no destination site. Set a destination site on the "
+                      "move in the portal.")
+
+
+async def test_zero_coordinates_are_real(setup):
+    for key in ("origin_site_id", "destination_site_id"):
+        setup.fake.sites[setup.move[key]].update(latitude=0.0, longitude=0.0)
+    report = await setup.check()
+    assert by_key(report)["route"].status == "pass" and report.can_start
 
 
 async def test_no_route(setup):
     report = await setup.check(router=osrm("NoRoute"))
     detail = only_failure(report, "route")
-    assert "NoRoute" in detail and "router.example.test" in detail
+    assert detail == ("The routing service found no road route between Origin 1 and "
+                      "Destination 1. Check the two sites' coordinates.")
     assert report.route == []
+
+
+async def test_router_unreachable_names_the_host(setup):
+    def boom(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    detail = only_failure(await setup.check(router=httpx.MockTransport(boom)), "route")
+    assert detail.startswith("Could not reach the routing service (router.example.test); "
+                             "try again in a minute.")
+    assert "NoRoute" not in detail
+
+
+async def test_bad_router_address_does_not_raise(setup):
+    setup.fake.add_portal_user(EMAIL, PASSWORD)
+    p = setup.portal_factory(transport=setup.fake.transport())
+    await setup.clock.run(p.login(EMAIL, PASSWORD))
+    report = await run_checks(      # real I/O only if the address were accepted: it is not
+        portal=p, profile=setup.profile, base_url=FAKE_BASE_URL, move_id=setup.move_id,
+        move_password=MOVE_PASSWORD, metrics=setup.metrics, clock=setup.clock,
+        router_url="http://exa mple", transport=setup.fake.transport())
+    assert by_key(report)["route"].status == "fail" and not report.can_start
 
 
 async def test_inactive_checkpoint(setup):
     setup.fake.inactive_asset_statuses = {"qa"}
     report = await setup.check()
     detail = only_failure(report, "checkpoints")
-    assert "1 checkpoint in the profile is not an active asset status" in detail
-    assert "qa" in detail
+    assert detail == ("1 checkpoint in the profile is not an active asset status on the "
+                      "server: qa. Activate it in the portal's asset statuses, or change "
+                      "the profile.")
+    assert "qa" not in by_key(report)["rules"].detail      # named once, on the checkpoints line
+
+
+async def test_inactive_checkpoints_plural(setup):
+    setup.fake.inactive_asset_statuses = {"qa", "complete"}
+    detail = only_failure(await setup.check(), "checkpoints")
+    assert detail.startswith("2 checkpoints in the profile are not an active asset status")
+    assert "qa, complete. Activate them" in detail
 
 
 async def test_read_only(setup):
@@ -301,6 +513,13 @@ async def test_workers_not_all_running(setup):
     setup.fake.background = {"state": "running", "running": 7, "total": 9}
     report = await setup.check()
     assert "Only 7 of 9 background workers are running" in only_failure(report, "server_ready")
+
+
+async def test_no_workers_reporting(setup):
+    setup.fake.background = {"state": "running", "running": 0, "total": 0}
+    assert only_failure(await setup.check(), "server_ready") == (
+        "No background workers are reporting. Scans would be stored and never processed. "
+        "Start the workers, then check again.")
 
 
 async def test_rules_warning_lists_checkpoints_with_stage_labels(setup):
@@ -346,7 +565,7 @@ async def test_roster_read_failure_skips_dependents(setup):
     got = by_key(report)
     assert got["servers"].detail == (
         "Could not read the move's servers: the portal account is not allowed to read it. "
-        "Fix that, then check again.")
+        "Give the account access to it, then check again.")
     assert got["containers"].detail == NOT_CHECKED and got["trucks"].detail == NOT_CHECKED
     assert got["move_status"].status == "pass"
 
@@ -354,4 +573,12 @@ async def test_roster_read_failure_skips_dependents(setup):
 async def test_redirect_reads_name_the_fix(setup):
     setup.fake.fail("GET", "/system/status", status=302, times=9)
     report = await setup.check()
-    assert "redirects; use the address it redirects to" in by_key(report)["server_ready"].detail
+    assert "the server address redirects. Use the address it redirects to (usually https)" \
+        in by_key(report)["server_ready"].detail
+
+
+async def test_a_server_error_says_check_the_server(setup):
+    setup.fake.fail("GET", "/system/status", status=500, times=9)
+    assert by_key(await setup.check())["server_ready"].detail == (
+        "Could not read the server's status: the server answered 500. Check the server, "
+        "then check again.")

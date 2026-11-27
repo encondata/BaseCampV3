@@ -22,6 +22,10 @@ class RouteError(Exception):
     """The road route could not be had. The message is plain and safe to show."""
 
 
+class NoRoute(RouteError):
+    """The service answered, but found no road between the two points."""
+
+
 def _coord(value: float) -> str:
     """At most 5 decimal places, without trailing zeros (-96.80000 -> -96.8)."""
     text = f"{value:.5f}".rstrip("0").rstrip(".")
@@ -55,7 +59,7 @@ async def fetch_route(origin: tuple[float, float], destination: tuple[float, flo
         raise RouteError("The road-routing service sent an answer that is not JSON.") from None
     code = body.get("code") if isinstance(body, dict) else None
     if code != "Ok":
-        raise RouteError(f"The road-routing service found no route ({code}).")
+        raise NoRoute(f"The road-routing service found no route ({code}).")
     try:
         coords = body["routes"][0]["geometry"]["coordinates"]
         line = [(float(lat), float(lng)) for lng, lat, *_ in coords]
@@ -71,6 +75,11 @@ def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
     h = (math.sin((lat2 - lat1) / 2) ** 2
          + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2)
     return 2 * EARTH_RADIUS_KM * math.asin(min(1.0, math.sqrt(h)))
+
+
+def line_km(line: list[tuple[float, float]]) -> float:
+    """The line's length in kilometers (haversine, summed over its segments)."""
+    return sum(_km(a, b) for a, b in itertools.pairwise(line))
 
 
 def points_along(line: list[tuple[float, float]], count: int) -> list[tuple[float, float]]:

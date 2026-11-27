@@ -28,7 +28,7 @@ from .clock import Clock
 from .http import CallFailed
 from .metrics import Metrics
 from .profile import Profile, containers_needed, trucks_needed
-from .route import RouteError, _km, fetch_route, points_along
+from .route import NoRoute, RouteError, fetch_route, line_km, points_along
 
 Status = Literal["pass", "fail", "warn"]
 
@@ -36,10 +36,14 @@ CHECK_SERIAL = "LOADTEST-CHECK"
 CHECK_NAME = "Load test – check"
 NOT_CHECKED = "Not checked: fix the lines above first."
 DEPARTED = ("in_transit", "at_destination")
+NAMED_MAX = 5
 NOTIFICATIONS_DETAIL = (
     "This run changes truck statuses and fires status rules, so the server sends its "
     "normal notifications to anyone watching this move, its trucks or its sites.")
 HTTPS_ONLY = "This server only keeps sign-ins over https, and this address is http."
+# What a server answer that is not what the tool expects raises while it is read.
+BAD_ANSWER = (CallFailed, ValueError, KeyError, TypeError)
+NOT_UNDERSTOOD = "the server sent an answer this tool does not understand"
 
 SIGN_IN_FAILURES = {
     "invalid_move_password": "The move password was not accepted.",
@@ -75,28 +79,50 @@ def _n(count: int, word: str) -> str:
     return f"{count:,} {word}{'' if count == 1 else 's'}"
 
 
-def _why(exc: CallFailed) -> str:
-    if exc.code == "redirected":
-        return "the server address redirects; use the address it redirects to (usually https)"
+def _has(count: int) -> str:
+    return "has" if count == 1 else "have"
+
+
+def _named(names: list[str]) -> str:
+    more = len(names) - NAMED_MAX
+    return ", ".join(names[:NAMED_MAX]) + (f" and {more:,} more" if more > 0 else "")
+
+
+def _answered(exc: CallFailed) -> str:
     if exc.status is None:
         return "the server could not be reached"
-    if exc.status == 401:
-        return "the portal sign-in was refused"
-    if exc.status == 403:
-        return "the portal account is not allowed to read it"
-    if exc.status == 404:
-        return "the server has no such record"
     return f"the server answered {exc.status}"
 
 
-def _unreadable(what: str, exc: CallFailed) -> str:
-    return f"Could not read {what}: {_why(exc)}. Fix that, then check again."
+def _unreadable(what: str, exc: Exception) -> str:
+    """Why a read failed, and what to do about it."""
+    if not isinstance(exc, CallFailed):
+        reason, fix = NOT_UNDERSTOOD, "Check the server address, then check again."
+    elif exc.code == "redirected":
+        reason = "the server address redirects"
+        fix = "Use the address it redirects to (usually https), then check again."
+    elif exc.status is None:
+        reason = "the server could not be reached"
+        fix = "Check the server address and that the server is running, then check again."
+    elif exc.status == 401:
+        reason = "the portal sign-in was refused"
+        fix = "Check the portal account, then check again."
+    elif exc.status == 403:
+        reason = "the portal account is not allowed to read it"
+        fix = "Give the account access to it, then check again."
+    elif exc.status == 404:
+        reason = "the server has no such record"
+        fix = "Check the move and the server address, then check again."
+    else:
+        reason = f"the server answered {exc.status}"
+        fix = "Check the server, then check again."
+    return f"Could not read {what}: {reason}. {fix}"
 
 
-async def _read(call: Awaitable) -> tuple[object, CallFailed | None]:
+async def _read(call: Awaitable) -> tuple[object, Exception | None]:
     try:
         return await call, None
-    except CallFailed as exc:
+    except BAD_ANSWER as exc:
         return None, exc
 
 
@@ -106,8 +132,33 @@ def _coordinates(site: SiteInfo | None) -> tuple[float, float] | None:
     return (site.lat, site.lng)
 
 
-def _line_km(line: list[tuple[float, float]]) -> float:
-    return sum(_km(a, b) for a, b in zip(line, line[1:], strict=False))
+def _sign_in_failure(exc: Exception) -> str:
+    """A refused or failed first sign-in (the password step or the heartbeat after it)."""
+    if not isinstance(exc, CallFailed):
+        return f"The kiosk sign-in failed: {NOT_UNDERSTOOD}. Check the server address."
+    if exc.call == "heartbeat":
+        return ("The move password was accepted, but the kiosk could not finish signing in "
+                f"({_answered(exc)}). Check the server, then check again.")
+    return SIGN_IN_FAILURES.get(exc.code or "") or (
+        f"The kiosk sign-in failed ({_answered(exc)}).")
+
+
+def _setup_failure(exc: Exception, move: MoveInfo, checkpoint: str) -> str:
+    """The move-bound kiosk setup that proves the password is for this move."""
+    if not isinstance(exc, CallFailed):
+        return f"The kiosk could not be set up: {NOT_UNDERSTOOD}. Check the server address."
+    if exc.code == "move_locked":
+        return f"That password signs in to a different move. Enter the password for {move.name}."
+    if exc.code == "bad_scan_status":
+        return (f"The profile's first checkpoint ({checkpoint}) is not an active asset status, "
+                "so the kiosk could not be set up. The checkpoints line below lists what to "
+                "fix.")
+    if exc.code == "bad_initiative":
+        return "The server will not set up a kiosk for this move (it is completed or cancelled)."
+    if exc.code == "bad_site":
+        return "The server does not accept the move's origin site for a kiosk. Check the move."
+    return ("The move password was accepted, but the kiosk could not be set up for this move "
+            f"({_answered(exc)}). Check the server, then check again.")
 
 
 async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, move_id: str,
@@ -120,12 +171,15 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
     def add(key: str, label: str, status: Status, detail: str) -> None:
         checks.append(Check(key, label, status, detail))
 
+    stages = [s for s in profile.stages if s.checkpoint]
+    checkpoints = list(dict.fromkeys(s.checkpoint for s in stages))
+
     # ── portal_access ──
     label = "Portal sign-in can change trucks and read scans"
     wanted = (("trucks", "change", "change trucks"), ("scans", "view", "read scans"),
               ("initiatives", "view", "read the move"))
     lacking: list[str] = []
-    unreadable: CallFailed | None = None
+    unreadable: Exception | None = None
     for resource, action, words in wanted:
         allowed, exc = await _read(portal.can(resource, action))
         if exc is not None:
@@ -145,6 +199,9 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
             "The portal account can change trucks and read scans and the move.")
 
     # ── move_password and sign_in_cookies: one throwaway kiosk sign-in ──
+    # The move is read first: the kiosk setup after the sign-in proves the password is
+    # for this move, and needs the move's name and origin site.
+    move, move_error = await _read(portal.move(move_id))
     label = "Move password signs a kiosk in"
     device = KioskDevice(
         base_url=base_url, serial=CHECK_SERIAL, name=CHECK_NAME, kind="handheld",
@@ -152,22 +209,42 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
         timeout=profile.request_timeout_seconds, transport=transport)
     signed_in = False
     device_keeps_cookie = False
+    password_detail: tuple[Status, str]
     try:
         try:
             await device.sign_in(move_password)
+        except BAD_ANSWER as exc:
+            password_detail = ("fail", _sign_in_failure(exc))
+        else:
             signed_in = True
             device_keeps_cookie = device.has_refresh_cookie
-        except CallFailed as exc:
-            add("move_password", label, "fail", SIGN_IN_FAILURES.get(exc.code or "") or (
-                f"The kiosk sign-in failed (the server answered {exc.status})."
-                if exc.status is not None else
-                "The kiosk sign-in failed (the server could not be reached)."))
+            if move is None:
+                password_detail = ("fail", (
+                    "The move password was accepted, but this tool could not confirm it is "
+                    "for this move, because the move could not be read (see the move line). "
+                    "Fix that, then check again."))
+            elif move.origin is None:
+                password_detail = ("fail", (
+                    "The move password was accepted, but this tool could not confirm it is "
+                    "for this move, because the move has no origin site. Set an origin site "
+                    "on the move, then check again."))
+            elif not checkpoints:
+                password_detail = ("pass", f"The move password signed a kiosk in to {move.name}.")
+            else:
+                try:
+                    await device.setup(initiative_id=move.id, site_id=move.origin.id,
+                                       scan_status=checkpoints[0])
+                except BAD_ANSWER as exc:
+                    password_detail = ("fail", _setup_failure(exc, move, checkpoints[0]))
+                else:
+                    password_detail = (
+                        "pass", f"The move password signed a kiosk in to {move.name}.")
     finally:
         await device.close()
-    if signed_in:
-        add("move_password", label, "pass", "The move password signed a kiosk in.")
+    add("move_password", label, *password_detail)
 
     label = "Sign-ins are kept"
+    secure_address = urlparse(base_url).scheme == "https"
     if not signed_in:
         add("sign_in_cookies", label, "fail", NOT_CHECKED)
     elif portal.has_refresh_cookie and device_keeps_cookie:
@@ -176,17 +253,21 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
     elif used_totp:
         add("sign_in_cookies", label, "fail",
             f"{HTTPS_ONLY} The portal account uses a 2FA code, so the run would stop at its "
-            "first re-sign-in. Use the server's https address.")
+            "first re-sign-in. Use the server's https address." if not secure_address else
+            "The server did not keep the sign-in, and the portal account uses a 2FA code, so "
+            "the run would stop at its first re-sign-in.")
     else:
         add("sign_in_cookies", label, "warn",
             f"{HTTPS_ONLY} Every device would sign in again about every 15 minutes, which "
-            "adds load a real move does not have. Use the server's https address.")
+            "adds load a real move does not have. Use the server's https address."
+            if not secure_address else
+            "The server did not keep the sign-in, so devices would sign in again about every "
+            "15 minutes.")
 
     # ── move_status ──
     label = "Move is In progress"
-    move, exc = await _read(portal.move(move_id))
-    if exc is not None:
-        add("move_status", label, "fail", _unreadable("the move", exc))
+    if move_error is not None:
+        add("move_status", label, "fail", _unreadable("the move", move_error))
     elif move.status == "in_progress":
         add("move_status", label, "pass", f'The move "{move.name}" is In progress.')
     else:
@@ -210,11 +291,12 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
         tagged = sum(1 for r in roster if r.rfid_tag)
         problems = []
         if no_serial:
-            problems.append(f"{no_serial:,} of {_n(total, 'server')} have no serial number. "
-                            "Add their serial numbers in the portal.")
+            problems.append(f"{no_serial:,} of {_n(total, 'server')} {_has(no_serial)} no "
+                            "serial number. Add the serial numbers in the portal.")
         if tagged:
-            problems.append(f"{tagged:,} of {_n(total, 'server')} already have an RFID tag. "
-                            "The run enrolls tags itself, so use servers without tags.")
+            problems.append(f"{tagged:,} of {_n(total, 'server')} already {_has(tagged)} an "
+                            "RFID tag. The run enrolls tags itself, so use servers without "
+                            "tags.")
         if problems:
             add("servers", label, "fail", " ".join(problems))
         else:
@@ -235,16 +317,19 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
             add("containers", label, "fail", _unreadable("the move's containers", exc))
         else:
             containers = found
-            full = sum(1 for c in containers if c.asset_count > 0)
+            full = [c for c in containers if c.asset_count > 0]
             count = f"{need_containers:,} needed, {len(containers):,} found"
             problems = []
             if len(containers) < need_containers:
                 short = need_containers - len(containers)
                 problems.append(f"{count}. Add {_n(short, 'more container')} to the move.")
             if full:
+                names = [f"{c.name} ({_n(c.asset_count, 'server')})" for c in full]
                 problems.append(
-                    f"{_n(full, 'container')} already hold{'s' if full == 1 else ''} servers. "
-                    "Empty them (unpack the servers) or use empty containers.")
+                    f"{len(full):,} of {_n(len(containers), 'container')} "
+                    f"{'holds' if len(full) == 1 else 'hold'} servers: {_named(names)}. "
+                    "All containers on the move must be empty before a run. Take the "
+                    "servers out of them in the portal first.")
             if problems:
                 add("containers", label, "fail", " ".join(problems))
             elif len(containers) > need_containers:
@@ -272,10 +357,11 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
                 problems.append(f"{count}. Add {_n(need_trucks - len(trucks), 'more truck')} "
                                 "to the move.")
             if gone:
+                one = len(gone) == 1
                 problems.append(
-                    f"{_n(len(gone), 'truck')} already left ({', '.join(gone[:5])}"
-                    f"{f' and {len(gone) - 5} more' if len(gone) > 5 else ''}). "
-                    "Set them back to a status before departure, or use new trucks.")
+                    f"{_n(len(gone), 'truck')} already left ({_named(gone)}). Set "
+                    f"{'it' if one else 'them'} back to a status before departure, or use "
+                    f"{'a new truck' if one else 'new trucks'}.")
             if problems:
                 add("trucks", label, "fail", " ".join(problems))
             elif len(trucks) > need_trucks:
@@ -291,46 +377,62 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
         add("route", label, "fail", NOT_CHECKED)
     else:
         host = urlparse(router_url).hostname or router_url
-        sites = (("origin", move.origin), ("destination", move.destination))
-        missing = [f"the {role} site" + (f" ({site.name})" if site and site.name else "")
-                   for role, site in sites if _coordinates(site) is None]
-        if missing:
-            add("route", label, "fail",
-                f"The road route needs a latitude and longitude for both sites, and "
-                f"{' and '.join(missing)} has none. Add them to the site in the portal.")
+        problems = []
+        for role, site in (("origin", move.origin), ("destination", move.destination)):
+            if site is None:
+                problems.append(f"The move has no {role} site. Set {'an' if role == 'origin' else 'a'} "
+                                f"{role} site on the move in the portal.")
+            elif _coordinates(site) is None:
+                problems.append(f"The {role} site ({site.name}) has no latitude and "
+                                "longitude. Add them to the site in the portal.")
+        if problems:
+            add("route", label, "fail", " ".join(problems))
         else:
-            start, end = _coordinates(move.origin), _coordinates(move.destination)
+            where = f"{move.origin.name} and {move.destination.name}"
             try:
-                line = await fetch_route(start, end, router_url=router_url,
-                                         transport=router_transport)
+                line = await fetch_route(
+                    _coordinates(move.origin), _coordinates(move.destination),
+                    router_url=router_url, transport=router_transport)
+            except NoRoute:
+                add("route", label, "fail",
+                    f"The routing service found no road route between {where}. Check the "
+                    "two sites' coordinates.")
             except RouteError as err:
                 add("route", label, "fail",
-                    f"Could not get a road route from {move.origin.name} to "
-                    f"{move.destination.name}. {err} Asked {host}. Try again in a minute, or "
-                    "point the tool at a different routing service.")
+                    f"Could not reach the routing service ({host}); try again in a minute. "
+                    f"{err}")
+            except (httpx.HTTPError, httpx.InvalidURL):
+                add("route", label, "fail",
+                    f"Could not reach the routing service ({host}); try again in a minute, "
+                    "or check its address.")
             else:
                 route = points_along(line, profile.trip.updates)
                 add("route", label, "pass",
-                    f"Found a {_line_km(line):,.0f} km road route from {move.origin.name} to "
+                    f"Found a {line_km(line):,.0f} km road route from {move.origin.name} to "
                     f"{move.destination.name} (asked {host}).")
 
     # ── checkpoints ──
     label = "Every checkpoint is an active status"
-    stages = [s for s in profile.stages if s.checkpoint]
-    checkpoints = list(dict.fromkeys(s.checkpoint for s in stages))
     active, exc = await _read(portal.asset_statuses())
+    unknown: set[str] = set()      # checkpoints the checkpoints line already reports
     if exc is not None:
         add("checkpoints", label, "fail", _unreadable("the asset statuses", exc))
     else:
         missing = [c for c in checkpoints if c not in active]
+        unknown = set(missing)
         if missing:
+            one = len(missing) == 1
             add("checkpoints", label, "fail",
                 f"{_n(len(missing), 'checkpoint')} in the profile "
-                f"{'is' if len(missing) == 1 else 'are'} not an active asset status on the "
-                f"server: {', '.join(missing)}. Activate them in the portal's asset "
-                "statuses, or change the profile.")
+                f"{'is' if one else 'are'} not an active asset status on the server: "
+                f"{', '.join(missing)}. Activate {'it' if one else 'them'} in the portal's "
+                "asset statuses, or change the profile.")
+        elif not checkpoints:
+            add("checkpoints", label, "pass", "The profile has no checkpoints to check.")
         else:
             add("checkpoints", label, "pass",
+                "The profile's one checkpoint is an active asset status."
+                if len(checkpoints) == 1 else
                 f"All {len(checkpoints):,} checkpoints are active asset statuses.")
 
     # ── server_ready ──
@@ -343,7 +445,10 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
         if status.read_only:
             problems.append("The server is read-only, so scans and truck updates would be "
                             "refused. Turn read-only mode off first.")
-        if status.workers_running < status.workers_total:
+        if status.workers_total == 0:
+            problems.append("No background workers are reporting. Scans would be stored and "
+                            "never processed. Start the workers, then check again.")
+        elif status.workers_running < status.workers_total:
             problems.append(
                 f"Only {status.workers_running:,} of {status.workers_total:,} background "
                 "workers are running, so scans would pile up unprocessed. Start the "
@@ -361,7 +466,8 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
     if exc is not None:
         add("rules", label, "fail", _unreadable("the status rules", exc))
     else:
-        bare = [f"{s.label} ({s.checkpoint})" for s in stages if s.checkpoint not in ruled]
+        bare = [f"{s.label} ({s.checkpoint})" for s in stages
+                if s.checkpoint not in ruled and s.checkpoint not in unknown]
         if bare:
             add("rules", label, "warn",
                 f"These checkpoints have no enabled status rule: {', '.join(bare)}. "
@@ -372,5 +478,6 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
     add("notifications", "Notifications", "warn", NOTIFICATIONS_DETAIL)
 
     return CheckReport(
-        checks=checks, can_start=all(c.status != "fail" for c in checks), move=move,
+        checks=checks, can_start=all(c.status != "fail" for c in checks),
+        move=None if move_error is not None else move,
         roster=roster, containers=containers, trucks=trucks, route=route)

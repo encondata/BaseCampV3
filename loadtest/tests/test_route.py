@@ -4,7 +4,7 @@ import math
 import httpx
 import pytest
 
-from loadtest.route import RouteError, fetch_route, points_along
+from loadtest.route import NoRoute, RouteError, fetch_route, line_km, points_along
 
 DALLAS = (32.7, -96.8)
 ATLANTA = (33.7, -84.4)
@@ -74,6 +74,22 @@ def test_points_along_rejects_bad_input():
         points_along([(0, 0), (0, 1)], 0)
     with pytest.raises(ValueError):
         points_along([(0, 0)], 3)
+
+
+def test_line_km_sums_the_segments():
+    line = _road()
+    assert line_km(line) == pytest.approx(sum(_km(a, b) for a, b in itertools.pairwise(line)))
+    assert line_km([(0, 0), (0, 0)]) == 0
+
+
+async def test_only_a_no_route_answer_is_no_route():
+    with pytest.raises(NoRoute):
+        await fetch_route(DALLAS, ATLANTA, transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json=_osrm([], code="NoRoute"))))
+    with pytest.raises(RouteError) as caught:
+        await fetch_route(DALLAS, ATLANTA, transport=httpx.MockTransport(
+            lambda r: httpx.Response(500)))
+    assert not isinstance(caught.value, NoRoute)
 
 
 # ── fetch_route ───────────────────────────────────────────────────────
