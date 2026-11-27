@@ -229,4 +229,45 @@ def test_errors_from_a_proxy_count_as_not_answering():
     js = without_comments(read("simulate.js"))
     assert "res.status >= 500" in js
     assert "Date.now() - lastOpen < RETRY_MS" in js      # a closed stream reopens slowly
-    assert "if (mine < appliedSeq) return;" in js        # no older state over a newer one
+    assert "if (priority || mine < appliedSeq) return;" in js   # no older state over a newer one
+
+
+# ── fix round 2 ────────────────────────────────────────────────────────
+
+
+def test_an_action_error_is_kept_and_painted_by_every_render():
+    js = without_comments(read("simulate.js"))
+    render = js[js.index("function render() {"):js.index("function focusView(")]
+    assert "paintErrors();" in render
+    assert "keepError(banners, err.message || INTERNAL);" in js
+    # the failure path reads the state first, so the error lands on the view it left
+    catch = js[js.index("async function act("):js.index("const UNF_FIELDS")]
+    assert catch.index("await refresh(true);") < catch.index("keepError(")
+    assert "const CHECK_BANNERS = ['sim-ready-err', 'sim-check-err'];" in js
+    assert "document.addEventListener('input'" in js
+    assert "showErr(" not in js.replace("function showErr(", "").replace(
+        "BANNERS.forEach(id => showErr(", "")
+
+
+def test_the_state_read_after_an_action_wins_over_the_stream():
+    js = without_comments(read("simulate.js"))
+    assert "if (s && !priority)" in js
+    assert "await refresh();" not in js          # every follow-up read is the priority one
+
+
+def test_a_stage_bar_is_full_only_when_the_stage_is_done():
+    js = read("simulate.js")
+    assert "if (s.total > 0 && s.done >= s.total) return 100;" in js
+    assert "Math.min(99, Math.floor(raw))" in js
+    assert "Math.round(s.percent)" not in js
+
+
+def test_run_facts_counts_use_the_en_dash():
+    js = read("simulate.js")
+    assert "`${count(run.servers)} / ${count(run.containers)} / ${count(run.trucks)}`" in js
+
+
+def test_the_tools_own_internal_error_shows_its_message_in_the_notice():
+    js = read("simulate.js")
+    assert "toolSilent(ours && data.code === 'internal' && data.message ? data.message : OFFLINE);" in js
+    assert "stateDown ? downMessage : OFFLINE" in js

@@ -38,15 +38,17 @@
         body: JSON.stringify(body || {}),
       });
     } catch (e) {
-      toolSilent();
+      toolSilent(OFFLINE);
       throw new ApiError('offline', OFFLINE);
     }
-    return answer(res, true);
+    return answer(res);
   }
 
   // A 5xx or an answer that is not the tool's JSON (a proxy's error page while the tool
-  // restarts) counts as not answering; only a successful JSON answer clears that.
-  async function answer(res, isPost) {
+  // restarts) shows in the notice at the top with the quiet retry: the tool's own message
+  // when it answered with one (it is up but hit a problem), else "not answering". Only a
+  // successful JSON answer clears that.
+  async function answer(res) {
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
     const ours = !!data && typeof data === 'object';
@@ -54,8 +56,8 @@
       block();
       throw new ApiError('forbidden', '');
     }
-    if (!ours || (res.status >= 500 && !(isPost && data.message))) {
-      toolSilent();
+    if (!ours || res.status >= 500) {
+      toolSilent(ours && data.code === 'internal' && data.message ? data.message : OFFLINE);
       throw new ApiError('offline', OFFLINE);
     }
     if (!res.ok) {
@@ -71,14 +73,15 @@
     try {
       res = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
     } catch (e) {
-      toolSilent();
+      toolSilent(OFFLINE);
       throw new ApiError('offline', OFFLINE);
     }
     return answer(res);
   }
 
   let blocked = false;      // the access key is missing: nothing more is asked
-  let stateDown = false;    // the last request found the tool not answering
+  let stateDown = false;    // the last request found the tool not answering, or in trouble
+  let downMessage = OFFLINE; // what the notice says while stateDown
   let streamDown = false;   // the event stream closed for good and must be reopened
   let retryTimer = null;
   let events = null;
@@ -101,19 +104,35 @@
     if (blocked) return;
     const down = stateDown || streamDown;
     $('sim-offline').hidden = !down;
+    $('sim-offline').firstElementChild.textContent = stateDown ? downMessage : OFFLINE;
     if (down && !retryTimer) retryTimer = setInterval(refresh, RETRY_MS);
     if (!down && retryTimer) { clearInterval(retryTimer); retryTimer = null; }
   }
-  function toolSilent() { stateDown = true; paintHealth(); }
+  function toolSilent(message) { stateDown = true; downMessage = message || OFFLINE; paintHealth(); }
   function toolAnswered() { stateDown = false; paintHealth(); }
 
-  async function refresh() {
+  // `afterAction`: the state read right after an action's POST answered. It is newer than
+  // any stream snapshot sent before that answer, so stream snapshots and other reads are
+  // set aside until it lands, and it is always applied.
+  let priority = 0;
+  async function refresh(afterAction) {
     if (blocked) return;
     const mine = ++seq;
+    if (afterAction === true) priority = mine;
     let state;
-    try { state = await get('/api/state'); } catch (e) { return; }
-    if (mine < appliedSeq) return;
-    appliedSeq = mine;
+    try {
+      state = await get('/api/state');
+    } catch (e) {
+      if (priority === mine) priority = 0;
+      return;
+    }
+    if (priority === mine) {
+      priority = 0;
+      appliedSeq = ++seq;
+    } else {
+      if (priority || mine < appliedSeq) return;
+      appliedSeq = mine;
+    }
     apply(state);
     openEvents(false);
   }
@@ -137,7 +156,7 @@
     });
     stream.addEventListener('snapshot', e => {
       const s = parse(e.data);
-      if (s) { appliedSeq = ++seq; apply(s); }
+      if (s && !priority) { appliedSeq = ++seq; apply(s); }
     });
     stream.addEventListener('feed', e => { const line = parse(e.data); if (line) queueFeed(line); });
     stream.addEventListener('error', () => {
@@ -215,6 +234,7 @@
       feed.scrollTop = feed.scrollHeight;
       $('sim-jump').hidden = true;
     }
+    paintErrors();
     if (changed) focusView(next);
   }
 
@@ -278,14 +298,41 @@
   const feedMs = v => (v == null ? '' : ms(v));
   const count = v => (v == null ? DASH : fmtN(v));
 
-  // One action at a time; its error shows next to the button that started it, or where
-  // the user lands when the view changed meanwhile (errId may be a function of the view).
-  // A tool that is not answering is said once, in the notice at the top.
-  async function act(name, errId, fields, work) {
+  // An action's error is kept with the banners it may show in (first visible one wins)
+  // and painted by every render, so no later snapshot can hide it. It goes when another
+  // action starts or a field of that action's form is edited.
+  const BANNERS = ['sim-connect-err', 'sim-check-err', 'sim-ready-err', 'sim-unf-err', 'sim-stop-err'];
+  let actionError = null;   // { banners: [ids], message }
+
+  function keepError(banners, message) {
+    actionError = { banners, message };
+    paintErrors();
+  }
+  function dropError() {
+    actionError = null;
+    paintErrors();
+  }
+  function paintErrors() {
+    let shown = null;
+    if (actionError) {
+      shown = actionError.banners.find(id => !$(id).parentElement.closest('[hidden]')) ||
+        actionError.banners[0];
+    }
+    BANNERS.forEach(id => showErr(id, id === shown ? actionError.message : ''));
+  }
+  document.addEventListener('input', e => {
+    if (!actionError || !e.target.closest) return;
+    const form = e.target.closest('form');
+    if (form && actionError.banners.some(id => $(id).closest('form') === form)) dropError();
+  });
+
+  // One action at a time. A tool that is not answering is said once, in the top notice.
+  // After a failure the state is read again, so the error lands on the view the failure
+  // left behind (a failed check has already cleared the old report).
+  async function act(name, banners, fields, work) {
     if (busy) return;
-    const where = () => (typeof errId === 'function' ? errId() : errId);
     busy = name;
-    showErr(where(), '');
+    actionError = null;
     clearFields(fields);
     render();
     try {
@@ -293,8 +340,8 @@
     } catch (err) {
       if (err.code !== 'forbidden' && err.code !== 'offline') {
         busy = '';
-        render();
-        showErr(where(), err.message || INTERNAL);
+        await refresh(true);
+        keepError(banners, err.message || INTERNAL);
         markFields(err.fields || [], fields);
       }
     } finally {
@@ -339,7 +386,7 @@
     if (!unfOpen) {
       unfOpen = true;
       if (!$('sim-c-email').value) $('sim-c-email').value = recall('email');
-      showErr('sim-unf-err', '');
+      dropError();
       render();
       (['sim-c-email', 'sim-c-password', 'sim-c-move-password'].map($).find(i => !i.value) ||
         $('sim-c-password')).focus();
@@ -357,7 +404,7 @@
       if (!body.totp_code) { fieldError('sim-c-totp', 'Enter the 2FA code.'); ok = false; }
     }
     if (!ok) return;
-    act('continue', 'sim-unf-err', UNF_FIELDS, async () => {
+    act('continue', ['sim-unf-err', 'sim-connect-err'], UNF_FIELDS, async () => {
       const got = await post('/api/continue', body);
       remember('email', body.email);
       if (got && got.status === 'totp_required') {
@@ -369,20 +416,20 @@
       }
       ['sim-c-password', 'sim-c-move-password', 'sim-c-totp'].forEach(id => { $(id).value = ''; });
       unfOpen = unfTotp = false;
-      await refresh();
+      await refresh(true);
     });
   });
   $('sim-unf-cancel').addEventListener('click', () => {
     unfOpen = unfTotp = false;
     ['sim-c-password', 'sim-c-move-password', 'sim-c-totp'].forEach(id => { $(id).value = ''; });
     clearFields(UNF_FIELDS);
-    showErr('sim-unf-err', '');
+    dropError();
     render();
     $('sim-unf-continue').focus();
   });
   $('sim-unf-new').addEventListener('click', () => {
     unfAsk = true;
-    showErr('sim-unf-err', '');
+    dropError();
     render();
     $('sim-unf-discard').focus();
   });
@@ -391,10 +438,10 @@
     render();
     $('sim-unf-new').focus();
   });
-  $('sim-unf-discard').addEventListener('click', () => act('discard', 'sim-unf-err', {}, async () => {
+  $('sim-unf-discard').addEventListener('click', () => act('discard', ['sim-unf-err', 'sim-connect-err'], {}, async () => {
     await post('/api/discard');
     unfAsk = false;
-    await refresh();
+    await refresh(true);
   }));
 
   /* ───────────── step 1 and 2: connect, choose the move ───────────── */
@@ -479,14 +526,14 @@
       if (!body.totp_code) { fieldError('sim-totp', 'Enter the 2FA code.'); ok = false; }
     }
     if (!ok) return;
-    act('connect', 'sim-connect-err', CONNECT_FIELDS, async () => {
+    act('connect', ['sim-connect-err'], CONNECT_FIELDS, async () => {
       const got = await post('/api/connect', body);
       remember('server', body.server);
       remember('email', body.email);
       if (got && got.status === 'totp_required') {
         totpAsked = true;
         $('sim-totp').value = '';
-        await refresh();
+        await refresh(true);
         $('sim-totp').focus();
         return;
       }
@@ -494,7 +541,7 @@
       editing = false;
       $('sim-password').value = '';
       $('sim-totp').value = '';
-      await refresh();
+      await refresh(true);
     }).then(() => {
       if (!$('sim-move-set').disabled) $('sim-move').focus();
     });
@@ -506,8 +553,8 @@
   }));
 
   // A failed check clears the tool's report, so the view may drop back to the form:
-  // its error shows on whichever card is on screen.
-  const checkErr = () => (view === 'ready' ? 'sim-ready-err' : 'sim-check-err');
+  // its error shows on whichever of the two cards is on screen.
+  const CHECK_BANNERS = ['sim-ready-err', 'sim-check-err'];
 
   function runCheck() {
     const fromForm = view === 'connect';
@@ -528,11 +575,11 @@
       if (!$('sim-move-set').disabled) $('sim-move-password').focus();
       return;
     }
-    act('check', checkErr, CHECK_FIELDS, async () => {
+    act('check', CHECK_BANNERS, CHECK_FIELDS, async () => {
       await post('/api/check', { move_id: moveId, move_password: movePassword, speed });
       remember('speed', speed);
       editing = false;
-      await refresh();
+      await refresh(true);
     });
   }
   $('sim-move-form').addEventListener('submit', e => { e.preventDefault(); runCheck(); });
@@ -567,23 +614,22 @@
   $('sim-recheck').addEventListener('click', () => runCheck());
   $('sim-change').addEventListener('click', () => {
     editing = true;
-    showErr('sim-ready-err', '');
+    dropError();
     render();
   });
-  $('sim-start').addEventListener('click', () => act('start', 'sim-ready-err', {}, async () => {
-    showErr('sim-unf-err', '');
+  $('sim-start').addEventListener('click', () => act('start', CHECK_BANNERS, {}, async () => {
     try {
       await post('/api/start');
     } catch (err) {
       if (err.code !== 'unfinished_run') throw err;
-      await refresh();
-      showErr('sim-unf-err', err.message);
+      await refresh(true);
+      keepError(['sim-unf-err', 'sim-ready-err'], err.message);
       $('sim-unf').scrollIntoView({ block: 'center', behavior: 'smooth' });
       return;
     }
     $('sim-move-password').value = '';
     $('sim-password').value = '';
-    await refresh();
+    await refresh(true);
   }));
 
   /* ───────────── run ───────────── */
@@ -639,6 +685,13 @@
     setText('sim-server-line', parts.join(' · '));
   }
 
+  // A stage bar is full only when the stage is done; until then it shows at most 99.
+  function stagePercent(s) {
+    if (s.total > 0 && s.done >= s.total) return 100;
+    const raw = s.percent == null ? (s.total ? (s.done / s.total) * 100 : 0) : s.percent;
+    return Math.max(0, Math.min(99, Math.floor(raw)));
+  }
+
   function renderStages(stages) {
     const box = $('sim-stages');
     const keys = stages.map(s => s.key).join('|');
@@ -663,14 +716,14 @@
     for (const s of stages) {
       const r = stageRows.get(s.key);
       r.done.textContent = `${fmtN(s.done)}/${fmtN(s.total)}`;
-      const pct = s.percent == null ? percent(s.done, s.total) : Math.min(100, Math.round(s.percent));
+      const pct = stagePercent(s);
       bar(r.track, r.fill, pct, s.label);
     }
   }
 
   $('sim-stop').addEventListener('click', () => {
     stopAsk = true;
-    showErr('sim-stop-err', '');
+    dropError();
     render();
     $('sim-stop-yes').focus();
   });
@@ -679,10 +732,10 @@
     render();
     $('sim-stop').focus();
   });
-  $('sim-stop-yes').addEventListener('click', () => act('stop', 'sim-stop-err', {}, async () => {
+  $('sim-stop-yes').addEventListener('click', () => act('stop', ['sim-stop-err'], {}, async () => {
     stopAsk = false;
     await post('/api/stop');
-    await refresh();
+    await refresh(true);
   }));
 
   /* ── the live feed: batched per frame, newest at the bottom, at most FEED_MAX rows ── */
@@ -820,7 +873,7 @@
     const rows = [
       ['Server', run.server_url],
       ['Move', run.move_name],
-      ['Servers / containers / trucks', `${fmtN(run.servers)} / ${fmtN(run.containers)} / ${fmtN(run.trucks)}`],
+      ['Servers / containers / trucks', `${count(run.servers)} / ${count(run.containers)} / ${count(run.trucks)}`],
       ['Speed', speedName(run.profile)],
       ['Started', when(run.started_at)],
       ['Ended', when(run.ended_at)],
