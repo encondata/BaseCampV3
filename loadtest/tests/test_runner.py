@@ -659,6 +659,31 @@ async def test_continue_after_a_crash_finishes_the_move(world, fake, clock):
     assert_no_secrets(world, runner.snapshot())
 
 
+async def test_a_step_that_failed_before_a_continue_still_fails_the_run(world, fake, clock):
+    """A truck location update fails for good, the tool is killed and continued: the
+    verdict still says so."""
+    first = world.runner()
+    await world.ready(first)
+    fake.fail("POST", r"/trucks/[^/]+/updates", status=503, times=6)   # every attempt
+    await first.start()
+    world.process_scans(duplicate_on_replay=False)
+
+    async def until_failed():
+        while first.snapshot()["server"]["failed_calls"] == 0:
+            await clock.sleep(1)
+        await clock.sleep(2)
+    await clock.run(until_failed())
+    await hard_crash(world, first)
+    runner = world.runner()
+    await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    await clock.run(runner.wait())
+    result = runner.result()
+    truck = sorted(fake.trucks.values(), key=lambda t: t["name"])[0]["name"]
+    assert result["verdict"] == "Fail"
+    assert f"1 truck location update failed for {truck}." in [
+        f["text"] for f in result["findings"]]
+
+
 class TickingClock(FakeClock):
     """Virtual time whose `now()` moves on a little with every reading, like a real one."""
 

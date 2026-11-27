@@ -24,6 +24,8 @@ class Container:
     truck_id: str | None = None  # set when loaded
     unloaded: bool = False
     unpacked: set[str] = field(default_factory=set)
+    load_failed: bool = False  # the load call did not land
+    unload_failed: bool = False  # the unload call did not land
 
 
 @dataclass
@@ -36,6 +38,9 @@ class Truck:
     updates_skipped: int = 0
     skipped_through: int = 0  # last update index journaled as skipped
     arrived: bool = False
+    depart_failed: bool = False  # the depart call did not land
+    arrive_failed: bool = False  # the arrive call did not land
+    failed_locations: set[int] = field(default_factory=set)  # update indexes that did not land
 
 
 @dataclass
@@ -90,18 +95,30 @@ class RunState:
     def _container_closed(self, e: dict) -> None:
         self.containers[e["container"]].closed = True
 
+    # Truck and trip steps remember whether their call landed, so the verdict comes from
+    # the journal. An entry without `ok` (written before it was added) counts as landed.
+
     def _loaded(self, e: dict) -> None:
+        # The crate is physically on the truck whether or not the call landed.
         container = self.containers[e["container"]]
         truck = self.trucks[e["truck"]]
         container.truck_id = truck.id
+        container.load_failed = not _ok(e)
         if container.id not in truck.container_ids:
             truck.container_ids.append(container.id)
 
     def _departed(self, e: dict) -> None:
-        self.trucks[e["truck"]].departed_at = e["at"]
+        truck = self.trucks[e["truck"]]
+        truck.departed_at = e["at"]
+        truck.depart_failed = not _ok(e)
 
     def _location(self, e: dict) -> None:
-        self.trucks[e["truck"]].updates_sent = e["index"]
+        truck = self.trucks[e["truck"]]
+        truck.updates_sent = e["index"]
+        if _ok(e):
+            truck.failed_locations.discard(e["index"])
+        else:
+            truck.failed_locations.add(e["index"])
 
     def _location_skipped(self, e: dict) -> None:
         # `count` is the truck's cumulative skipped total and `through` the last index
@@ -112,10 +129,14 @@ class RunState:
         truck.skipped_through = max(truck.skipped_through, e.get("through", 0))
 
     def _arrived(self, e: dict) -> None:
-        self.trucks[e["truck"]].arrived = True
+        truck = self.trucks[e["truck"]]
+        truck.arrived = True
+        truck.arrive_failed = not _ok(e)
 
     def _unloaded(self, e: dict) -> None:
-        self.containers[e["container"]].unloaded = True
+        container = self.containers[e["container"]]
+        container.unloaded = True
+        container.unload_failed = not _ok(e)
 
     def _unpacked(self, e: dict) -> None:
         self.containers[e["container"]].unpacked.add(e["server"])
@@ -137,6 +158,10 @@ class RunState:
 
     def _run_finished(self, e: dict) -> None:
         self.finished = e["reason"]
+
+
+def _ok(e: dict) -> bool:
+    return bool(e.get("ok", True))
 
 
 _HANDLERS = {

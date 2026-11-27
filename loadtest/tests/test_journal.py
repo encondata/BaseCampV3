@@ -101,6 +101,43 @@ def test_apply_is_idempotent():
         assert dataclasses.asdict(once) == dataclasses.asdict(twice), e["t"]
 
 
+FAILED_STEPS = [
+    {"t": "loaded", "at": 1.0, "container": "c1", "truck": "t1", "ok": False},
+    {"t": "departed", "at": 2.0, "truck": "t1", "ok": False},
+    {"t": "location", "at": 3.0, "truck": "t1", "index": 1, "ok": False},
+    {"t": "location", "at": 4.0, "truck": "t1", "index": 2, "ok": True},
+    {"t": "location", "at": 5.0, "truck": "t1", "index": 3, "ok": False},
+    {"t": "arrived", "at": 6.0, "truck": "t1", "ok": False},
+    {"t": "unloaded", "at": 7.0, "container": "c1", "ok": False},
+]
+
+
+def test_failed_truck_and_trip_steps_are_remembered(tmp_path):
+    path = tmp_path / JOURNAL_NAME
+    write(path, make_state(), FAILED_STEPS)
+    got = load_state(path)
+    crate, truck = got.containers["c1"], got.trucks["t1"]
+    assert crate.load_failed and crate.unload_failed and crate.truck_id == "t1"
+    assert truck.depart_failed and truck.arrive_failed and truck.arrived
+    assert truck.failed_locations == {1, 3} and truck.updates_sent == 3
+    for e in FAILED_STEPS:          # applying an entry again changes nothing
+        twice = make_state()
+        twice.apply(e)
+        once = dataclasses.asdict(twice)
+        twice.apply(e)
+        assert dataclasses.asdict(twice) == once, e["t"]
+
+
+def test_truck_steps_without_ok_count_as_landed():
+    """Journals written before `departed` and `arrived` carried `ok`."""
+    state = make_state()
+    for e in ENTRIES:
+        state.apply(e)
+    crate, truck = state.containers["c1"], state.trucks["t1"]
+    assert not (crate.load_failed or crate.unload_failed)
+    assert not (truck.depart_failed or truck.arrive_failed or truck.failed_locations)
+
+
 def test_location_skipped_without_through_still_loads():
     state = make_state()
     state.apply({"t": "location_skipped", "at": 1.0, "truck": "t1", "count": 4})

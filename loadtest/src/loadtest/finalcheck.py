@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
+from .actions import truck_label
 from .client.portal import AssetScan, PortalClient
 from .metrics import Metrics
 from .profile import Profile, StageSpec
@@ -147,6 +148,8 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
                                             f"{_n(len(failed), 'server', 'servers')}: "
                                             f"{_sns(failed)}."))
 
+    findings += _trip_step_findings(state)
+
     # scan histories
     gate = asyncio.Semaphore(max(1, concurrency))
 
@@ -226,6 +229,34 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
                        scans_missing=sum(n for gone in missing.values() for _, n in gone),
                        container_scans_sent=container_scans_sent(state),
                        container_scans_checked=False, delay_ms=_delays(delays))
+
+
+def _trip_step_findings(state: RunState) -> list[Finding]:
+    """Truck and trip steps whose call did not land, read from the journaled state."""
+    containers = sorted(state.containers.values(), key=lambda c: c.name)
+    trucks = sorted(state.trucks.values(), key=lambda t: t.name)
+    out: list[Finding] = []
+
+    def failed(what: str, names: list[str], one: str, many: str) -> None:
+        if names:
+            out.append(Finding("fail", f"{what} failed for {_n(len(names), one, many)}: "
+                                       f"{_listed(names)}."))
+
+    failed("Loading", [c.name for c in containers if c.load_failed], "container", "containers")
+    failed("Unloading", [c.name for c in containers if c.unload_failed],
+           "container", "containers")
+    failed("Departure", [truck_label(t.name) for t in trucks if t.depart_failed],
+           "truck", "trucks")
+    lost = [(truck_label(t.name), len(t.failed_locations)) for t in trucks if t.failed_locations]
+    if lost:
+        total = _n(sum(n for _, n in lost), "truck location update", "truck location updates")
+        if len(lost) == 1:
+            out.append(Finding("fail", f"{total} failed for {lost[0][0]}."))
+        else:
+            out.append(Finding("fail", f"{total} failed for {_n(len(lost), 'truck', 'trucks')}: "
+                                       f"{_listed([f'{name} ({n:,})' for name, n in lost])}."))
+    failed("Arrival", [truck_label(t.name) for t in trucks if t.arrive_failed], "truck", "trucks")
+    return out
 
 
 def _unfinished_findings(servers: list[Server], stages: list[StageSpec]) -> list[Finding]:

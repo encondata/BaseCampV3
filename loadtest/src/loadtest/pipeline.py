@@ -326,8 +326,8 @@ class Pipeline:
     async def _trip(self, truck_id: str, arrived: _Pool) -> None:
         truck = self.state.trucks[truck_id]
         if truck.departed_at is None:
-            await self._perform(Step("depart", "trip", 0, truck_id=truck_id))
-            self._record({"t": "departed", "truck": truck_id})
+            ok = await self._perform(Step("depart", "trip", 0, truck_id=truck_id))
+            self._record({"t": "departed", "truck": truck_id, "ok": ok})
         trip = self.profile.trip
         lo, hi = trip.pause_seconds
         fixed = lo == hi  # real time: updates keep to the clock since departure
@@ -348,8 +348,8 @@ class Pipeline:
             await self.clock.sleep(wait)
             ok = await self._perform(Step("location", "trip", 0, truck_id=truck_id, index=index))
             self._record({"t": "location", "truck": truck_id, "index": index, "ok": ok})
-        await self._perform(Step("arrive", "trip", 0, truck_id=truck_id))
-        self._record({"t": "arrived", "truck": truck_id})
+        ok = await self._perform(Step("arrive", "trip", 0, truck_id=truck_id))
+        self._record({"t": "arrived", "truck": truck_id, "ok": ok})
         arrived.put([truck_id])
 
     # -- helpers ------------------------------------------------------------

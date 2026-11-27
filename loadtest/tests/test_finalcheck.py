@@ -227,6 +227,39 @@ async def test_step_that_did_not_land_is_its_own_finding(fake, clock, metrics, m
         f"The Label station step failed for 2 servers: SN {serials[0]} and SN {serials[1]}."]
 
 
+async def test_failed_truck_and_trip_steps_come_from_the_state(fake, clock, metrics, move):
+    """The verdict for truck and trip steps is read from the journaled state, never from
+    the call counts alone (those start over when a run is continued)."""
+    m = await move()
+    crates = sorted(m.state.containers.values(), key=lambda c: c.name)
+    truck = next(iter(m.state.trucks.values()))
+    crates[0].load_failed = True
+    crates[1].unload_failed = crates[2].unload_failed = True
+    truck.depart_failed = truck.arrive_failed = True
+    truck.failed_locations = {3, 7, 9}
+    report = await check(clock, metrics, m)
+    assert report.verdict == "Fail"
+    assert texts(report) == [
+        f"Loading failed for 1 container: {crates[0].name}.",
+        f"Unloading failed for 2 containers: {crates[1].name} and {crates[2].name}.",
+        f"Departure failed for 1 truck: {truck.name}.",
+        f"3 truck location updates failed for {truck.name}.",
+        f"Arrival failed for 1 truck: {truck.name}.",
+    ]
+
+
+async def test_failed_location_updates_on_several_trucks_are_one_finding(fake, clock, metrics,
+                                                                         move):
+    m = await move()
+    truck = next(iter(m.state.trucks.values()))
+    truck.failed_locations = {1}
+    m.state.trucks["t-extra"] = replace(truck, id="t-extra", name="Truck 9",
+                                        failed_locations={4, 5})
+    report = await check(clock, metrics, m)
+    assert f"3 truck location updates failed for 2 trucks: {truck.name} (1) and Truck 9 (2)." \
+        in texts(report, "fail")
+
+
 async def test_failed_calls_and_truck_updates_are_reported(fake, clock, metrics, move):
     m = await move()
     metrics.record("enroll", 12.0, False)
