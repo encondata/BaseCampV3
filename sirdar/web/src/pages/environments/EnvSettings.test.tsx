@@ -582,3 +582,18 @@ it('a view-only reader sees whether the Firebase key is set, with no file button
   expect(screen.queryByRole('button', { name: 'Choose JSON file' })).toBeNull();
   expect(screen.queryByTestId(`env-secret-${FCM}-file`)).toBeNull();
 });
+
+it('offers Download .env next to the secrets with deploy:change only', async () => {
+  open();
+  await userEvent.click(screen.getByRole('button', { name: 'Download .env' }));
+  expect(screen.getByRole('dialog', { name: 'Download .env' })).toBeTruthy();
+  cleanup();
+  perms.change = false;
+  open();
+  expect(screen.queryByRole('button', { name: 'Download .env' })).toBeNull();
+});
+
+it("Download .env is off until the environment has deployed", () => {
+  open({ ...ENV, current_sha: null, image_tag: null });
+  expect((screen.getByRole('button', { name: 'Download .env' }) as HTMLButtonElement).disabled).toBe(true);
+});

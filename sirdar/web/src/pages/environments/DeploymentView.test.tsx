@@ -654,3 +654,27 @@ it('Force delete is offered only for the latest failed Delete, not forced alread
   perms.change = false;
   await none(FAILED_DELETE);
 });
+
+const UP = "uat is up. Download its .env now to keep a copy of its keys and settings.";
+
+it('the first successful deploy offers the .env download', async () => {
+  api.getDeployment.mockResolvedValue({ ...SUCCEEDED, first_success: true });
+  show();
+  expect(await screen.findByText(UP)).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Download .env' }));
+  expect(screen.getByRole('dialog', { name: 'Download .env' })).toBeTruthy();
+});
+
+it('a later success, or no deploy:change, shows no .env notice', async () => {
+  api.getDeployment.mockResolvedValue({ ...SUCCEEDED, first_success: false });
+  show();
+  await screen.findByText('Succeeded');
+  expect(screen.queryByText(UP)).toBeNull();
+  cleanup();
+  perms.change = false;
+  api.getDeployment.mockResolvedValue({ ...SUCCEEDED, first_success: true });
+  show();
+  await screen.findByText('Succeeded');
+  expect(screen.queryByText(UP)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Download .env' })).toBeNull();
+});

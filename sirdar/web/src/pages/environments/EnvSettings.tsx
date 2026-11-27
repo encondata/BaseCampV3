@@ -20,6 +20,7 @@ import {
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import DoSettingsSection from './DoSettingsSection';
+import EnvFileModal from './EnvFileModal';
 import FirstAdminCard from './FirstAdminCard';
 import {
   deploymentRunning, gbOf, hostLabel, mbOf, onBluegreen, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
@@ -87,6 +88,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const locked = !can('deploy', 'change');
   const deploying = deploymentRunning(env);
   const [deleting, setDeleting] = useState(false);
+  const [envFileOpen, setEnvFileOpen] = useState(false);
   const off = locked || deploying;
   const onVm = onVmHost(env);
   // DigitalOcean: its target, names, proxy and bucket belong to what Sirdar built (the API's do_field_locked).
@@ -420,6 +422,16 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </div>
         ))}
       </div>
+      {/* The whole current .env (the generated secrets too); the API asks for the password again. */}
+      {!locked && (
+        <div className="sirdar-actions">
+          <button type="button" className="btn-ghost" disabled={!env.current_sha}
+                  title={env.current_sha ? undefined : "This environment hasn't deployed yet, so it has no .env."}
+                  onClick={() => setEnvFileOpen(true)}>
+            Download .env
+          </button>
+        </div>
+      )}
 
       {errors.form && <p className="form-error" role="alert">{errors.form}</p>}
       {notice && <p className="page-hint" role="status">{notice}</p>}
@@ -469,6 +481,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </div>
         </div>
       )}
+      {envFileOpen && <EnvFileModal env={env} onClose={() => setEnvFileOpen(false)} />}
       {deleting && onDeleteStarted && (
         <DeleteEnvironmentModal env={env} onClose={() => setDeleting(false)}
                                 onStarted={(dep) => { setDeleting(false); onDeleteStarted(dep); }} />
