@@ -231,6 +231,7 @@ class KioskDevice:
 
     async def _timed(self, method: str, url: str, *, name: str, headers: dict[str, str],
                      already_done: Callable[[httpx.Response], bool] | None = None,
+                     already_done_first: bool = False,
                      **kwargs) -> tuple[httpx.Response, int]:
         """timed_call, also returning how many requests it sent. On CallFailed the
         count rides on the exception as `attempts`."""
@@ -239,7 +240,8 @@ class KioskDevice:
         try:
             response = await timed_call(
                 self._client, method, url, name=name, metrics=self.metrics, clock=self.clock,
-                retry=self.retry, already_done=already_done, headers=headers, **kwargs)
+                retry=self.retry, already_done=already_done,
+                already_done_first=already_done_first, headers=headers, **kwargs)
         except CallFailed as exc:
             exc.attempts = box[0]
             raise
@@ -252,13 +254,15 @@ class KioskDevice:
 
     async def _bearer_call(self, method: str, url: str, *, name: str,
                            already_done: Callable[[httpx.Response], bool] | None = None,
+                           already_done_first: bool = False,
                            **kwargs) -> tuple[httpx.Response, int]:
         """A call under the sign-in (http.renewing_call): refresh first when due; on a
         401 renew once and redo the call once, recorded exactly once."""
         async def send(prior: int) -> tuple[httpx.Response, int]:
             return await self._timed(method, url, name=name, headers=self._bearer(),
-                                     already_done=already_done, prior_attempts=prior,
-                                     **kwargs)
+                                     already_done=already_done,
+                                     already_done_first=already_done_first,
+                                     prior_attempts=prior, **kwargs)
 
         return await renewing_call(
             name, metrics=self.metrics, ensure_token=self._ensure_token,
@@ -376,13 +380,15 @@ class KioskDevice:
 
     async def _scan_call(self, url: str, *, name: str, body: dict, scan_ids: list[uuid.UUID],
                          already_done: Callable[[httpx.Response], bool] | None = None,
+                         already_done_first: bool = False,
                          station: bool = False) -> httpx.Response | None:
         try:
             if station:
                 response, attempts = await self._station_call(url, name=name, json=body)
             else:
                 response, attempts = await self._bearer_call(
-                    "POST", url, name=name, already_done=already_done, json=body)
+                    "POST", url, name=name, already_done=already_done,
+                    already_done_first=already_done_first, json=body)
         except CallFailed as exc:
             self._note_retry(getattr(exc, "attempts", 0), scan_ids)
             return None
@@ -436,21 +442,23 @@ class KioskDevice:
                 "initiative_id": scan.initiative_id}
 
     async def _container(self, action: str, container_id: str, asset_id: str,
-                         scan: ScanOut) -> bool:
+                         scan: ScanOut, already_done_first: bool = False) -> bool:
         body = {**self._move_body(scan), "asset_id": asset_id, "action": action}
         response = await self._scan_call(
             f"/kiosk/containers/{container_id}/assets", name=action, body=body,
             scan_ids=[scan.client_scan_id],
-            already_done=_unpacked if action == "unpack" else None)
+            already_done=_unpacked if action == "unpack" else None,
+            already_done_first=already_done_first)
         return response is not None
 
     async def _truck(self, action: str, truck_id: str, container_id: str,
-                     scan: ScanOut) -> bool:
+                     scan: ScanOut, already_done_first: bool = False) -> bool:
         body = {**self._move_body(scan), "container_id": container_id, "action": action}
         response = await self._scan_call(
             f"/kiosk/trucks/{truck_id}/containers", name=action, body=body,
             scan_ids=[scan.client_scan_id],
-            already_done=_unloaded if action == "unload" else None)
+            already_done=_unloaded if action == "unload" else None,
+            already_done_first=already_done_first)
         return response is not None
 
     async def pack(self, *, container_id: str, asset_id: str, scan: ScanOut) -> bool:
@@ -458,13 +466,20 @@ class KioskDevice:
         no already-done rule."""
         return await self._container("pack", container_id, asset_id, scan)
 
-    async def unpack(self, *, container_id: str, asset_id: str, scan: ScanOut) -> bool:
-        return await self._container("unpack", container_id, asset_id, scan)
+    async def unpack(self, *, container_id: str, asset_id: str, scan: ScanOut,
+                     already_done_first: bool = False) -> bool:
+        """`already_done_first`: the answer "this server is in no container" counts as
+        success on the first try too (a continued run's resend of an unpack that may have
+        landed before the interruption)."""
+        return await self._container("unpack", container_id, asset_id, scan,
+                                     already_done_first)
 
     async def load(self, *, truck_id: str, container_id: str, scan: ScanOut) -> bool:
         """A repeated load onto the same truck is a 200 (`already_there`)."""
         return await self._truck("load", truck_id, container_id, scan)
 
-    async def unload(self, *, truck_id: str, container_id: str, scan: ScanOut) -> bool:
-        return await self._truck("unload", truck_id, container_id, scan)
+    async def unload(self, *, truck_id: str, container_id: str, scan: ScanOut,
+                     already_done_first: bool = False) -> bool:
+        """`already_done_first`: as for unpack, "this crate is on no truck"."""
+        return await self._truck("unload", truck_id, container_id, scan, already_done_first)
 

@@ -198,6 +198,27 @@ async def test_repeated_unpack_without_retry_is_a_failure(fake, clock, device, m
     assert metrics.calls()["unpack"]["failures"] == 1
 
 
+async def test_a_resent_unpack_or_unload_can_count_as_done_on_the_first_try(
+        fake, clock, device, metrics):
+    """A continued run resends an unpack and an unload that landed before the tool died:
+    the server's "already done" answers count as success, with no retry counted."""
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="un_pack", site="destination")
+    asset = assets_of(fake, move_id)[0]
+    crate = next(c for c in fake.containers.values() if c["initiative_id"] == move_id)
+    truck = next(t for t in fake.trucks.values() if t["initiative_id"] == move_id)
+    unpack = make_scan(clock, move_id, site_id, asset["serial_number"], "un_pack", "barcode")
+    unload = make_scan(clock, move_id, site_id, crate["name"], "un_pack", "barcode")
+    assert await clock.run(d.unpack(container_id=crate["id"], asset_id=asset["id"],
+                                    scan=unpack, already_done_first=True)) is True
+    assert await clock.run(d.unload(truck_id=truck["id"], container_id=crate["id"],
+                                    scan=unload, already_done_first=True)) is True
+    for name in ("unpack", "unload"):
+        row = metrics.calls()[name]
+        assert (row["count"], row["retries"], row["failures"]) == (1, 0, 0), name
+    assert "scans_retried" not in metrics.counters()
+
+
 async def test_unpack_lost_answer_counts_as_done(fake, clock, device, metrics):
     d = device("handheld")
     move_id, site_id = await ready(fake, clock, d, status="un_pack")

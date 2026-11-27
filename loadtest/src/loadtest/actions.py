@@ -49,6 +49,7 @@ class Actions:
         self.metrics = metrics
         self.clock = clock
         self._stages = {s.key: s for s in profile.stages}
+        self._pack_key = next((s.key for s in profile.stages if s.kind == "pack"), None)
 
     async def perform(self, step: Step) -> bool:
         """True when the call landed. Never raises, except CancelledError."""
@@ -100,12 +101,18 @@ class Actions:
             if not ok and not keyless:
                 note = f"{accepted} of {len(scans)} accepted"
             subject = f"{len(scans)} tags"
-        elif step.kind in ("load", "unload"):
+        elif step.kind == "load":
             container = self.state.containers[step.container_id]
             scan = self._scan(spec, container.id, container.name, "barcode")
-            call = device.load if step.kind == "load" else device.unload
-            ok, ms = await _timed(call(truck_id=step.truck_id, container_id=container.id,
-                                       scan=scan))
+            ok, ms = await _timed(device.load(truck_id=step.truck_id, container_id=container.id,
+                                              scan=scan))
+            subject = container.name
+        elif step.kind == "unload":
+            container = self.state.containers[step.container_id]
+            scan = self._scan(spec, container.id, container.name, "barcode")
+            ok, ms = await _timed(device.unload(
+                truck_id=step.truck_id, container_id=container.id, scan=scan,
+                already_done_first=self._resending(step)))
             subject = container.name
         else:
             server = self.state.servers[step.server_ids[0]]
@@ -114,6 +121,21 @@ class Actions:
         self.events.feed(FeedLine(self.clock.now(), device.name, spec.label, subject, ok, ms,
                                   note or ("" if ok else NO_KEY if keyless else FAILED)))
         return ok
+
+    def _resending(self, step: Step) -> bool:
+        """True when this unpack or unload may be the resend of one that landed before an
+        interruption: the run was continued, and the journal shows the step it undoes
+        landed (the server's pack, or the crate's load onto this truck). Then the server's
+        "already done" answer counts as success on the first try."""
+        if not self.state.interruptions:
+            return False
+        if step.kind == "unpack":
+            server = self.state.servers[step.server_ids[0]]
+            return self._pack_key is not None and server.done.get(self._pack_key) is True
+        if step.kind == "unload":
+            container = self.state.containers[step.container_id]
+            return container.truck_id == step.truck_id and not container.load_failed
+        return False
 
     async def _server_call(self, step: Step, spec: StageSpec, device: KioskDevice,
                            sid: str) -> bool:
@@ -125,7 +147,8 @@ class Actions:
         if step.kind == "pack":
             return await device.pack(container_id=step.container_id, asset_id=sid, scan=scan)
         if step.kind == "unpack":
-            return await device.unpack(container_id=step.container_id, asset_id=sid, scan=scan)
+            return await device.unpack(container_id=step.container_id, asset_id=sid, scan=scan,
+                                       already_done_first=self._resending(step))
         return await device.send_scans([scan]) == 1      # scan / station_label
 
     # ── the trip ───────────────────────────────────────────────────────

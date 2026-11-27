@@ -575,3 +575,27 @@ async def test_truck_names_get_truck_in_front_only_when_missing(clock, run):
     truck.name = "08"
     assert await clock.run(r.actions.perform(Step("depart", "trip", 0, truck_id=truck.id)))
     assert r.events.recent()[-1].device == "Truck 08"
+
+
+def test_already_done_counts_on_the_first_try_only_for_a_resend_after_a_continue():
+    from pipeline_helpers import make_state
+    profile = fast()
+    state = make_state(2, 1, 1, profile)
+    s1, s2 = list(state.servers)
+    state.apply({"t": "packed", "stage": "pack", "server": s1, "container": "c001", "ok": True,
+                 "at": 1.0})
+    state.apply({"t": "packed", "stage": "pack", "server": s2, "container": "c001", "ok": False,
+                 "at": 2.0})
+    state.apply({"t": "loaded", "container": "c001", "truck": "t01", "ok": True, "at": 3.0})
+    actions = Actions(profile=profile, state=state, fleet=None, portal=None, events=None,
+                      metrics=None, clock=None)
+    unpack1 = Step("unpack", "unpack", 0, (s1,), container_id="c001")
+    unpack2 = Step("unpack", "unpack", 0, (s2,), container_id="c001")
+    unload = Step("unload", "truck_unload", 0, container_id="c001", truck_id="t01")
+    assert not any(actions._resending(s) for s in (unpack1, unpack2, unload))  # a fresh run
+    state.apply({"t": "interrupted", "at": 4.0})
+    state.apply({"t": "resumed", "at": 5.0})
+    assert actions._resending(unpack1) and actions._resending(unload)
+    assert not actions._resending(unpack2)          # its pack never landed
+    state.containers["c001"].load_failed = True
+    assert not actions._resending(unload)           # its load never landed

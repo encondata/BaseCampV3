@@ -14,6 +14,7 @@ from fakeserver import FakeBaseCamp
 
 from loadtest.clock import FakeClock
 from loadtest.journal import JOURNAL_NAME, load_state
+from loadtest.metrics import METRICS_NAME
 from loadtest.runner import MESSAGES, Runner, RunnerError
 
 EMAIL = "ops@example.com"
@@ -122,8 +123,23 @@ def assert_no_secrets(world, snapshot: dict, issued: int = 7) -> None:
     for path in world.tmp.rglob("*"):
         if path.is_file():
             content = path.read_text(encoding="utf-8")
+            if path.name == METRICS_NAME:
+                # only its strings could hold a secret; its many numbers can contain the
+                # six digits of the 2FA code by chance
+                content = json.dumps([_strings(json.loads(line))
+                                      for line in content.splitlines()])
             for secret in secrets:
                 assert secret not in content, path.name
+
+
+def _strings(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k, *_strings(v)]]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
 
 
 async def hard_crash(world, runner: Runner) -> Path:
@@ -716,6 +732,122 @@ async def test_statistics_cover_the_whole_run_after_a_continue(world, fake, cloc
     assert result["series"]["waiting"][0] == before.series()["waiting"][0]
     assert result["db_health"] == "sampled"
     assert runner._driver.run.sampler.latest["waiting_peak"] >= peak
+
+
+class LandThenHang(httpx.AsyncBaseTransport):
+    """The `nth` request that `match` picks reaches the server and does its work, then its
+    answer never comes: the call is in flight when the tool dies."""
+
+    def __init__(self, inner, match, nth: int) -> None:
+        self.inner, self.match, self.nth, self.seen = inner, match, nth, 0
+        self.hung = asyncio.Event()
+
+    async def handle_async_request(self, request):
+        response = await self.inner.handle_async_request(request)
+        if self.match(request):
+            self.seen += 1
+            if self.seen == self.nth:
+                self.hung.set()
+                await asyncio.Event().wait()        # never answers
+        return response
+
+
+def _body(request) -> dict:
+    try:
+        body = json.loads(request.content or b"{}")
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _calls(method: str, path: str, **fields):
+    pattern = re.compile(path)
+
+    def match(request) -> bool:
+        body = _body(request)
+        return (request.method == method and pattern.fullmatch(request.url.path) is not None
+                and all(body.get(k) == v for k, v in fields.items()))
+    return match
+
+
+# call kind -> (which request, which one of them hangs)
+IN_FLIGHT = {
+    "enroll": (_calls("POST", r"/kiosk/assets/[^/]+/rfid"), 3),
+    "handheld scan": (_calls("POST", r"/kiosk/scans"), 3),
+    "station scan batch": (_calls("POST", r"/kiosk/station/scans"), 3),
+    "pack": (_calls("POST", r"/kiosk/containers/[^/]+/assets", action="pack"), 3),
+    "unpack": (_calls("POST", r"/kiosk/containers/[^/]+/assets", action="unpack"), 3),
+    "load": (_calls("POST", r"/kiosk/trucks/[^/]+/containers", action="load"), 2),
+    "unload": (_calls("POST", r"/kiosk/trucks/[^/]+/containers", action="unload"), 2),
+    "depart": (_calls("PATCH", r"/trucks/[^/]+", status="in_transit"), 1),
+    "location": (_calls("POST", r"/trucks/[^/]+/updates"), 5),
+    "arrive": (_calls("PATCH", r"/trucks/[^/]+", status="at_destination"), 1),
+}
+STEP_CALLS = ("enroll", "scans", "station-scans", "pack", "unpack", "load", "unload",
+              "truck-status", "truck-location")
+
+
+async def whole_run(world, clock) -> dict:
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    world.process_scans(duplicate_on_replay=False)
+    await clock.run(runner.wait())
+    return runner.result()
+
+
+async def continue_after_a_call_in_flight(world, clock, match, nth: int) -> dict:
+    """A run whose `nth` matching call lands on the server but is unanswered when the tool
+    is killed; then the run is continued to its result."""
+    normal = world.transport
+    hang = LandThenHang(normal, match, nth)
+    world.transport = hang
+    first = world.runner()
+    await world.ready(first)
+    await first.start()
+    world.process_scans(duplicate_on_replay=False)
+
+    async def until_hung():
+        await hang.hung.wait()
+        await clock.sleep(0.01)
+    await clock.run(until_hung(), limit=600)
+    await hard_crash(world, first)
+    world.transport = normal
+    runner = world.runner()
+    assert await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL)) == {
+        "status": "ok"}
+    await clock.run(runner.wait())
+    assert runner.phase == "done", runner.snapshot()["error"]
+    return runner.result()
+
+
+@pytest.mark.parametrize("kind", list(IN_FLIGHT))
+async def test_a_call_in_flight_at_the_interruption_counts_once(fake, clock, tmp_path, kind):
+    """Every kind of call, sent and landed but unanswered when the tool dies: the continued
+    run ends with the verdict of an uninterrupted run, and nothing is counted twice or as
+    failed."""
+    from fakeserver import FakeBaseCamp as Fake
+    baseline_world = World(Fake(clock), clock, tmp_path / "baseline")
+    world = World(fake, clock, tmp_path / "interrupted")
+    try:
+        baseline = await whole_run(baseline_world, clock)
+        match, nth = IN_FLIGHT[kind]
+        result = await continue_after_a_call_in_flight(world, clock, match, nth)
+        assert len(result["run"]["interruptions"]) == 1
+        assert (result["verdict"], result["findings"]) == (
+            baseline["verdict"], baseline["findings"]), result["findings"]
+        assert {n: c["failures"] for n, c in result["calls"].items() if c["failures"]} == {}
+        for name in STEP_CALLS:
+            assert result["calls"][name]["count"] == baseline["calls"][name]["count"], name
+        assert result["scans"] == baseline["scans"]
+        scans_once_each(fake)
+    finally:
+        for w in (baseline_world, world):
+            for r in w.runners:
+                await r.shutdown()
+            for t in w.tickers:
+                t.cancel()
+            await asyncio.gather(*w.tickers, return_exceptions=True)
 
 
 class TickingClock(FakeClock):

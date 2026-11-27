@@ -69,6 +69,7 @@ async def timed_call(
     clock: Clock,
     retry: RetrySpec,
     already_done: Callable[[httpx.Response], bool] | None = None,
+    already_done_first: bool = False,
     token_call: bool = True,
     prior_attempts: int = 0,
     **request_kwargs,
@@ -76,6 +77,11 @@ async def timed_call(
     """`token_call=False` is for a call that is itself a sign-in: a 401 there means the
     credentials were refused, so it is a final failure carrying the server's code
     instead of a `TokenExpired` for the caller to renew.
+
+    `already_done` names an answer that says the work is already done. It counts as
+    success on a retry (an earlier try landed and only its answer was lost), and on the
+    first try too when `already_done_first` is set: a continued run resending a step
+    that may have landed before the interruption.
 
     `prior_attempts` is for a redo after a 401: the requests of the first try that may
     have landed (its attempts before the 401). They count toward the recorded
@@ -104,7 +110,8 @@ async def timed_call(
                     # wrong address behind calls that do nothing.
                     metrics.record(name, ms, False, retries)
                     raise CallFailed(name, status, "redirected", retries)
-                if retries > 0 and already_done is not None and already_done(response):
+                if ((retries > 0 or already_done_first) and already_done is not None
+                        and already_done(response)):
                     metrics.record(name, ms, True, retries)
                     return response
                 metrics.record(name, ms, False, retries)

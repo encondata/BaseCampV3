@@ -137,6 +137,18 @@ async def test_already_done_on_the_first_try_is_a_failure():
     assert m.calls()["pack"]["failures"] == 1
 
 
+async def test_already_done_on_the_first_try_counts_when_asked():
+    """A continued run resending a step that may have landed before the interruption."""
+    r, m, _, _ = await call([err(409, "not_in_container")], already_done=done,
+                            already_done_first=True)
+    assert r.status_code == 409
+    row = m.calls()["pack"]
+    assert (row["count"], row["retries"], row["failures"]) == (1, 0, 0)
+    r, m, _, _ = await call([err(409, "other_code")], already_done=done,
+                            already_done_first=True)
+    assert isinstance(r, CallFailed) and r.code == "other_code"
+
+
 async def test_exception_text_never_carries_request_secrets():
     for responses in ([err(422, "bad")], [httpx.ConnectError("boom")] * 5, [httpx.Response(503)] * 5):
         r, _, _, _ = await call(
