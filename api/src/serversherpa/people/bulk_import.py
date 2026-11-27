@@ -37,6 +37,7 @@ from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
 from serversherpa.services import biometric, push_registrations
 from serversherpa.services.audit import audit
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 
 __all__ = ["BulkImportError", "MAX_BYTES", "MAX_ROWS"]
 
@@ -219,7 +220,8 @@ def _worker_query():
               & (PersonRole.role == "worker")
               & (PersonRole.revoked_at.is_(None)))
         .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
-        .where(Person.archived_at.is_(None))
+        .where(Person.archived_at.is_(None),
+               Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
         .order_by(natural(Person.last_name), natural(Person.first_name))
     )
 
@@ -245,8 +247,11 @@ async def export_rows(db: AsyncSession) -> list[dict]:
     read into a row."""
     partner_names = dict((await db.execute(select(Partner.id, Partner.name))).all())
     pairs = (await db.execute(_worker_query())).all()
+    # only the columns the row needs: never the password hash or TOTP secret
     accounts = {
-        a.person_id: a for a in await db.scalars(select(UserAccount))}
+        a.person_id: a for a in (await db.execute(select(
+            UserAccount.person_id, UserAccount.email, UserAccount.disabled_at,
+            UserAccount.last_login_at))).all()}
     roles: dict[uuid.UUID, list[str]] = {}
     for pid, role in (await db.execute(
             select(PersonRole.person_id, PersonRole.role)
@@ -452,12 +457,15 @@ def _check_certifications(value: Any) -> tuple[list[dict], list[str]]:
         name = _cert_text(raw.get("name"))
         if not name:
             errors.append(f"certification {i}: name is required")
-        cert = {"name": name, "issuer": _cert_text(raw.get("issuer")) or None}
+        issuer = raw.get("issuer")
+        if isinstance(issuer, (list, dict, bool)):
+            errors.append(f"certification {i}: issuer must be text")
+        cert = {"name": name, "issuer": _cert_text(issuer) or None}
         for field in ("issued_on", "expires_on"):
             day = raw.get(field)
             cert[field] = None
-            if day is None:
-                continue
+            if day is None or (isinstance(day, str) and not day.strip()):
+                continue        # blank reads as null
             try:
                 if not (isinstance(day, str) and _ISO_DAY.match(day)):
                     raise ValueError
@@ -526,10 +534,16 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
                 if pid_person is None:
                     notes.append("person_id not found here")
 
+        # a row whose person_id resolves here is exempt from the in-upload
+        # email/phone duplicate checks, as it is for names: the id decides it.
+        # For email only when it is that person's own: people.email is unique,
+        # so two rows setting one new email would fail at commit.
         email_key = row["email"].casefold()
+        own_email = pid_person is not None and (
+            (pid_person.email or "").casefold() == email_key)
         if row["email"] and not _valid_email(row["email"]):
             errors.append(f"email '{row['email']}' is not valid")
-        elif row["email"] and len(emails_seen[email_key]) > 1:
+        elif row["email"] and len(emails_seen[email_key]) > 1 and not own_email:
             errors.append(f"duplicate email '{email_key}' within the import")
         elif email_key in ref["archived_emails"]:
             errors.append(f"email '{row['email']}' belongs to an archived person")
@@ -537,7 +551,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
         phone_key = normalize_phone(row["phone"])
         if row["phone"] and not phone_key:
             errors.append("phone needs at least 7 digits")
-        elif phone_key and len(phones_seen[phone_key]) > 1:
+        elif phone_key and len(phones_seen[phone_key]) > 1 and pid_person is None:
             errors.append("duplicate phone within the import")
 
         row_names = name_keys(row["first_name"], row["last_name"], row["preferred_name"])
@@ -608,6 +622,13 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
                     for p in ref["by_name"].get(k, []):
                         seen[p.id] = p
                 hits["name"] = list(seen.values())
+            if pid_person is not None:
+                # a key the person_id's person shares with others neither
+                # errors nor counts as disagreement: the id decides the row
+                for key in ("email", "phone", "name"):
+                    people = hits.get(key, [])
+                    if len(people) > 1 and any(p.id == pid_person.id for p in people):
+                        hits.pop(key)
             shown = {"person_id": row["person_id"], "email": row["email"],
                      "phone": row["phone"],
                      "name": _row_display_name(row)}

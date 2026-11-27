@@ -835,3 +835,166 @@ async def test_foreign_ids_match_by_email(db, admin):
                               "last_name": "Smith", "email": "f@x.example.com"})
     assert r["action"] in ("update", "unchanged") and r["person_id"] == str(p.id)
     assert r["matched_by"] == "email" and r["notes"] == ["person_id not found here"]
+
+
+# ── fix wave: kiosk identities, shared keys, cert edge cases ────────
+
+async def test_export_skips_kiosk_move_identities(db, admin):
+    from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
+    kiosk = await mk_worker(db, "Kiosk", "Identity")
+    kiosk.source = KIOSK_MOVE_SOURCE
+    await db.commit()
+    await mk_worker(db, "Real", "Worker")
+    rows = await bi.export_rows(db)
+    assert [r["last_name"] for r in rows] == ["Worker"]
+    assert str(kiosk.id) not in {r["person_id"] for r in rows}
+
+
+async def _two_sharing_a_phone(db):
+    a = await mk_worker(db, "Ann", "One", phone="555-777-0001")
+    b = await mk_worker(db, "Bea", "Two", phone="(555) 777-0001")
+    return a, b
+
+
+async def test_shared_phone_json_export_round_trips_unchanged(db, admin):
+    a, b = await _two_sharing_a_phone(db)
+    text = bi.build_export_json(await bi.export_rows(db))
+    out = await bi.preview_rows(db, bi.parse_upload("w.json", text.encode()),
+                                actor_id=admin.id, actor_rank=ADMIN_RANK)
+    assert [(r["action"], r["errors"]) for r in out["rows"]] == [
+        ("unchanged", []), ("unchanged", [])]
+    assert [r["person_id"] for r in out["rows"]] == [str(a.id), str(b.id)]
+    assert [r["matched_by"] for r in out["rows"]] == ["person_id, name"] * 2
+    assert out["can_commit"] is True
+
+
+async def test_shared_phone_export_without_person_id_still_errors(db, admin):
+    await _two_sharing_a_phone(db)
+    rows = json.loads(bi.build_export_json(await bi.export_rows(db)))
+    for r in rows:
+        r.pop("person_id")
+    out = await bi.preview_rows(db, bi.parse_upload("w.json", json.dumps(rows).encode()),
+                                actor_id=admin.id, actor_rank=ADMIN_RANK)
+    assert [r["errors"] for r in out["rows"]] == [
+        ["duplicate phone within the import"]] * 2
+    # alone in the upload, the row still meets the DB-side shared-phone error
+    alone = await one(db, admin, {"first_name": "Ann", "last_name": "One",
+                                  "phone": "555-777-0001"})
+    assert alone["errors"] == ["two people share the phone '555-777-0001'"]
+
+
+async def test_person_id_with_another_persons_phone_still_errors(db, admin):
+    a = await mk_worker(db, "Ann", "One", phone="555-777-0001")
+    await mk_worker(db, "Bea", "Two", phone="555-777-0002")
+    r = await one(db, admin, {"person_id": str(a.id), "first_name": "Ann",
+                              "last_name": "One", "phone": "555-777-0002"})
+    assert r["action"] == "error"
+    assert r["errors"] == [
+        "person_id matches Ann One, phone matches Bea Two, name matches Ann One"]
+
+
+async def test_person_id_with_a_shared_phone_not_its_own_still_errors(db, admin):
+    """Only a key whose hits include the person_id's person is dropped."""
+    a = await mk_worker(db, "Ann", "One", phone="555-777-0001")
+    await mk_worker(db, "Bea", "Two", phone="555-777-0002")
+    await mk_worker(db, "Cy", "Three", phone="555-777-0002")
+    r = await one(db, admin, {"person_id": str(a.id), "first_name": "Ann",
+                              "last_name": "One", "phone": "555-777-0002"})
+    assert r["errors"] == ["two people share the phone '555-777-0002'"]
+
+
+async def test_in_upload_email_repeat_is_exempt_with_person_id(db, admin):
+    """people.email is unique, so only the row whose person already has the
+    email skips the in-upload check."""
+    a = await mk_worker(db, "Ann", "One", email="ann@x.example.com")
+    b = await mk_worker(db, "Bea", "Two")
+    out = await preview(db, admin, [
+        {"person_id": str(a.id), "first_name": "Ann", "last_name": "One",
+         "email": "ann@x.example.com"},
+        {"person_id": str(b.id), "first_name": "Bea", "last_name": "Two",
+         "email": "ANN@x.example.com"}])
+    assert [r["errors"] for r in out["rows"]] == [
+        [], ["duplicate email 'ann@x.example.com' within the import"]]
+    assert out["rows"][0]["action"] == "unchanged"
+
+
+async def test_person_id_rows_setting_one_new_email_are_duplicates(db, admin):
+    """Exempting these would pass preview and then break people_email_uniq."""
+    a = await mk_worker(db, "Ann", "One")
+    b = await mk_worker(db, "Bea", "Two")
+    out = await preview(db, admin, [
+        {"person_id": str(a.id), "first_name": "Ann", "last_name": "One",
+         "email": "new@x.example.com"},
+        {"person_id": str(b.id), "first_name": "Bea", "last_name": "Two",
+         "email": "new@x.example.com"}])
+    assert [r["errors"] for r in out["rows"]] == [
+        ["duplicate email 'new@x.example.com' within the import"]] * 2
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_blank_certification_dates_read_as_null(db, admin, blank):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR", "issued_on": blank, "expires_on": blank}]})
+    assert r["errors"] == []
+    assert r["data"]["certifications"] == [
+        {"name": "CPR", "issuer": None, "issued_on": None, "expires_on": None}]
+
+
+@pytest.mark.parametrize("issuer", [["Red Cross"], {"name": "Red Cross"}, True, False])
+async def test_non_text_certification_issuer_is_a_row_error(db, admin, issuer):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR"}, {"name": "OSHA 10", "issuer": issuer}]})
+    assert r["errors"] == ["certification 2: issuer must be text"]
+
+
+async def test_numeric_certification_issuer_becomes_text(db, admin):
+    r = await one(db, admin, {"first_name": "A", "last_name": "B", "certifications": [
+        {"name": "CPR", "issuer": 911}]})
+    assert r["errors"] == [] and r["data"]["certifications"][0]["issuer"] == "911"
+
+
+async def test_archived_person_id_is_ignored_with_a_note(db, admin):
+    old = await mk_worker(db, "Old", "Timer", phone="555-777-0009", archived=True)
+    live = await mk_worker(db, "Liv", "Ing", phone="555-777-0010")
+    # matches by its other keys
+    hit = await one(db, admin, {"person_id": str(old.id), "first_name": "Liv",
+                                "last_name": "Ing", "phone": "555-777-0010"})
+    assert hit["notes"] == ["person_id not found here"] and not hit["errors"]
+    assert hit["person_id"] == str(live.id) and hit["matched_by"] == "phone, name"
+    # or creates when none match
+    new = await one(db, admin, {"person_id": str(old.id), "first_name": "Old",
+                                "last_name": "Timer", "phone": "555-777-0009"})
+    assert new["action"] == "create" and new["notes"] == ["person_id not found here"]
+    assert not new["errors"]
+
+
+async def test_approved_certification_add_on_update_is_audited(db, admin):
+    p = await mk_worker(db, email="aud@x.example.com", profile={})
+    r = await one(db, admin, {"email": "aud@x.example.com", "first_name": "Robert",
+                              "last_name": "Smith", "certifications": [{"name": "CPR"}]})
+    assert r["action"] == "update"
+    await commit(db, admin, [r["cells"]], approved=[str(p.id)])
+    entries = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(p.id), AuditLog.action == "certification.add")))
+    assert [e.changes for e in entries] == [{"name": {"from": None, "to": "CPR"}}]
+
+
+async def test_export_never_selects_password_hashes(db, admin):
+    from sqlalchemy import event
+
+    from serversherpa.db.engine import get_engine
+    await mk_worker(db, "Sec", "Ret", account=True)
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *rest):
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        rows = await bi.export_rows(db)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert rows[0]["has_login"] is True
+    assert any("user_accounts" in s for s in statements)
+    assert not any("password_hash" in s for s in statements)
