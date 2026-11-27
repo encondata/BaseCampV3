@@ -1054,8 +1054,9 @@ def test_port_in_use_is_one_line(tmp_path):
         taken.close()
     assert got.returncode != 0
     out = (got.stdout + got.stderr).strip()
-    assert len(out.splitlines()) == 1 and str(port) in out
-    assert "Traceback" not in out
+    assert out == (f"Port {port} is already in use. The load test may already be running on "
+                   "this machine; open its page instead, or start this one with --port and "
+                   "--runs-dir set to something else.")
 
 
 def test_allowed_names_and_loopback(monkeypatch):
@@ -1089,3 +1090,36 @@ def test_loopback_start_prints_one_line_and_no_key(tmp_path):
     assert "key" not in first + out
     assert "Move load test" not in out
     assert (tmp_path / "runs").is_dir()
+
+
+ANOTHER_COPY = "Another copy of the load test is already using this runs folder."
+
+
+def test_a_second_copy_on_the_same_runs_folder_exits(tmp_path):
+    """Two copies on one runs folder would both drive the same run."""
+    import socket
+
+    from loadtest import __main__ as cli
+    runs = tmp_path / "runs"
+    held = cli.lock_runs_dir(runs)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    try:
+        got = subprocess.run([sys.executable, "-m", "loadtest", "--host", "127.0.0.1",
+                              "--port", str(port), "--runs-dir", str(runs)],
+                             capture_output=True, text=True, timeout=30)
+    finally:
+        held.close()
+    assert got.returncode != 0
+    assert (got.stdout + got.stderr).strip() == ANOTHER_COPY
+    again = cli.lock_runs_dir(runs)          # free once the first copy lets go
+    again.close()
+
+
+def test_without_file_locks_the_tool_says_so_once(monkeypatch, tmp_path, capsys):
+    from loadtest import __main__ as cli
+    monkeypatch.setattr(cli, "_fcntl", lambda: None)
+    assert cli.lock_runs_dir(tmp_path / "runs") is None
+    assert capsys.readouterr().out.splitlines() == [cli.NO_LOCK]

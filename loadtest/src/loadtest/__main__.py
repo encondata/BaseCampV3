@@ -46,6 +46,39 @@ def lan_address() -> str:
 
 
 WILDCARD = ("0.0.0.0", "::", "")
+LOCK_NAME = ".lock"
+ANOTHER_COPY = "Another copy of the load test is already using this runs folder."
+NO_LOCK = ("This system cannot lock the runs folder, so never start two copies of the load "
+           "test with the same runs folder.")
+
+
+def _fcntl():
+    try:
+        import fcntl
+    except ImportError:     # not on Windows
+        return None
+    return fcntl
+
+
+def lock_runs_dir(runs_dir: Path):
+    """Holds `<runs_dir>/.lock` for as long as the returned file stays open, so a second
+    copy of the tool can never drive the same run. Exits when another copy holds it.
+    None (after one printed line) where the system has no file locks."""
+    fcntl = _fcntl()
+    if fcntl is None:
+        print(NO_LOCK, flush=True)
+        return None
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        handle = open(runs_dir / LOCK_NAME, "a")
+    except OSError as exc:
+        sys.exit(f"Could not use the runs folder {runs_dir}: {exc.strerror or 'refused'}.")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        sys.exit(ANOTHER_COPY)
+    return handle
 
 
 def is_loopback(host: str) -> bool:
@@ -82,14 +115,25 @@ def bind(host: str, port: int) -> socket.socket:
     except OSError as exc:
         sock.close()
         if exc.errno == errno.EADDRINUSE:
-            sys.exit(f"Port {port} is already in use. Stop the program using it, or start "
-                     f"with --port and another number.")
+            sys.exit(f"Port {port} is already in use. The load test may already be running "
+                     "on this machine; open its page instead, or start this one with --port "
+                     "and --runs-dir set to something else.")
         sys.exit(f"Could not listen on {host} port {port}: {exc.strerror or 'refused'}.")
     return sock
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    runs_dir = args.runs_dir.resolve()
+    lock = lock_runs_dir(runs_dir)      # held until main returns
+    try:
+        _serve(args, runs_dir)
+    finally:
+        if lock is not None:
+            lock.close()
+
+
+def _serve(args: argparse.Namespace, runs_dir: Path) -> None:
     sock = bind(args.host, args.port)
 
     import secrets
@@ -99,7 +143,6 @@ def main(argv: list[str] | None = None) -> None:
     from .runner import Runner
     from .web.app import create_app
 
-    runs_dir = args.runs_dir.resolve()
     runs_dir.mkdir(parents=True, exist_ok=True)
     runner = Runner(runs_dir=runs_dir,
                     router_url=os.environ.get("LOADTEST_ROUTER_URL") or DEFAULT_ROUTER_URL)
