@@ -587,3 +587,12 @@ async def test_off_move_kept_for_rfid_station_only(fake, clock, device):
         assert len(r.json()["accepted"]) == 1
     by_value = {r["scanned_value"]: r["off_move"] for r in fake.raw_scans}
     assert by_value == {"1" * 24: True, "SN-OFF": False}
+
+
+async def test_close_forgets_the_password_token_and_station_key(fake, clock, device):
+    d = device("rfid_station", n=3)
+    await ready(fake, clock, d, status="rfid_1_cage_exit")
+    assert d.has_key and d._password and d._token
+    await d.close()
+    assert (d._password, d._token, d._key) == (None, None, None)
+    assert not d.has_key

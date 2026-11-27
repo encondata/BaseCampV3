@@ -132,7 +132,7 @@ def _coordinates(site: SiteInfo | None) -> tuple[float, float] | None:
     return (site.lat, site.lng)
 
 
-def _sign_in_failure(exc: Exception) -> str:
+def sign_in_failure(exc: Exception) -> str:
     """A refused or failed first sign-in (the password step or the heartbeat after it)."""
     if not isinstance(exc, CallFailed):
         return f"The kiosk sign-in failed: {NOT_UNDERSTOOD}. Check the server address."
@@ -143,7 +143,7 @@ def _sign_in_failure(exc: Exception) -> str:
         f"The kiosk sign-in failed ({_answered(exc)}).")
 
 
-def _setup_failure(exc: Exception, move: MoveInfo, checkpoint: str) -> str:
+def setup_failure(exc: Exception, move: MoveInfo, checkpoint: str) -> str:
     """The move-bound kiosk setup that proves the password is for this move."""
     if not isinstance(exc, CallFailed):
         return f"The kiosk could not be set up: {NOT_UNDERSTOOD}. Check the server address."
@@ -214,7 +214,7 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
         try:
             await device.sign_in(move_password)
         except BAD_ANSWER as exc:
-            password_detail = ("fail", _sign_in_failure(exc))
+            password_detail = ("fail", sign_in_failure(exc))
         else:
             signed_in = True
             device_keeps_cookie = device.has_refresh_cookie
@@ -235,7 +235,7 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
                     await device.setup(initiative_id=move.id, site_id=move.origin.id,
                                        scan_status=checkpoints[0])
                 except BAD_ANSWER as exc:
-                    password_detail = ("fail", _setup_failure(exc, move, checkpoints[0]))
+                    password_detail = ("fail", setup_failure(exc, move, checkpoints[0]))
                 else:
                     password_detail = (
                         "pass", f"The move password signed a kiosk in to {move.name}.")

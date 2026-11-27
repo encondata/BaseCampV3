@@ -358,3 +358,13 @@ async def test_two_stages_sharing_a_checkpoint_count_once_each(fake, clock, metr
     report = await check(clock, metrics, m, profile=shared)
     assert report.verdict == "Pass", report.findings
     assert (report.scans_missing, report.scans_twice) == (0, 0)
+
+
+async def test_extra_findings_count_toward_the_verdict(fake, clock, metrics, move):
+    m = await move()
+    extra = [Finding("warn", "The wait for the server to catch up was ended early.")]
+    report = await clock.run(final_check(
+        portal=m.portal, state=m.state, profile=m.profile, metrics=metrics,
+        rule_checkpoints=m.rules, stopped_early=False, extra_findings=extra))
+    assert report.verdict == "Pass with warnings"
+    assert report.findings == extra

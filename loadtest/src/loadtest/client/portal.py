@@ -132,6 +132,9 @@ class PortalClient:
         return sendable_cookie(self._client, REFRESH_COOKIE)
 
     async def close(self) -> None:
+        """Closes the connection and forgets the email, password, 2FA challenge and token."""
+        self._email = self._password = self._challenge = self._token = None
+        self._me = None
         await self._client.aclose()
 
     # ── sign-in and tokens ─────────────────────────────────────────────

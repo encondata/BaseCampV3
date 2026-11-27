@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import Counter
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
@@ -125,8 +125,10 @@ def container_scans_sent(state: RunState) -> int:
 
 async def final_check(*, portal: PortalClient, state: RunState, profile: Profile,
                       metrics: Metrics, rule_checkpoints: set[str], stopped_early: bool,
-                      concurrency: int = 8) -> FinalReport:
-    """Raises only asyncio.CancelledError: a failed read is a finding."""
+                      concurrency: int = 8, extra_findings: Sequence[Finding] = ()
+                      ) -> FinalReport:
+    """Raises only asyncio.CancelledError: a failed read is a finding. `extra_findings`
+    (the runner's own, such as a catch-up wait ended early) count toward the verdict."""
     failed_calls = metrics.failed_calls()   # before this check's own reads
     stages = server_stages(profile)
     servers = list(state.servers.values())
@@ -215,6 +217,7 @@ async def final_check(*, portal: PortalClient, state: RunState, profile: Profile
         findings.append(Finding("warn", f"{_n(twice, 'scan', 'scans')} {was} processed twice "
                                         "after a retry."))
     findings += _location_findings(state, metrics)
+    findings += list(extra_findings)
 
     levels = {f.level for f in findings}
     verdict = "Fail" if "fail" in levels else "Pass with warnings" if levels else "Pass"

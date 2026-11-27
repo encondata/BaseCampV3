@@ -137,6 +137,8 @@ class KioskDevice:
         return sendable_cookie(self._client, "ss_refresh")
 
     async def close(self) -> None:
+        """Closes the connection and forgets the move password, token and station key."""
+        self._password = self._token = self._key = None
         await self._client.aclose()
 
     # ── sign-in and tokens ─────────────────────────────────────────────

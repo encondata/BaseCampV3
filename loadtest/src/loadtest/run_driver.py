@@ -1,6 +1,9 @@
 """One run as one background task: fleet start, sampler and pipeline, catch-up wait,
-final check, result. However the task ends, every task it started is gone and every file
-it opened is closed before it reports back."""
+final check, result. However the task ends, every task it started is gone, every file it
+opened is closed and every password it held is dropped before it reports back.
+
+Only a completed run and a Stop journal `run_finished`. A run that ends any other way (an
+error, an outside cancel, a shutdown) journals `interrupted` and can be continued."""
 
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from .client.portal import MoveInfo, PortalClient
 from .clock import Clock
 from .connection import RunnerError, log, safe_error
 from .events import Events, FeedLine
-from .finalcheck import FinalReport, final_check
+from .finalcheck import FinalReport, Finding, final_check
 from .fleet import Fleet, FleetError
 from .journal import JOURNAL_NAME, Journal
 from .metrics import Metrics
@@ -32,7 +35,9 @@ ACTIVE = ("starting", "running", "finishing")
 FLIGHT_WAIT = 30.0          # seconds a stop waits for calls in flight
 RUNNER = "Runner"           # the feed's device name for the runner's own lines
 EVENTS_LOG = "events.log"
-_END_PHASE = {"completed": "done", "stopped": "stopped", "error": "error"}
+_END_PHASE = {"completed": "done", "stopped": "stopped"}
+CONTINUABLE = "The run can be continued."
+WAIT_ENDED = "The wait for the server to catch up was ended early."
 
 
 class RunEvents(Events):
@@ -57,7 +62,7 @@ class Run:
     journal: Journal
     events: Events
     metrics: Metrics
-    portal: PortalClient
+    portal: PortalClient | None
     move_password: str | None
     secrets: tuple[str, ...]
     pipeline: Pipeline | None = None
@@ -71,6 +76,7 @@ class Run:
     in_flight: int = 0
     idle: asyncio.Event = field(default_factory=asyncio.Event)
     finished: bool = False      # run_finished journaled
+    interrupted: bool = False   # interrupted journaled by this run task
     ended_at: float | None = None
 
 
@@ -102,7 +108,6 @@ class RunDriver:
         self.task: asyncio.Task | None = None
         self.result: dict | None = None
         self.error: str | None = None
-        self.interrupting = False
 
     @property
     def active(self) -> bool:
@@ -144,6 +149,7 @@ class RunDriver:
         self._set_phase("starting")
         self.feed(run, action, subject)
         self.task = asyncio.create_task(self._run_task(run))
+        self.task.add_done_callback(_retrieve)
 
     def feed(self, run: Run, action: str, subject: str = "", ok: bool = True) -> None:
         run.events.feed(FeedLine(self.clock.now(), RUNNER, action, subject, ok, None))
@@ -169,14 +175,11 @@ class RunDriver:
         await asyncio.wait({task})
 
     async def interrupt(self) -> None:
+        """Cancels the run task: it journals `interrupted` and closes everything."""
         task = self.task
         if task is not None and not task.done():
-            self.interrupting = True
-            try:
-                task.cancel()
-                await asyncio.wait({task})
-            finally:
-                self.interrupting = False
+            task.cancel()
+            await asyncio.wait({task})
 
     async def wait(self) -> None:
         task = self.task
@@ -193,11 +196,15 @@ class RunDriver:
             try:
                 await self._teardown(run)
             finally:
-                if outcome is not None:
-                    self._finish(run, *outcome)
-                elif self.interrupting and not run.finished:
-                    self.journal(run, {"t": "interrupted"})
-                await self._close(run, ended=outcome is not None)
+                try:
+                    if outcome is not None:
+                        self._finish(run, *outcome)
+                    else:                       # cancelled: a shutdown or an outside cancel
+                        self._interrupt_entry(run)
+                except Exception as exc:        # a failure while finishing
+                    self._finish_failed(run, exc)
+                finally:
+                    await self._close(run, ended=outcome is not None)
 
     async def _outcome(self, run: Run) -> Outcome:
         try:
@@ -226,16 +233,31 @@ class RunDriver:
                               portal=run.portal, events=run.events, metrics=run.metrics,
                               clock=self.clock)
         run.rules = await self._rules(run)
+        if run.stop_event.is_set():
+            return self._stopped_at_start(run)
         run.sampler = Sampler(portal=run.portal, move_id=run.state.move_id,
                               metrics=run.metrics, clock=self.clock,
                               every=run.profile.sample_seconds)
         self._set_phase("running")
-        run.tasks["sampler"] = asyncio.create_task(run.sampler.run())
+        run.tasks["sampler"] = asyncio.create_task(self._sample(run))
         run.tasks["pipeline"] = asyncio.create_task(run.pipeline.run())
         if not await self._until_stop(run, run.tasks["pipeline"]):
             return await self._stop_mid_run(run)
         run.tasks["pipeline"].result()      # an engine failure ends the run as an error
         return await self._catch_up_and_check(run)
+
+    async def _sample(self, run: Run) -> None:
+        """The sampler for as long as the run lasts: one that dies is logged once and
+        started again after one sampling interval."""
+        logged = False
+        while True:
+            try:
+                await run.sampler.run()
+            except Exception as exc:
+                if not logged:
+                    logged = True
+                    log("the sampler stopped and was started again", exc)
+                await self.clock.sleep(run.profile.sample_seconds)
 
     def _stopped_at_start(self, run: Run) -> Outcome:
         self.feed(run, "Run stopped", "while the devices were starting")
@@ -292,9 +314,12 @@ class RunDriver:
         catch = asyncio.create_task(run.sampler.wait_for_catch_up())
         run.tasks["catch_up"] = catch
         if not await self._until_stop(run, catch):
+            # A stop here only ends the wait: every step was sent, so the check is whole.
             await cancel_tasks(catch)
-            self.feed(run, "Run stopped")
-            return "stopped", await self._final_check(run, stopped_early=True), None
+            self.feed(run, "Catch-up wait ended early")
+            report = await self._final_check(run, stopped_early=False,
+                                             extra=[Finding("warn", WAIT_ENDED)])
+            return "completed", report, None
         catch_up = catch.result()
         if catch_up is not None:
             self.feed(run, "Server caught up", f"{catch_up:.0f} s")
@@ -311,41 +336,71 @@ class RunDriver:
         except Exception:   # noqa: BLE001 - a failed read falls back to the earlier one
             return None
 
-    async def _final_check(self, run: Run, *, stopped_early: bool) -> FinalReport:
+    async def _final_check(self, run: Run, *, stopped_early: bool,
+                           extra: list[Finding] | None = None) -> FinalReport:
         self.feed(run, "Final check")
         rules = await self._rules(run)
         if rules is None:
             rules = run.rules or set()
         return await final_check(portal=run.portal, state=run.state, profile=run.profile,
                                  metrics=run.metrics, rule_checkpoints=rules,
-                                 stopped_early=stopped_early)
+                                 stopped_early=stopped_early, extra_findings=extra or ())
 
     async def _teardown(self, run: Run) -> None:
         run.stopping = True
-        await cancel_tasks(*run.tasks.values())
-        if run.fleet is not None:
-            await run.fleet.stop()
+        try:
+            await cancel_tasks(*run.tasks.values())
+        finally:
+            if run.fleet is not None:
+                try:
+                    await run.fleet.stop()
+                except Exception as exc:    # noqa: BLE001 - closing goes on regardless
+                    log("could not stop the devices", exc)
 
     def _finish(self, run: Run, reason: str, report: FinalReport | None,
                 catch_up: float | None) -> None:
         run.ended_at = self.clock.now()
-        db_health = run.sampler.db_health_state if run.sampler else "not_sampled"
-        try:
-            result = build_results(state=run.state, profile=run.profile, metrics=run.metrics,
-                                   report=report, catch_up_seconds=catch_up,
-                                   ended_at=run.ended_at, reason=reason, secrets=run.secrets,
-                                   db_health=db_health)
-            self.result = result
-            write_results(run.run_dir, result)
-        except (OSError, ValueError) as exc:
-            log("could not save results.json", exc)
-            self.error = "The result could not be saved to the run folder."
+        if reason == "error":
+            # an interim result, then the run stays continuable
+            self._save_result(run, self.error.rstrip("."), report, catch_up)
+            self._interrupt_entry(run)
+            self.feed(run, "Run interrupted", self.error, ok=False)
+            self.error = _continuable(self.error)
+            self._set_phase("error")
+            return
+        self._save_result(run, reason, report, catch_up)
         self.journal(run, {"t": "run_finished", "reason": reason})
         run.finished = True
         if self.result is not None:
             verdict = self.result["verdict"]
             self.feed(run, "Result", verdict, ok=verdict != "Fail")
         self._set_phase(_END_PHASE[reason])
+
+    def _save_result(self, run: Run, reason: str, report: FinalReport | None,
+                     catch_up: float | None) -> None:
+        db_health = run.sampler.db_health_state if run.sampler else "not_sampled"
+        self.result = build_results(
+            state=run.state, profile=run.profile, metrics=run.metrics, report=report,
+            catch_up_seconds=catch_up, ended_at=run.ended_at, reason=reason,
+            secrets=run.secrets, db_health=db_health)
+        try:
+            write_results(run.run_dir, self.result)
+        except OSError as exc:
+            log("could not save results.json", exc)
+            self.error = "The result could not be saved to the run folder."
+
+    def _finish_failed(self, run: Run, exc: Exception) -> None:
+        log("the run could not finish", exc)
+        if run.finished:
+            return
+        self._interrupt_entry(run)
+        self.error = _continuable(safe_error(exc))
+        self._set_phase("error")
+
+    def _interrupt_entry(self, run: Run) -> None:
+        if not run.finished and not run.interrupted:
+            run.interrupted = True
+            self.journal(run, {"t": "interrupted"})
 
     async def _close(self, run: Run, *, ended: bool) -> None:
         if run.ended_at is None:
@@ -355,7 +410,25 @@ class RunDriver:
         except OSError as exc:
             log("could not close the journal", exc)
         run.events.close()
+        # Keep only what snapshot() and result() read: nothing that holds a password.
         run.move_password, run.secrets = None, ()
+        run.portal = run.fleet = run.actions = None
+        if run.sampler is not None:
+            run.sampler.portal = None
         if not ended:
             self.phase = "idle"
-        await self._on_closed(ended)
+        try:
+            await self._on_closed(ended)
+        except Exception as exc:    # noqa: BLE001 - the run is over either way
+            log("could not close the portal sign-in", exc)
+
+
+def _continuable(message: str) -> str:
+    """The error sentence, ended with a period, then that the run can be continued."""
+    return f"{message if message.endswith('.') else message + '.'} {CONTINUABLE}"
+
+
+def _retrieve(task: asyncio.Task) -> None:
+    """Marks the run task's exception as seen: asyncio would print its text otherwise."""
+    if not task.cancelled() and task.exception() is not None:
+        log("the run task ended with a problem", task.exception())

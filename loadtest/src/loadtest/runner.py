@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ from .clock import Clock, RealClock
 from .connection import MESSAGES, Connection, RunnerError, normalize_server, sign_in_error
 from .events import Events, FeedLine
 from .ids import make_tags
-from .journal import load_state, start_entry
+from .journal import start_entry
 from .metrics import Metrics
 from .preflight import CheckReport, run_checks
 from .profile import (
@@ -76,6 +77,7 @@ class Runner:
         self._hub = Events(None)        # lives as long as the runner; the page subscribes here
         self.events: Events = self._hub
         self._busy = False              # a connect, check or continue is under way
+        self._shut = False              # shutdown() was called: nothing new may begin
         self._conn = Connection(clock=self.clock, transport=transport)
         self._report: CheckReport | None = None
         self._profile: Profile | None = None
@@ -114,8 +116,13 @@ class Runner:
     # ── guards ─────────────────────────────────────────────────────────
 
     def _require_free(self) -> None:
-        if self._busy or self._driver.active or self.phase in ACTIVE:
+        if self._shut or self._busy or self._driver.active or self.phase in ACTIVE:
             raise RunnerError("bad_phase")
+
+    async def _end_busy(self) -> None:
+        self._busy = False
+        if self._shut:          # a shutdown came while this call was under way
+            await self._reset()
 
     async def _reset(self) -> None:
         """Drops the sign-in, the check and the last run's view (not its result)."""
@@ -129,6 +136,8 @@ class Runner:
 
     async def connect(self, server: str, email: str, password: str,
                       totp_code: str | None = None) -> dict:
+        """Signs the portal in and lists the moves. Any connect first drops the earlier
+        sign-in and check, so a failed one leaves the runner `idle`."""
         self._require_free()
         self._busy = True
         try:
@@ -146,11 +155,12 @@ class Runner:
             return {"status": "ok",
                     "moves": [{"id": m.id, "name": m.name, "status": m.status} for m in moves]}
         finally:
-            self._busy = False
+            await self._end_busy()
 
     async def check(self, move_id: str, move_password: str,
                     speed: Literal["real-time", "fast"]) -> CheckReport:
-        if self._busy or self.phase not in ("connected", "checked") or not self._conn.connected:
+        if (self._shut or self._busy or self.phase not in ("connected", "checked")
+                or not self._conn.connected):
             raise RunnerError("bad_phase")
         self._busy = True
         try:
@@ -172,29 +182,35 @@ class Runner:
                 self.phase = "checked"
             return report
         finally:
-            self._busy = False
+            await self._end_busy()
 
     # ── start ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         """Returns once the run task exists. No await before the phase changes, so two
-        calls at once start one run."""
-        if self._busy or self._driver.active or self.phase not in ("connected", "checked"):
+        calls at once start one run. An unfinished run on disk must be continued or
+        discarded first."""
+        if (self._shut or self._busy or self._driver.active
+                or self.phase not in ("connected", "checked")):
             raise RunnerError("bad_phase")
         report, profile = self._report, self._profile
         if self.phase != "checked" or report is None or not report.can_start:
             raise RunnerError("not_ready")
+        if self._unfinished.find() is not None:
+            raise RunnerError("unfinished_run")
         state = self._new_state(report, profile)
-        older = self._unfinished.find()
-        if older is not None:       # starting anew gives up the older run
-            self._unfinished.mark_finished(older, "discarded")
-        run = self._open(state, profile, report.move, self._new_run_dir(), self._move_password)
+        run_dir = self._new_run_dir()
         try:
-            run.journal.append(start_entry(state))
-        except (OSError, ValueError):
-            run.journal.close()
-            run.events.close()
-            raise RunnerError("cannot_write") from None
+            run = self._open(state, profile, report.move, run_dir, self._move_password)
+            try:
+                run.journal.append(start_entry(state))
+            except (OSError, ValueError):
+                run.journal.close()
+                run.events.close()
+                raise RunnerError("cannot_write") from None
+        except RunnerError:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise
         self._launch(run, "Run started",
                      f"{len(state.servers):,} servers, {len(state.containers):,} containers, "
                      f"{len(state.trucks):,} trucks, {profile.name}")
@@ -248,14 +264,16 @@ class Runner:
     # ── stop, shutdown, wait ───────────────────────────────────────────
 
     async def stop(self) -> None:
-        """Ends the run now; returns once its result is written (phase `stopped`)."""
+        """Ends the run now and returns once its result is written: phase `stopped`, or
+        `done` when the move had finished and only the catch-up wait is cut short."""
         await self._driver.stop()
 
     async def shutdown(self) -> None:
         """For the web app's shutdown: an active run is interrupted, not stopped, so it
         can be continued the next time the tool starts."""
+        self._shut = True
         await self._driver.interrupt()
-        if not self._busy:
+        if not self._busy:      # a busy call drops its sign-in itself when it returns
             await self._reset()
 
     async def wait(self) -> None:
@@ -279,17 +297,18 @@ class Runner:
 
     async def continue_run(self, password: str, move_password: str, email: str,
                            totp_code: str | None = None) -> dict:
+        """Signs in again, proves the move password is for the run's own move, then
+        carries the run on. Until the run task exists nothing is written: a refused
+        password leaves the journal as it was."""
         self._require_free()
         path = self._unfinished.find()
         if path is None:
             raise RunnerError("no_unfinished_run")
+        state = self._unfinished.load(path)
         try:
-            state = load_state(path)
             profile = profile_from_raw(state.profile_raw, name=state.profile_name)
         except ProfileError as err:
             raise RunnerError("bad_profile", str(err)) from None
-        except (OSError, ValueError, KeyError, TypeError):
-            raise RunnerError("bad_journal") from None
         self._busy = True
         try:
             await self._reset()
@@ -297,19 +316,24 @@ class Runner:
                 return {"status": "totp_required"}
             try:
                 move = await self._conn.read_move(state.move_id)
-                await self._conn.verify_move_password(state.server_url, move_password, profile)
+                await self._conn.verify_move_password(move, move_password, profile)
+                if self._shut:
+                    raise RunnerError("bad_phase")
                 run = self._open(state, profile, move, path.parent, move_password)
             except BaseException:
                 await self._reset()
                 raise
         finally:
-            self._busy = False
-        if not any(resumed is None for _, resumed in state.interruptions):
-            self._driver.journal(run, {"t": "interrupted"}, at=last_at(path) or state.started_at)
-        self._driver.journal(run, {"t": "resumed"})
-        now = self.clock.now()
-        down = now - min((s for s, r in state.interruptions if r == now), default=now)
-        self._launch(run, "Run continued", f"after {_duration(down)} down")
+            await self._end_busy()
+        down_since = [s for s, resumed in state.interruptions if resumed is None]
+        if not down_since:
+            at = last_at(path) or state.started_at
+            self._driver.journal(run, {"t": "interrupted"}, at=at)
+            down_since = [at]
+        resumed_at = self.clock.now()
+        self._driver.journal(run, {"t": "resumed"}, at=resumed_at)
+        self._launch(run, "Run continued",
+                     f"after {_duration(resumed_at - min(down_since))} down")
         return {"status": "ok"}
 
     # ── what the page reads ────────────────────────────────────────────

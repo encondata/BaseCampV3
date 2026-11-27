@@ -19,7 +19,8 @@ from .clock import Clock
 from .fleet import FleetError
 from .http import CallFailed
 from .metrics import Metrics
-from .preflight import CHECK_NAME, CHECK_SERIAL, SIGN_IN_FAILURES
+from .preflight import BAD_ANSWER as KIOSK_FAILURES
+from .preflight import CHECK_NAME, CHECK_SERIAL, setup_failure, sign_in_failure
 from .profile import Profile, RetrySpec
 
 CONNECT_RETRY = RetrySpec(attempts=3, backoff_seconds=(1.0, 2.0))
@@ -44,6 +45,11 @@ MESSAGES = {
     "cannot_write": "The run folder could not be written. Check that the disk has room and the "
                     "runs folder can be written.",
     "move_unreadable": "The run's move could not be read from the server.",
+    "unfinished_run": "A run was interrupted. Continue it, or choose Start new run first.",
+    "damaged_run": "This run's record cannot be read, so it cannot be continued. Choose Start "
+                   "new run.",
+    "no_origin": "The run's move has no origin site. Set one on the move in the portal, then "
+                 "continue.",
 }
 
 
@@ -176,21 +182,30 @@ class Connection:
         except BAD_ANSWER:
             raise RunnerError("bad_answer") from None
 
-    async def verify_move_password(self, url: str, move_password: str,
+    async def verify_move_password(self, move: MoveInfo, move_password: str,
                                    profile: Profile) -> None:
-        """One kiosk sign-in, the way every device of the fleet signs in."""
-        device = KioskDevice(base_url=url, serial=CHECK_SERIAL, name=CHECK_NAME,
+        """Proves the password is for the run's own move on one check device: one kiosk
+        sign-in (the way every fleet device signs in), then Kiosk Setup for this move at
+        its origin site with the profile's first checkpoint. Worded as the readiness
+        check words it."""
+        checkpoints = [s.checkpoint for s in profile.stages if s.checkpoint]
+        if move.origin is None:
+            raise RunnerError("no_origin")
+        device = KioskDevice(base_url=self.server, serial=CHECK_SERIAL, name=CHECK_NAME,
                              kind="handheld", metrics=Metrics(), clock=self.clock,
                              retry=NO_RETRY, timeout=profile.request_timeout_seconds,
                              transport=self._transport)
         try:
-            await device.sign_in(move_password)
-        except CallFailed as exc:
-            if exc.status is None and exc.code is None:
-                raise RunnerError("unreachable") from None
-            raise RunnerError("move_password", SIGN_IN_FAILURES.get(exc.code or "") or (
-                f"The kiosk sign-in failed (HTTP {exc.status}).")) from None
-        except BAD_ANSWER:
-            raise RunnerError("bad_answer") from None
+            try:
+                await device.sign_in(move_password)
+            except KIOSK_FAILURES as exc:
+                raise RunnerError("move_password", sign_in_failure(exc)) from None
+            if checkpoints:
+                try:
+                    await device.setup(initiative_id=move.id, site_id=move.origin.id,
+                                       scan_status=checkpoints[0])
+                except KIOSK_FAILURES as exc:
+                    raise RunnerError("move_password",
+                                      setup_failure(exc, move, checkpoints[0])) from None
         finally:
             await device.close()

@@ -395,3 +395,10 @@ async def test_untimed_failures_add_no_latency_samples(fake, clock, portal, metr
     assert (reads["count"], reads["failures"]) == (2, 1)
     assert len(metrics._times["portal-read"]) == 1
     assert (refresh["count"], refresh["failures"], refresh["max_ms"]) == (1, 1, None)
+
+
+async def test_close_forgets_the_email_password_and_token(fake, clock, portal):
+    p = await signed_in(fake, clock, portal)
+    assert p._password == PASSWORD and p._token
+    await p.close()
+    assert (p._email, p._password, p._challenge, p._token) == (None, None, None, None)

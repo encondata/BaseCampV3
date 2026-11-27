@@ -1,13 +1,18 @@
 import asyncio
+import gc
 import json
 import re
+import shutil
+import types
 from collections import Counter
 from pathlib import Path
 
 import httpx
 import pytest
 from conftest import FAKE_BASE_URL
+from fakeserver import FakeBaseCamp
 
+from loadtest.clock import FakeClock
 from loadtest.journal import JOURNAL_NAME, load_state
 from loadtest.runner import MESSAGES, Runner, RunnerError
 
@@ -54,12 +59,14 @@ class Recording(httpx.AsyncBaseTransport):
 class World:
     def __init__(self, fake, clock, tmp_path):
         self.fake, self.clock = fake, clock
+        self.tmp = tmp_path
         self.runs_dir = tmp_path / "runs"
+        self.crashes = 0
         self.transport = Recording(fake.transport())
         self.move_id = fake.add_move(servers=SERVERS, containers=4, trucks=2,
                                      password=MOVE_PASSWORD)
         self.runners: list[Runner] = []
-        self.ticker: asyncio.Task | None = None
+        self.tickers: list[asyncio.Task] = []
 
     def runner(self) -> Runner:
         r = Runner(runs_dir=self.runs_dir, clock=self.clock, router_url="https://router.test",
@@ -73,7 +80,7 @@ class World:
             while True:
                 await self.clock.sleep(1)
                 self.fake.process_scans(duplicate_on_replay=duplicate_on_replay)
-        self.ticker = asyncio.create_task(tick())
+        self.tickers.append(asyncio.create_task(tick()))
 
     async def ready(self, runner: Runner, *, totp=None) -> None:
         self.fake.add_portal_user(EMAIL, PASSWORD, totp=totp)
@@ -93,9 +100,9 @@ async def world(fake, clock, tmp_path):
     yield w
     for r in w.runners:
         await r.shutdown()
-    if w.ticker is not None:
-        w.ticker.cancel()
-        await asyncio.gather(w.ticker, return_exceptions=True)
+    for ticker in w.tickers:
+        ticker.cancel()
+    await asyncio.gather(*w.tickers, return_exceptions=True)
 
 
 def run_dirs(world) -> list[Path]:
@@ -106,25 +113,30 @@ def journal_entries(run_dir: Path) -> list[dict]:
     return [json.loads(line) for line in (run_dir / JOURNAL_NAME).read_text().splitlines()]
 
 
-def assert_no_secrets(world, snapshot: dict) -> None:
+def assert_no_secrets(world, snapshot: dict, issued: int = 7) -> None:
     text = json.dumps(snapshot)
     secrets = world.secrets()
-    assert len(secrets) > 10            # portal and kiosk tokens, station keys, cookies
+    assert len(secrets) > issued        # portal and kiosk tokens, station keys, cookies
     for secret in secrets:
         assert secret not in text
-    for path in world.runs_dir.rglob("*"):
+    for path in world.tmp.rglob("*"):
         if path.is_file():
             content = path.read_text(encoding="utf-8")
             for secret in secrets:
                 assert secret not in content, path.name
 
 
-def crash(runner: Runner) -> None:
-    """The process dies: every task stops where it is and nothing more is written."""
-    run = runner._driver.run
-    for task in (*run.tasks.values(), runner._driver.task):
-        task.cancel()
-    run.journal._fh.close()
+async def hard_crash(world, runner: Runner) -> Path:
+    """The process dies at this instant. The run folder as it is now goes to a fresh runs
+    folder, and later runners use that one; the old runner is then shut down, which writes
+    only to its own (abandoned) folder."""
+    src = runner._driver.run.run_dir
+    world.crashes += 1
+    world.runs_dir = world.tmp / f"runs-after-crash-{world.crashes}"
+    copy = world.runs_dir / src.name
+    shutil.copytree(src, copy)
+    await world.clock.run(runner.shutdown())
+    return copy
 
 
 # ── connect ────────────────────────────────────────────────────────────
@@ -318,18 +330,49 @@ async def test_stop_while_devices_start(world, clock):
     assert journal_entries(run_dir)[-1]["reason"] == "stopped"
 
 
-async def test_fleet_failure_ends_the_run_as_an_error(world, fake, clock):
+
+
+CONTINUABLE = " The run can be continued."
+
+
+async def until_phase(runner: Runner, clock, phase: str, step: float = 2) -> None:
+    """Drives the run a little at a time until it reaches `phase`."""
+    for _ in range(500):
+        if runner.phase == phase:
+            return
+        with pytest.raises(TimeoutError):
+            await clock.run(runner.wait(), limit=step)
+    raise AssertionError(f"the run never reached {phase}; it is {runner.phase}")
+
+
+def assert_interrupted(run_dir: Path) -> None:
+    kinds = [e["t"] for e in journal_entries(run_dir)]
+    assert kinds[-1] == "interrupted" and "run_finished" not in kinds
+
+
+async def test_fleet_failure_leaves_the_run_continuable(world, fake, clock):
     runner = world.runner()
     await world.ready(runner)
     fake.fail("POST", "/kiosk/setup", status=422, times=100)
     await runner.start()
     await clock.run(runner.wait())
     assert runner.phase == "error"
-    assert runner.snapshot()["error"].startswith("Load test – RFID enroll")
+    error = runner.snapshot()["error"]
+    assert error.startswith("Load test – RFID enroll") and error.endswith("." + CONTINUABLE)
     [run_dir] = run_dirs(world)
-    assert journal_entries(run_dir)[-1]["reason"] == "error"
-    assert runner.result()["verdict"] == "Fail"
+    assert_interrupted(run_dir)
+    result = runner.result()
+    assert result["verdict"] == "Fail"
+    assert result["run"]["reason"] == error.removesuffix(CONTINUABLE).rstrip(".")
     assert (run_dir / "results.json").is_file()
+    assert runner.unfinished()["run_dir"] == str(run_dir)
+    fake._failures.clear()
+    await world.ready(runner)
+    with pytest.raises(RunnerError) as err:     # the run must be continued or discarded
+        await runner.start()
+    assert (err.value.code, err.value.message) == (
+        "unfinished_run", "A run was interrupted. Continue it, or choose Start new run first.")
+    assert run_dirs(world) == [run_dir]
 
 
 async def test_unexpected_problem_is_named_by_type_only(world, clock, monkeypatch):
@@ -344,34 +387,248 @@ async def test_unexpected_problem_is_named_by_type_only(world, clock, monkeypatc
     await clock.run(runner.wait())
     assert runner.phase == "error"
     assert runner.snapshot()["error"] == (
-        "The run stopped because of an unexpected problem: RuntimeError.")
+        "The run stopped because of an unexpected problem: RuntimeError." + CONTINUABLE)
+    assert_interrupted(run_dirs(world)[0])
     assert_no_secrets(world, runner.snapshot())
+
+
+async def test_a_fleet_start_problem_that_is_not_a_fleet_error(world, clock, monkeypatch):
+    runner = world.runner()
+    await world.ready(runner)
+
+    async def boom(self, move_password):
+        raise KeyError(move_password)
+
+    monkeypatch.setattr("loadtest.fleet.Fleet.start", boom)
+    await runner.start()
+    await clock.run(runner.wait())
+    assert runner.snapshot()["error"] == (
+        "The run stopped because of an unexpected problem: KeyError." + CONTINUABLE)
+    assert_interrupted(run_dirs(world)[0])
+    assert_no_secrets(world, runner.snapshot(), issued=3)   # no device signed in
+
+
+async def test_a_failing_final_check_can_be_continued(world, fake, clock, monkeypatch):
+    runner = world.runner()
+    await world.ready(runner)
+
+    async def boom(**kwargs):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr("loadtest.run_driver.final_check", boom)
+    world.process_scans()
+    await runner.start()
+    await clock.run(runner.wait())
+    assert runner.phase == "error"
+    assert runner.snapshot()["error"] == (
+        "The run stopped because of an unexpected problem: RuntimeError." + CONTINUABLE)
+    [run_dir] = run_dirs(world)
+    assert_interrupted(run_dir)
+    assert runner.result()["verdict"] == "Fail"
+    monkeypatch.undo()
+    again = world.runner()
+    assert await clock.run(again.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL)) == {
+        "status": "ok"}
+    await clock.run(again.wait())
+    assert again.phase == "done" and again.result()["verdict"] == "Pass"
+    assert journal_entries(run_dir)[-1]["reason"] == "completed"
+
+
+async def test_a_failure_while_saving_the_result_never_leaves_the_runner_stuck(
+        world, clock, monkeypatch):
+    unseen = []
+    asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: unseen.append(ctx))
+    runner = world.runner()
+    await world.ready(runner)
+
+    def boom(**kwargs):
+        raise TypeError("detail " + PASSWORD)
+
+    monkeypatch.setattr("loadtest.run_driver.build_results", boom)
+    world.process_scans()
+    await runner.start()
+    await clock.run(runner.wait())
+    assert runner.phase == "error"
+    assert runner.snapshot()["error"] == (
+        "The run stopped because of an unexpected problem: TypeError." + CONTINUABLE)
+    [run_dir] = run_dirs(world)
+    assert_interrupted(run_dir)
+    assert runner._driver.run.journal._fh.closed
+    assert runner.snapshot()["connected"] is None and runner._conn.password is None
+    monkeypatch.undo()
+    got = await clock.run(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD))
+    assert got["status"] == "ok"
+    gc.collect()
+    assert unseen == []
+
+
+async def test_stop_while_finishing_ends_only_the_wait(world, fake, clock):
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    await until_phase(runner, clock, "finishing")   # no scan is processed: the wait goes on
+    fake.process_scans()
+    await clock.run(runner.stop())
+    assert runner.phase == "done"
+    result = runner.result()
+    assert result["verdict"] == "Pass with warnings"
+    assert result["findings"] == [
+        {"level": "warn", "text": "The wait for the server to catch up was ended early."}]
+    assert result["run"]["reason"] == "completed"
+    assert journal_entries(run_dirs(world)[0])[-1]["reason"] == "completed"
+    assert "Catch-up wait ended early" in [line.action for line in runner.recent()]
+
+
+async def test_shutdown_while_finishing_interrupts(world, clock):
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    await until_phase(runner, clock, "finishing")
+    await clock.run(runner.shutdown())
+    [run_dir] = run_dirs(world)
+    assert_interrupted(run_dir)
+    assert runner.unfinished()["run_dir"] == str(run_dir)
+    assert runner.result() is None
+
+
+async def test_an_outside_cancel_interrupts(world, clock):
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    with pytest.raises(TimeoutError):
+        await clock.run(runner.wait(), limit=20)
+    runner._driver.task.cancel()
+    await clock.run(asyncio.wait({runner._driver.task}))
+    assert runner.phase == "idle"
+    [run_dir] = run_dirs(world)
+    assert_interrupted(run_dir)
+    assert all(t.done() for t in runner._driver.run.tasks.values())
+    assert runner.unfinished()["run_dir"] == str(run_dir)
+
+
+async def test_nothing_reachable_from_the_runner_holds_a_password(world, clock):
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    world.process_scans()
+    await clock.run(runner.wait())
+    assert runner.phase == "done"
+    found = strings_reachable(runner)
+    assert len(found) > 100
+    assert PASSWORD not in found and MOVE_PASSWORD not in found
+
+
+def strings_reachable(root, depth: int = 12) -> set[str]:
+    """Every str reachable from `root` through instances, containers and bound methods;
+    stops at classes, modules, functions, the event loop and HTTP transports (the fake
+    server behind them holds the passwords by design)."""
+    stop = (type, types.ModuleType, types.FunctionType, types.BuiltinFunctionType,
+            types.CodeType, asyncio.AbstractEventLoop, httpx.AsyncBaseTransport)
+    seen: set[int] = set()
+    found: set[str] = set()
+    frontier = [root]
+    for _ in range(depth):
+        nxt = []
+        for obj in frontier:
+            if id(obj) in seen or isinstance(obj, stop):
+                continue
+            seen.add(id(obj))
+            if isinstance(obj, str):
+                found.add(obj)
+                continue
+            nxt.extend(gc.get_referents(obj))
+        frontier = nxt
+    return found
+
+
+async def test_sampler_that_dies_is_logged_once_and_started_again(world, clock, monkeypatch,
+                                                                    capsys):
+    from loadtest.sampler import Sampler
+    real, calls = Sampler._tick, []
+
+    async def flaky(self):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise RuntimeError("no")
+        await real(self)
+
+    monkeypatch.setattr(Sampler, "_tick", flaky)
+    runner = world.runner()
+    await world.ready(runner)
+    world.process_scans()
+    await runner.start()
+    await clock.run(runner.wait())
+    assert runner.phase == "done" and len(calls) > 3
+    assert capsys.readouterr().err.count("the sampler stopped") == 1
+    assert runner.result()["series"]["workers_running"]
+
+
+async def test_a_failed_start_leaves_no_empty_run_folder(world, clock, monkeypatch):
+    runner = world.runner()
+    await world.ready(runner)
+
+    def refuse(self, **kwargs):
+        raise RunnerError("cannot_write")
+
+    monkeypatch.setattr("loadtest.run_driver.RunDriver.open_run", refuse)
+    with pytest.raises(RunnerError) as err:
+        await runner.start()
+    assert err.value.code == "cannot_write"
+    assert run_dirs(world) == []
+    assert runner.phase == "checked"
+
+
+async def test_shutdown_during_a_connect_closes_the_sign_in_it_opens(world, fake, clock):
+    fake.add_portal_user(EMAIL, PASSWORD)
+    runner = world.runner()
+    gate, sign_in = asyncio.Event(), runner._conn.sign_in
+
+    async def held(*args):
+        await gate.wait()
+        return await sign_in(*args)
+
+    runner._conn.sign_in = held
+    connecting = asyncio.create_task(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD))
+    await asyncio.sleep(0)
+    assert runner._busy
+    await runner.shutdown()
+    gate.set()
+    await clock.run(connecting)
+    assert runner._conn.portal is None and runner.snapshot()["connected"] is None
+    with pytest.raises(RunnerError) as err:
+        await clock.run(runner.connect(FAKE_BASE_URL, EMAIL, PASSWORD))
+    assert err.value.code == "bad_phase"
 
 
 # ── crash, continue, discard ───────────────────────────────────────────
 
 
-async def crashed_run(world, clock) -> tuple[Runner, Path]:
+async def crashed_run(world, clock, limit: float = 40) -> Path:
     first = world.runner()
     await world.ready(first)
     await first.start()
     world.process_scans(duplicate_on_replay=False)
     with pytest.raises(TimeoutError):
-        await clock.run(first.wait(), limit=40)
-    task = first._driver.task
-    crash(first)
-    await clock.run(asyncio.wait({task}))
-    [run_dir] = run_dirs(world)
-    assert journal_entries(run_dir)[-1]["t"] != "run_finished"
-    return first, run_dir
+        await clock.run(first.wait(), limit=limit)
+    run_dir = await hard_crash(world, first)
+    assert journal_entries(run_dir)[-1]["t"] not in ("run_finished", "interrupted")
+    return run_dir
+
+
+def scans_once_each(fake) -> None:
+    fake.process_scans(duplicate_on_replay=False)
+    per = Counter((p["asset_id"], p["status"]) for p in fake.processed_scans
+                  if p["match_type"] == "asset")
+    assert len(per) == SERVERS * 10
+    assert set(per.values()) == {1}
 
 
 async def test_continue_after_a_crash_finishes_the_move(world, fake, clock):
-    _, run_dir = await crashed_run(world, clock)
+    run_dir = await crashed_run(world, clock)
     await clock.run(clock.sleep(120))           # the machine was down two minutes
     runner = world.runner()
     summary = runner.unfinished()
-    assert summary["run_dir"] == str(run_dir)
+    assert summary["run_dir"] == str(run_dir) and summary["damaged"] is False
     assert summary["server"] == FAKE_BASE_URL and summary["speed"] == "fast"
     assert summary["servers"] == SERVERS and 0 <= summary["done"] < SERVERS
     assert summary["move_name"] == fake.moves[world.move_id]["name"]
@@ -389,11 +646,7 @@ async def test_continue_after_a_crash_finishes_the_move(world, fake, clock):
     assert result["verdict"] in ("Pass", "Pass with warnings"), result["findings"]
     assert len(result["run"]["interruptions"]) == 1
     assert result["run"]["interruptions"][0]["resumed_at"] is not None
-    fake.process_scans(duplicate_on_replay=False)
-    per = Counter((p["asset_id"], p["status"]) for p in fake.processed_scans
-                  if p["match_type"] == "asset")
-    assert len(per) == SERVERS * 10
-    assert set(per.values()) == {1}
+    scans_once_each(fake)
     continued = [line for line in runner.recent() if line.action == "Run continued"]
     # down from the last journaled step (just before the crash) until now
     assert continued and re.fullmatch(r"after 2 min 0\d s down", continued[0].subject)
@@ -403,8 +656,94 @@ async def test_continue_after_a_crash_finishes_the_move(world, fake, clock):
     assert_no_secrets(world, runner.snapshot())
 
 
+class TickingClock(FakeClock):
+    """Virtual time whose `now()` moves on a little with every reading, like a real one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._reads = 0
+
+    def now(self) -> float:
+        self._reads += 1
+        return super().now() + self._reads * 1e-6
+
+
+async def test_downtime_is_measured_on_a_clock_that_moves(tmp_path):
+    clock = TickingClock()
+    fake = FakeBaseCamp(clock)
+    world = World(fake, clock, tmp_path)
+    try:
+        await crashed_run(world, clock)
+        await clock.run(clock.sleep(120))
+        runner = world.runner()
+        await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+        [line] = [line for line in runner.recent() if line.action == "Run continued"]
+        assert re.fullmatch(r"after 2 min 0\d s down", line.subject), line.subject
+        await clock.run(runner.stop())
+    finally:
+        for r in world.runners:
+            await r.shutdown()
+        for ticker in world.tickers:
+            ticker.cancel()
+        await asyncio.gather(*world.tickers, return_exceptions=True)
+
+
+async def test_two_interruptions_in_a_row(world, fake, clock):
+    await crashed_run(world, clock, limit=30)
+    second = world.runner()
+    await clock.run(second.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    with pytest.raises(TimeoutError):
+        await clock.run(second.wait(), limit=30)
+    run_dir = await hard_crash(world, second)
+    third = world.runner()
+    await clock.run(third.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    await clock.run(third.wait())
+    assert third.phase == "done", third.snapshot()["error"]
+    assert len(third.result()["run"]["interruptions"]) == 2
+    kinds = [e["t"] for e in journal_entries(run_dir)]
+    assert kinds.count("interrupted") == 2 and kinds.count("resumed") == 2
+    scans_once_each(fake)
+
+
+async def test_a_crash_after_the_result_and_before_run_finished(world, fake, clock):
+    runner = world.runner()
+    await world.ready(runner)
+    await runner.start()
+    world.process_scans(duplicate_on_replay=False)
+    await clock.run(runner.wait())
+    src = runner._driver.run.run_dir
+    world.runs_dir = world.tmp / "runs-copy"
+    run_dir = world.runs_dir / src.name
+    shutil.copytree(src, run_dir)
+    lines = (run_dir / JOURNAL_NAME).read_text().splitlines()
+    assert json.loads(lines[-1])["t"] == "run_finished"
+    (run_dir / JOURNAL_NAME).write_text("\n".join(lines[:-1]) + "\n")
+    again = world.runner()
+    assert again.unfinished()["done"] == SERVERS
+    await clock.run(again.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    await clock.run(again.wait())
+    assert again.phase == "done" and again.result()["verdict"] == "Pass"
+    assert len(again.result()["run"]["interruptions"]) == 1
+    scans_once_each(fake)
+
+
+async def test_continue_with_a_password_for_another_move_changes_nothing(world, fake, clock):
+    fake.add_move(servers=1, containers=1, trucks=1, password="other-move-pass")
+    run_dir = await crashed_run(world, clock)
+    before = (run_dir / JOURNAL_NAME).read_bytes()
+    runner = world.runner()
+    with pytest.raises(RunnerError) as err:
+        await clock.run(runner.continue_run(PASSWORD, "other-move-pass", EMAIL))
+    assert err.value.code == "move_password"
+    assert err.value.message == ("That password signs in to a different move. Enter the "
+                                 f"password for {fake.moves[world.move_id]['name']}.")
+    assert (run_dir / JOURNAL_NAME).read_bytes() == before
+    assert runner.unfinished()["run_dir"] == str(run_dir)
+    assert runner.phase == "idle" and runner.snapshot()["connected"] is None
+
+
 async def test_continue_with_2fa_asks_for_the_code(world, fake, clock):
-    _, _ = await crashed_run(world, clock)
+    await crashed_run(world, clock)
     fake.portal_users[EMAIL].totp = "verify"
     runner = world.runner()      # a new process: no remembered browser
     assert await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL)) == {
@@ -439,21 +778,51 @@ async def test_shutdown_interrupts_without_finishing(world, clock):
         await clock.run(runner.wait(), limit=20)
     await clock.run(runner.shutdown())
     [run_dir] = run_dirs(world)
-    kinds = [e["t"] for e in journal_entries(run_dir)]
-    assert kinds[-1] == "interrupted" and "run_finished" not in kinds
+    assert_interrupted(run_dir)
     assert runner.unfinished()["run_dir"] == str(run_dir)
     assert runner.result() is None
     await runner.shutdown()     # idle: nothing to do
 
 
-async def test_unreadable_journal_is_no_unfinished_run(world, capsys):
+async def test_a_damaged_journal_can_be_discarded(world, clock, capsys):
     folder = world.runs_dir / "2027-01-01_00-00-00Z"
     folder.mkdir(parents=True)
     (folder / JOURNAL_NAME).write_text('{"t":"run_started","at":1}\n{"t":"stage_done"}\n')
     runner = world.runner()
-    assert runner.unfinished() is None
-    assert runner.unfinished() is None
+    summary = runner.unfinished()
+    assert summary["run_dir"] == str(folder) and summary["damaged"] is True
+    assert runner.unfinished() == summary
     assert capsys.readouterr().err.count("could not read the unfinished run") == 1
+    with pytest.raises(RunnerError) as err:
+        await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    assert (err.value.code, err.value.message) == (
+        "damaged_run", "This run's record cannot be read, so it cannot be continued. "
+                       "Choose Start new run.")
+    await world.ready(runner)
+    with pytest.raises(RunnerError) as err:
+        await runner.start()
+    assert err.value.code == "unfinished_run"
+    await runner.discard_unfinished()
+    assert runner.unfinished() is None
+    await runner.start()
+    await clock.run(runner.stop())
+
+
+async def test_the_unfinished_summary_is_read_once_until_the_folder_changes(
+        world, clock, monkeypatch):
+    await crashed_run(world, clock)
+    import loadtest.unfinished as unfinished
+    real, calls = unfinished.find_unfinished, []
+    monkeypatch.setattr(unfinished, "find_unfinished",
+                        lambda d: calls.append(1) or real(d))
+    runner = world.runner()
+    first = runner.unfinished()
+    for _ in range(5):
+        assert runner.snapshot()["unfinished"] == first
+    assert len(calls) == 1
+    (world.runs_dir / "2000-01-01_00-00-00Z").mkdir()
+    assert runner.unfinished() == first
+    assert len(calls) == 2
 
 
 async def test_feed_subscription_survives_runs(world, clock):
