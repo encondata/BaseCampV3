@@ -1012,6 +1012,11 @@ traffic graph) and whose Snapshots tab lists the snapshots.
   signing certificates (release and Play), one per line; written as
   `SS_KIOSK_SIGNING_DIGESTS`. Kiosk biometric sign-in refuses every enroll
   without them.
+- **God mode words:** Sirdar's `SIRDAR_GOD_MODE_WORDS` (comma-separated, no
+  spaces), written into every environment's `.env` as `SS_GOD_MODE_WORDS` and
+  redacted from step logs. It's set once in Sirdar's own `.env`, not per
+  environment; an environment picks up a change on its next deploy. Blank
+  keeps the portal's developer nav hidden.
 - **Extras › Mail:** Mailpit (the default) or SMTP (host, port, user, password,
   from address, STARTTLS), written into the `.env` as `SS_SMTP_*`; the password
   is write-only. Mailpit off needs SMTP.

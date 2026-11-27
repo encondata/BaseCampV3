@@ -61,6 +61,8 @@ x-ss-env: &ss-env
   # comma-separated SHA-256 digests of the kiosk app's signing certificates
   # (release and Play): biometric sign-in enrolls only apps signed with these
   SS_KIOSK_SIGNING_DIGESTS: ${SS_KIOSK_SIGNING_DIGESTS:-}
+  # comma-separated words that reveal the developer nav; empty: it stays hidden
+  SS_GOD_MODE_WORDS: ${SS_GOD_MODE_WORDS:-}
   # uvicorn honors X-Forwarded-For only from NPM, so callers can't spoof
   # their client IP past the per-IP rate limits
   FORWARDED_ALLOW_IPS: ${STACK_PROXY_IP:?set STACK_PROXY_IP}

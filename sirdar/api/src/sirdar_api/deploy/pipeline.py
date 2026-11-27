@@ -829,6 +829,13 @@ async def render_app_env(db: AsyncSession, env: Environment, settings: Settings,
     except app_rules.AppsError as e:
         raise PrepareError("Sirdar couldn't write this environment's .env: missing secrets: "
                            f"{', '.join(e.extra['missing'])}.") from None
+    god_mode = settings.god_mode_words.get_secret_value()
+    if god_mode:
+        if not envfile.SECRET_VALUE_RE.fullmatch(god_mode):
+            raise PrepareError("SIRDAR_GOD_MODE_WORDS has a character the .env can't hold: "
+                               "use letters, digits and commas, no spaces or quotes.")
+        extra[envfile.GOD_MODE_KEY] = god_mode
+        found.append(god_mode)
     if env.proxy == "switchyard":
         # Switchyard isn't at the proxy IP on the LAN: inside the containers the
         # public names go to the public IP, as visitors' do (the router sends

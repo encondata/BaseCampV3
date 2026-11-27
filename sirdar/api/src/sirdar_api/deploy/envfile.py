@@ -38,9 +38,12 @@ FCM_KEY_MAX = 8192
 _B64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 _FCM_FIELDS = ("project_id", "client_email", "private_key")
 SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
-# Settings that aren't secrets, written right after the optional secrets ("" when
-# unset): the kiosk app's signing certificate digests (apps.env_extra fills it).
-OPTIONAL_SETTINGS = ("SS_KIOSK_SIGNING_DIGESTS",)
+# Settings written right after the optional secrets ("" when unset): the kiosk
+# app's signing certificate digests (apps.env_extra fills it) and the portal's
+# god mode words (Sirdar's SIRDAR_GOD_MODE_WORDS, the same in every environment;
+# pipeline.render_app_env fills it and redacts it).
+GOD_MODE_KEY = "SS_GOD_MODE_WORDS"
+OPTIONAL_SETTINGS = ("SS_KIOSK_SIGNING_DIGESTS", GOD_MODE_KEY)
 FERNET_SECRETS = ("SS_TOTP_ENCRYPTION_KEY",)
 # The devices app's: hex (shared by the API and the devices service) and a
 # Fernet key (encrypts its Apple secrets; never replaced once made). Not

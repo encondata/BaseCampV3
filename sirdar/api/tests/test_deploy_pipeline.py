@@ -645,3 +645,18 @@ async def test_startup_sweeps_stale_snapshot_uploads(monkeypatch, tmp_path):
             assert bundle_file.exists()
     finally:
         get_settings.cache_clear()
+
+
+async def test_every_environment_gets_sirdars_god_mode_words(db, env, fake_runner, monkeypatch):
+    import base64
+
+    from sirdar_api.config import get_settings
+    from sirdar_api.deploy import envfile
+    monkeypatch.setenv("SIRDAR_GOD_MODE_WORDS", "summit,basecamp")
+    get_settings.cache_clear()
+    fake_runner.output["preflight"] = ["words summit,basecamp\n"]
+    _, steps, _ = await _load(await _start(db, env))
+    [render] = [r for r in fake_runner.requests if r.step == "render"]
+    text = base64.b64decode(render.extravars["env_file_b64"]).decode()
+    assert envfile.parse_env(text)["SS_GOD_MODE_WORDS"] == "summit,basecamp"
+    assert steps[0].log == "words [redacted]\n"
