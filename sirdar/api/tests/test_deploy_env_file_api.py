@@ -10,8 +10,9 @@ import json
 import pytest
 from sqlalchemy import select
 
+from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog, User
-from sirdar_api.deploy import envfile, pipeline, vms
+from sirdar_api.deploy import environments, envfile, pipeline, vms
 from sirdar_api.deploy.provision import VmOutcome
 
 from .api_helpers import auth_headers
@@ -66,7 +67,11 @@ async def _download(client, db, name: str, password: str | None = PASSWORD, **kw
 async def lan_ssh(db, deploy_env, ssh_server, secrets_key):  # noqa: F811
     _ssh_env(deploy_env, ssh_server)
     await trust_fake(db, ssh_server)
-    return await make_environment(db, current_sha=OLD)
+    env = await make_environment(db, current_sha=OLD)
+    # deployed at OLD, so it has what that deploy's step 4 made (the devices secrets)
+    await environments.ensure_devices_secrets(db, get_settings(), env)
+    await db.commit()
+    return env
 
 
 # ---- the same text the pipeline writes -------------------------------------------------
