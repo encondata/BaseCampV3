@@ -291,6 +291,27 @@ async def test_ended_sign_in_signs_in_again(fake, clock, device):
     assert len(beats) == 2                   # the second sign-in sent its own beat
 
 
+async def test_refresh_due_at_the_end_of_the_sign_in_signs_in_again_instead(
+        fake, clock, device, metrics):
+    # The real server refuses a refresh that arrives as the sign-in ends (session_expired),
+    # and a refresh can never outlive it. Seen on the real server: a refresh sent a few
+    # milliseconds before the deadline reached the server after it.
+    fake.token_seconds, fake.session_seconds = 90, 150
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    start = clock.now()
+    await clock.run(clock.sleep(start + 117 - clock.now()))
+    scan = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
+    assert await clock.run(d.send_scans([scan])) == 1        # refreshes: token due at 147
+    assert count(fake, "POST", "/auth/refresh") == 1
+    await clock.run(clock.sleep(start + 147.5 - clock.now()))
+    scan = make_scan(clock, move_id, site_id, "SN2", "qa", "barcode")
+    assert await clock.run(d.send_scans([scan])) == 1
+    assert count(fake, "POST", "/auth/refresh") == 1         # no refresh 2.5 s from the end
+    assert count(fake, "POST", "/kiosk/move-login") == 2
+    assert metrics.failed_calls() == 0
+
+
 async def test_lost_refresh_answer_is_never_replayed(fake, clock, device, metrics):
     d = device("handheld")
     move_id, site_id = await ready(fake, clock, d, status="qa")
@@ -302,6 +323,7 @@ async def test_lost_refresh_answer_is_never_replayed(fake, clock, device, metric
     assert count(fake, "POST", "/kiosk/move-login") == 2
     assert metrics.calls()["refresh"]["failures"] == 1
     assert metrics.calls()["scans"]["failures"] == 0
+    assert metrics.failed_calls() == 0       # the new sign-in carried the call
     # the old cookie was never replayed, so no sign-in was revoked
     assert not any(r.family.revoked for r in fake._refresh.values())
 

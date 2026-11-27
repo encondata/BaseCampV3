@@ -28,6 +28,9 @@ from ..profile import RetrySpec
 
 REFRESH_COOKIE = "ss_portal_refresh"
 REFRESH_MARGIN = 60.0       # refresh when the token has this little left
+# a refresh cannot outlive the sign-in, and one sent just before its end can reach the
+# server after it (401 session_expired): this close to the end, sign in again instead
+SESSION_END_MARGIN = 5.0
 ASSET_SCANS_LIMIT = 500     # GET /scans/asset/{id} caps limit at 500
 ASSET_MATCH_TYPE = "asset"  # a status rule's trigger_match_type for asset scans
 NO_RETRY = RetrySpec(attempts=1, backoff_seconds=())
@@ -219,7 +222,7 @@ class PortalClient:
     async def _ensure_token(self) -> None:
         async with self._lock:
             now = self.clock.now()
-            if self._token is None or now >= self._session_expires_at:
+            if self._token is None or now >= self._session_expires_at - SESSION_END_MARGIN:
                 await self._sign_in_again_locked()
             elif now >= self._token_expires_at - REFRESH_MARGIN:
                 await self._refresh_locked()
@@ -228,7 +231,7 @@ class PortalClient:
         async with self._lock:
             if self._token != used:
                 return                      # another call already renewed it
-            if self.clock.now() >= self._session_expires_at:
+            if self.clock.now() >= self._session_expires_at - SESSION_END_MARGIN:
                 await self._sign_in_again_locked()
             else:
                 await self._refresh_locked()

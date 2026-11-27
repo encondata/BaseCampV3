@@ -40,6 +40,16 @@ def test_failed_calls_skips_background_calls_but_calls_lists_them():
     assert "heartbeat" in DEFAULT_BACKGROUND
 
 
+def test_a_failed_refresh_is_not_a_failed_call():
+    # a failed refresh always leads to a new sign-in; only that sign-in failing is final.
+    # On the real server a refresh that met the end of its sign-in failed a whole run.
+    m = Metrics()
+    m.record("refresh", 1, False)
+    m.record("portal-refresh", 1, False)
+    assert m.failed_calls() == 0
+    assert m.calls()["refresh"]["failures"] == 1
+
+
 def test_custom_background_set():
     m = Metrics(background=frozenset({"pack"}))
     m.record("pack", 1, False)

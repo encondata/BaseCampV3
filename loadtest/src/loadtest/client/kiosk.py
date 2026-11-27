@@ -31,6 +31,9 @@ RAW_INFO = {"loadtest": True}
 HANDHELD_BATCH = 100        # KioskScanBatchIn.scans max_length
 STATION_BATCH = 50          # KioskStationScanBatchIn.scans max_length
 REFRESH_MARGIN = 60.0       # refresh when the token has this little left
+# a refresh cannot outlive the sign-in, and one sent just before its end can reach the
+# server after it (401 session_expired): this close to the end, sign in again instead
+SESSION_END_MARGIN = 5.0
 NO_RETRY = RetrySpec(attempts=1, backoff_seconds=())
 
 # Requests sent inside one timed_call: more than one means the call was retried.
@@ -206,7 +209,7 @@ class KioskDevice:
     async def _ensure_token(self) -> None:
         async with self._lock:
             now = self.clock.now()
-            if self._token is None or now >= self._session_expires_at:
+            if self._token is None or now >= self._session_expires_at - SESSION_END_MARGIN:
                 await self._sign_in_locked()
             elif now >= self._token_expires_at - REFRESH_MARGIN:
                 await self._refresh_locked()
@@ -215,7 +218,7 @@ class KioskDevice:
         async with self._lock:
             if self._token != used:
                 return                      # another call already renewed it
-            if self.clock.now() >= self._session_expires_at:
+            if self.clock.now() >= self._session_expires_at - SESSION_END_MARGIN:
                 await self._sign_in_locked()
             else:
                 await self._refresh_locked()

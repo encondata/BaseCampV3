@@ -6,9 +6,11 @@ import copy
 import math
 
 # Calls that run in the background of a move; their failures are listed per call
-# but do not count toward the verdict's failed-call total.
+# but do not count toward the verdict's failed-call total. A failed refresh is followed
+# by a new sign-in, whose own failure (move-login, portal-login) is the one that counts.
 DEFAULT_BACKGROUND = frozenset(
-    {"heartbeat", "station-heartbeat", "waiting-scans", "asset-totals", "system-status", "db-health"}
+    {"heartbeat", "station-heartbeat", "waiting-scans", "asset-totals", "system-status",
+     "db-health", "refresh", "portal-refresh"}
 )
 
 

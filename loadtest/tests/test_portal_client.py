@@ -117,6 +117,22 @@ async def test_stale_token_refreshes(fake, clock, portal, metrics):
     assert metrics.calls()["portal-refresh"]["failures"] == 0
 
 
+async def test_refresh_due_at_the_end_of_the_sign_in_signs_in_again_instead(
+        fake, clock, portal, metrics):
+    fake.token_seconds, fake.session_seconds = 90, 150
+    p = await signed_in(fake, clock, portal)
+    start = clock.now()
+    fake.add_move(servers=1, containers=0, trucks=0)
+    await clock.run(clock.sleep(start + 117 - clock.now()))
+    await clock.run(p.moves())
+    assert count(fake, "POST", "/auth/refresh") == 1         # token now due at 147
+    await clock.run(clock.sleep(start + 147.5 - clock.now()))
+    await clock.run(p.moves())
+    assert count(fake, "POST", "/auth/refresh") == 1         # no refresh 2.5 s from the end
+    assert count(fake, "POST", "/auth/login") == 2
+    assert metrics.failed_calls() == 0
+
+
 async def test_ended_sign_in_signs_in_again_without_a_code(fake, clock, portal):
     fake.add_portal_user(EMAIL, PASSWORD, totp="verify", code="123456")
     p = portal()
