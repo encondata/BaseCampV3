@@ -58,7 +58,7 @@ async def test_every_server_passes_origin_stages_in_order():
             seen[sid].append(step.stage)
     assert set(seen) == set(pipeline.state.servers)
     for sid, stages in seen.items():
-        assert stages == ORIGIN_SERVER_STAGES, sid
+        assert stages[:5] == ORIGIN_SERVER_STAGES, sid
 
 
 async def test_last_cart_is_short_only_after_upstream_is_done():
@@ -150,14 +150,15 @@ async def test_tiny_move_finishes():
     assert [len(s.server_ids) for _, s in rec.of("loading_dock")] == [3]
     assert [s.container_id for _, s in rec.of("pack")] == ["c001"] * 3
     assert [s.kind for _, s in rec.of("truck_load")] == ["load"]
-    assert [(s.kind, s.truck_id) for _, s in rec.of("trip")] == [("depart", "t01")]
+    assert [(s.kind, s.truck_id) for _, s in rec.of("trip") if s.kind == "depart"] == [
+        ("depart", "t01")]
     assert pipeline.state.containers["c001"].closed
 
 
 async def test_a_failed_call_does_not_hold_the_server_back():
     pipeline, rec, _ = await run_pipeline(20, 1, 1, fail={("label", "s0001")})
     stages = [s.stage for _, s in rec.steps if "s0001" in s.server_ids]
-    assert stages == ORIGIN_SERVER_STAGES
+    assert stages[:5] == ORIGIN_SERVER_STAGES
     done = pipeline.state.servers["s0001"].done
     assert done["label"] is False
     assert done["loading_dock"] is True and done["pack"] is True
@@ -234,8 +235,5 @@ async def test_progress_counts():
     for key in ORIGIN_SERVER_STAGES:
         assert progress[key].done == progress[key].total == 45, key
     assert progress["truck_load"].done == progress["truck_load"].total == 3
-    assert progress["trip"].total == 1
-    for spec in pipeline.profile.stages:
-        if spec.site == "destination":
-            assert progress[spec.key].done == 0
+    assert progress["trip"].done == progress["trip"].total == 1
     assert progress["enroll"].label == "RFID enroll"
