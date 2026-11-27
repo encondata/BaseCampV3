@@ -106,6 +106,18 @@ async def test_401_raises_token_expired_and_records_nothing():
     assert m.calls() == {}
     r, m, _, _ = await call([httpx.Response(401)])
     assert isinstance(r, TokenExpired) and m.calls() == {}
+    r, m, _, _ = await call([httpx.Response(401)], token_call=True)
+    assert isinstance(r, TokenExpired) and m.calls() == {}
+
+
+async def test_401_on_a_sign_in_call_is_a_final_failure_with_its_code():
+    r, m, clock, seen = await call([err(401, "invalid_move_password"), httpx.Response(200)],
+                                   token_call=False)
+    assert isinstance(r, CallFailed)
+    assert (r.status, r.code, r.retries) == (401, "invalid_move_password", 0)
+    assert len(seen) == 1 and clock.sleeps == []
+    row = m.calls()["pack"]
+    assert (row["count"], row["failures"]) == (1, 1)
 
 
 def done(r):

@@ -108,6 +108,9 @@ class KioskDevice:
         self.initiative_id: str | None = None
         self.site_id: str | None = None
         self.scan_status: str | None = None
+        # the code of the last sign-in that failed (e.g. move_not_active); None after
+        # a sign-in that worked
+        self.last_sign_in_error: str | None = None
         self._client = httpx.AsyncClient(
             base_url=base_url, timeout=timeout, transport=transport,
             event_hooks={"request": [_count_attempt]})
@@ -144,16 +147,22 @@ class KioskDevice:
         """Move-login and the sign-in heartbeat. A 401 on either (a wrong move
         password, a token refused at once) is a plain CallFailed here: there is
         nothing left to renew."""
+        try:
+            await self._sign_in_steps()
+        except CallFailed as exc:
+            self.last_sign_in_error = exc.code
+            raise
+        self.last_sign_in_error = None
+
+    async def _sign_in_steps(self) -> None:
         if self._password is None:
             raise CallFailed("move-login", None, "not_signed_in", 0)
-        try:
-            response = await timed_call(
-                self._client, "POST", "/kiosk/move-login", name="move-login",
-                metrics=self.metrics, clock=self.clock, retry=self.retry,
-                json={"password": self._password})
-        except TokenExpired:
-            self.metrics.record("move-login", 0.0, False)
-            raise CallFailed("move-login", 401, None, 0) from None
+        # token_call=False: a 401 here is a refused password (invalid_move_password,
+        # move_not_active), a final failure with the server's code
+        response = await timed_call(
+            self._client, "POST", "/kiosk/move-login", name="move-login",
+            metrics=self.metrics, clock=self.clock, retry=self.retry, token_call=False,
+            json={"password": self._password})
         self._take_session(response)
         try:
             await timed_call(

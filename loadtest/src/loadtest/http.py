@@ -54,8 +54,12 @@ async def timed_call(
     clock: Clock,
     retry: RetrySpec,
     already_done: Callable[[httpx.Response], bool] | None = None,
+    token_call: bool = True,
     **request_kwargs,
 ) -> httpx.Response:
+    """`token_call=False` is for a call that is itself a sign-in: a 401 there means the
+    credentials were refused, so it is a final failure carrying the server's code
+    instead of a `TokenExpired` for the caller to renew."""
     attempts = max(1, retry.attempts)
     for attempt in range(attempts):
         retries = attempt
@@ -69,7 +73,7 @@ async def timed_call(
 
         if response is not None:
             status = response.status_code
-            if status == 401:
+            if status == 401 and token_call:
                 raise TokenExpired(name)
             if not _retryable(status):
                 if status < 300:

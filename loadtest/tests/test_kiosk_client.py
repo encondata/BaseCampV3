@@ -359,3 +359,38 @@ async def test_down_server_failure_text_has_no_secrets(fake, clock, device):
         assert d._token not in repr(exc.args)
     else:
         raise AssertionError("expected CallFailed")
+
+
+# ── refused sign-ins ──────────────────────────────────────────────────
+
+
+async def test_wrong_move_password_raises_with_its_code(fake, clock, device, metrics):
+    fake.add_move(servers=1, containers=1, trucks=1)
+    d = device("handheld")
+    wrong = "not-the-move-password"
+    try:
+        await clock.run(d.sign_in(wrong))
+    except CallFailed as exc:
+        assert (exc.call, exc.status, exc.code) == ("move-login", 401, "invalid_move_password")
+        assert wrong not in str(exc) and wrong not in repr(exc.args)
+    else:
+        raise AssertionError("expected CallFailed")
+    assert count(fake, "POST", "/kiosk/move-login") == 1      # a refused password is not retried
+    assert metrics.calls()["move-login"]["failures"] == 1
+    assert d.last_sign_in_error == "invalid_move_password"
+
+
+async def test_move_inactive_mid_run_returns_short_count(fake, clock, device, metrics):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    assert d.last_sign_in_error is None
+    await clock.run(clock.sleep(25 * 3600))            # the sign-in has ended
+    fake.moves[move_id]["status"] = "completed"
+    scan = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
+    assert await clock.run(d.send_scans([scan])) == 0
+    assert d.last_sign_in_error == "move_not_active"
+    assert metrics.calls()["scans"]["failures"] == 1
+    assert ("POST", "/kiosk/scans") not in fake.requests
+    fake.moves[move_id]["status"] = "in_progress"       # a later sign-in that works clears it
+    assert await clock.run(d.send_scans([scan])) == 1
+    assert d.last_sign_in_error is None
