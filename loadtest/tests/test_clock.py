@@ -70,26 +70,97 @@ async def test_queue_handoff_registers_the_next_sleep_before_time_jumps():
 
 
 async def test_cancelled_sleeper_does_not_stall_the_heap():
-    clock, seen = FakeClock(), []
+    clock, seen = FakeClock(), {}
 
     async def victim():
-        await clock.sleep(1000)
-        seen.append("victim woke")
-
-    async def killer(task):
-        await clock.sleep(10)
-        task.cancel()
-        await clock.sleep(20)
-        seen.append(clock.now() - START)
+        try:
+            await clock.sleep(15)
+            seen["victim"] = "woke"
+        except asyncio.CancelledError:
+            seen["victim"] = clock.now() - START
+            raise
 
     async def main():
         task = asyncio.create_task(victim())
-        await killer(task)
+        await clock.sleep(10)
+        task.cancel()
+        await clock.sleep(20)
+        seen["killer"] = clock.now() - START
         with pytest.raises(asyncio.CancelledError):
             await task
 
     await clock.run(main())
-    assert seen == [30.0]
+    assert seen == {"victim": 10.0, "killer": 30.0}
+
+
+async def test_deep_queue_chain_settles_before_time_moves():
+    clock, seen = FakeClock(), {}
+    queues = [asyncio.Queue() for _ in range(201)]
+
+    async def first():
+        await clock.sleep(10)
+        await queues[0].put(1)
+
+    async def link(i):
+        await queues[i].get()
+        await queues[i + 1].put(1)
+
+    async def last():
+        await queues[200].get()
+        await clock.sleep(5)
+        seen["last"] = clock.now() - START
+
+    async def other():
+        await clock.sleep(12)
+        seen["other"] = clock.now() - START
+
+    async def main():
+        await asyncio.gather(first(), *(link(i) for i in range(200)), last(), other())
+
+    await clock.run(main())
+    assert seen == {"last": 15.0, "other": 12.0}
+
+
+async def test_many_explicit_yields_do_not_let_time_jump():
+    clock, seen = FakeClock(), {}
+
+    async def yielder():
+        await clock.sleep(10)
+        for _ in range(500):
+            await asyncio.sleep(0)
+        await clock.sleep(5)
+        seen["yielder"] = clock.now() - START
+
+    async def other():
+        await clock.sleep(12)
+        seen["other"] = clock.now() - START
+
+    async def main():
+        await asyncio.gather(yielder(), other())
+
+    await clock.run(main())
+    assert seen == {"yielder": 15.0, "other": 12.0}
+
+
+async def test_run_that_waits_on_nothing_raises():
+    clock = FakeClock()
+
+    async def stuck():
+        await asyncio.get_running_loop().create_future()
+
+    with pytest.raises(RuntimeError, match="nothing is sleeping"):
+        await clock.run(stuck())
+
+
+async def test_busy_loop_that_never_sleeps_on_the_clock_trips_the_backstop():
+    clock = FakeClock(max_passes=200)
+
+    async def spin():
+        while True:
+            await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="never went quiet"):
+        await clock.run(spin())
 
 
 async def test_exception_from_the_driven_coroutine_propagates():
