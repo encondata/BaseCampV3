@@ -1,9 +1,12 @@
 /** What each workers bulk-import column accepts. Keys mirror the API's
- *  people/bulk_import.py COLUMNS — the service test pins that list, the
+ *  people/bulk_import.py EXPORT_COLUMNS — the service test pins that list, the
  *  test beside this file pins this one, and the two must agree. */
 export interface WorkerColumnGuide { key: string; required: boolean; accepts: string; example: string }
 
+const EXPORT_ONLY = 'Export only — ignored on upload.';
+
 export const WORKER_COLUMN_GUIDE: WorkerColumnGuide[] = [
+  { key: 'person_id', required: false, accepts: 'From an export. Matches that person first; ignored if no such person exists here.', example: '' },
   { key: 'first_name', required: true, accepts: 'Given name. With last_name, matches an existing person by name.', example: 'Robert' },
   { key: 'last_name', required: true, accepts: 'Family name.', example: 'Smith' },
   { key: 'preferred_name', required: false, accepts: 'What the person goes by. With last_name, also matches by name.', example: 'Bob' },
@@ -24,6 +27,22 @@ export const WORKER_COLUMN_GUIDE: WorkerColumnGuide[] = [
   { key: 'status', required: false, accepts: 'A worker status from the Reference sheet. Blank means active for new workers.', example: 'active' },
   { key: 'status_note', required: false, accepts: 'Free text. Required when status is blacklist.', example: '' },
   { key: 'notes', required: false, accepts: 'Free text.', example: '' },
+  { key: 'will_travel', required: false, accepts: 'yes or no. Blank leaves it as it is.', example: 'yes' },
+  { key: 'travel_region', required: false, accepts: 'Free text.', example: '' },
+  { key: 'travel_restrictions', required: false, accepts: 'Free text.', example: '' },
+  { key: 'badge_uid', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'has_photo', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'source', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'source_ref', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'has_login', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'login_email', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'login_disabled', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'last_login_at', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'roles', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'created_at', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'updated_at', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'profile_updated_at', required: false, accepts: EXPORT_ONLY, example: '' },
+  { key: 'certifications', required: false, accepts: 'JSON uploads: a list of {name, issuer, issued_on, expires_on} — new ones are added, existing ones left alone. In .csv/.xlsx: export only.', example: '' },
 ];
 
 export const WORKER_BULK_ERRORS: Record<string, string> = {
@@ -33,7 +52,7 @@ export const WORKER_BULK_ERRORS: Record<string, string> = {
   invalid_json: 'The server could not read the rows — preview again.',
   invalid_csv: 'That CSV could not be read.',
   invalid_xlsx: 'That spreadsheet could not be read.',
-  unsupported_file: 'Unsupported file type — use .csv or .xlsx.',
+  unsupported_file: 'Unsupported file type — use .csv, .xlsx or .json.',
   missing_file: 'Choose a file first.',
   rows_invalid: 'Some rows have problems — fix them and preview again.',
   forbidden: 'You do not have permission to bulk import.',

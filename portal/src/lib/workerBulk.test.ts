@@ -2,11 +2,15 @@ import { expect, it } from 'vitest';
 
 import { WORKER_BULK_ERRORS, WORKER_COLUMN_GUIDE } from './workerBulk';
 
-it('describes exactly the template columns, names first and required', () => {
+it('describes exactly the export columns, names first and required', () => {
   expect(WORKER_COLUMN_GUIDE.map((c) => c.key)).toEqual([
-    'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'job_title',
+    'person_id', 'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'job_title',
     'employee_number', 'rfid_tag', 'address_line1', 'address_line2', 'city', 'region',
     'postal_code', 'country', 'partner', 'trade', 'level', 'status', 'status_note', 'notes',
+    'will_travel', 'travel_region', 'travel_restrictions',
+    'badge_uid', 'has_photo', 'source', 'source_ref', 'has_login', 'login_email',
+    'login_disabled', 'last_login_at', 'roles', 'created_at', 'updated_at',
+    'profile_updated_at', 'certifications',
   ]);
   expect(WORKER_COLUMN_GUIDE.filter((c) => c.required).map((c) => c.key))
     .toEqual(['first_name', 'last_name']);
