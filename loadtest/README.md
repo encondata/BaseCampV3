@@ -319,8 +319,9 @@ On Continue:
 
 - A step that was sent but not yet recorded is sent again with the same
   scan id, so the server normally counts it once (see "processed twice").
-  If the server answers that an unpack or unload is already done, it
-  counts as done.
+  For the one unpack or unload step each crew was doing when the run
+  stopped, a server answer that it is already done counts as done; for
+  every other step it is a failure.
 - A cart or container that was half done starts its timer again.
 - A truck on the road is placed where the clock says it should be. Location
   updates that fell in the gap are skipped and counted as skipped.

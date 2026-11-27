@@ -881,6 +881,115 @@ async def test_a_server_clock_30_seconds_behind_still_passes(clock, tmp_path):
         await asyncio.gather(*world.tickers, return_exceptions=True)
 
 
+class Spoil(httpx.AsyncBaseTransport):
+    """Before the `nth` matching request (counted from `armed()`) reaches the fake, the
+    server loses the earlier pack or load, so it answers a real "in no container" or
+    "on no truck" 409."""
+
+    def __init__(self, inner, match, nth: int, spoil) -> None:
+        self.inner, self.match, self.nth, self.spoil = inner, match, nth, spoil
+        self.seen = 0
+        self.armed = False
+
+    async def handle_async_request(self, request):
+        if self.armed and self.match(request):
+            self.seen += 1
+            if self.seen == self.nth:
+                self.spoil(_body(request))
+        return await self.inner.handle_async_request(request)
+
+
+def _losing(fake, kind):
+    if kind == "unpack":
+        return lambda body: fake.container_of.pop(body["asset_id"], None)
+    return lambda body: fake.truck_of.pop(body["container_id"], None)
+
+
+REAL_409 = {"unpack": IN_FLIGHT["unpack"][0], "unload": IN_FLIGHT["unload"][0]}
+
+
+def _named(result, kind) -> bool:
+    texts = [f["text"] for f in result["findings"] if f["level"] == "fail"]
+    want = ("The Unpack containers step failed for 1 server: " if kind == "unpack"
+            else "Unloading failed for 1 container: ")
+    return any(t.startswith(want) for t in texts)
+
+
+@pytest.mark.parametrize("kind", ["unpack", "unload"])
+async def test_a_real_refusal_after_an_early_continue_fails(world, fake, clock, kind):
+    """The reviewer's probe: continued before the truck arrived, then the server really
+    has lost a pack or a load. Nothing of that stage could have been in flight."""
+    spoil = Spoil(world.transport, REAL_409[kind], 1, _losing(fake, kind))
+    spoil.armed = True
+    world.transport = spoil
+    first = world.runner()
+    await world.ready(first)
+    await first.start()
+    world.process_scans(duplicate_on_replay=False)
+    with pytest.raises(TimeoutError):
+        await clock.run(first.wait(), limit=20)
+    await hard_crash(world, first)
+    runner = world.runner()
+    await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+    await clock.run(runner.wait())
+    result = runner.result()
+    assert result["verdict"] == "Fail"
+    assert result["calls"][kind]["failures"] == 1
+    assert _named(result, kind), result["findings"]
+
+
+@pytest.mark.parametrize("kind, in_flight, later", [("unpack", 3, 5), ("unload", 1, 2)])
+async def test_only_a_crews_first_step_after_a_continue_may_be_a_resend(
+        fake, clock, tmp_path, kind, in_flight, later):
+    """A step of that stage is in flight when the tool dies (its resend counts once); a
+    later step of the same continued run that the server really refuses still fails."""
+    world = World(fake, clock, tmp_path)
+    try:
+        spoil = Spoil(world.transport, REAL_409[kind], later, _losing(fake, kind))
+        world.transport = spoil
+        match, _ = IN_FLIGHT[kind]
+        normal = world.transport
+        hang = LandThenHang(normal, match, in_flight)
+        world.transport = hang
+        first = world.runner()
+        await world.ready(first)
+        await first.start()
+        world.process_scans(duplicate_on_replay=False)
+
+        async def until_hung():
+            await hang.hung.wait()
+            await clock.sleep(0.01)
+        await clock.run(until_hung(), limit=600)
+        await hard_crash(world, first)
+        world.transport = normal
+        spoil.armed = True                          # counts the continued run's requests
+        runner = world.runner()
+        await clock.run(runner.continue_run(PASSWORD, MOVE_PASSWORD, EMAIL))
+        await clock.run(runner.wait())
+        result = runner.result()
+        assert spoil.seen >= later
+        assert result["verdict"] == "Fail"
+        assert result["calls"][kind]["failures"] == 1      # the real refusal, only that
+        assert _named(result, kind), result["findings"]
+    finally:
+        for r in world.runners:
+            await r.shutdown()
+        for t in world.tickers:
+            t.cancel()
+        await asyncio.gather(*world.tickers, return_exceptions=True)
+
+
+@pytest.mark.parametrize("kind", ["unpack", "unload"])
+async def test_a_first_try_already_done_answer_fails_a_run_never_continued(world, fake,
+                                                                          clock, kind):
+    spoil = Spoil(world.transport, REAL_409[kind], 1, _losing(fake, kind))
+    spoil.armed = True
+    world.transport = spoil
+    result = await whole_run(world, clock)
+    assert result["verdict"] == "Fail" and result["calls"][kind]["failures"] == 1
+    assert _named(result, kind)
+
+
 class TickingClock(FakeClock):
     """Virtual time whose `now()` moves on a little with every reading, like a real one."""
 

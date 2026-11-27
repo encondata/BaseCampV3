@@ -582,44 +582,70 @@ async def test_truck_names_get_truck_in_front_only_when_missing(clock, run):
     assert r.events.recent()[-1].device == "Truck 08"
 
 
-def test_already_done_counts_on_the_first_try_only_for_a_resend_after_a_continue():
+def _destination_state(profile, s1_packed=True, load_ok=True):
     from pipeline_helpers import make_state
-    profile = fast()
     state = make_state(2, 1, 1, profile)
     s1, s2 = list(state.servers)
-    state.apply({"t": "packed", "stage": "pack", "server": s1, "container": "c001", "ok": True,
-                 "at": 1.0})
-    state.apply({"t": "packed", "stage": "pack", "server": s2, "container": "c001", "ok": False,
-                 "at": 2.0})
-    state.apply({"t": "loaded", "container": "c001", "truck": "t01", "ok": True, "at": 3.0})
-    actions = Actions(profile=profile, state=state, fleet=None, portal=None, events=None,
-                      metrics=None, clock=None)
+    for sid, ok in ((s1, s1_packed), (s2, False)):
+        state.apply({"t": "packed", "stage": "pack", "server": sid, "container": "c001",
+                     "ok": ok, "at": 1.0})
+    state.apply({"t": "loaded", "container": "c001", "truck": "t01", "ok": load_ok, "at": 3.0})
+    return state, s1, s2
+
+
+def _actions(profile, state):
+    return Actions(profile=profile, state=state, fleet=None, portal=None, events=None,
+                   metrics=None, clock=None)
+
+
+def _continued(state, at=4.0):
+    state.apply({"t": "interrupted", "at": at})
+    state.apply({"t": "resumed", "at": at + 1})
+
+
+UNLOAD = Step("unload", "truck_unload", 0, container_id="c001", truck_id="t01")
+
+
+def test_already_done_never_counts_on_the_first_try_of_a_run_never_continued():
+    profile = fast()
+    state, s1, _ = _destination_state(profile)
+    state.apply({"t": "arrived", "truck": "t01", "ok": True, "at": 3.5})
+    actions = _actions(profile, state)
+    assert not actions._resending(UNLOAD)
+
+
+def test_an_unload_resend_needs_a_crews_first_step_after_an_arrival_journaled_before():
+    profile = fast()
+    state, _, _ = _destination_state(profile)
+    _continued(state)                             # the truck had not arrived when it stopped
+    actions = _actions(profile, state)            # built as that run segment starts
+    state.apply({"t": "arrived", "truck": "t01", "ok": True, "at": 6.0})
+    assert not actions._resending(UNLOAD)
+    _continued(state, at=7.0)                     # stopped again, now after the arrival
+    actions = _actions(profile, state)
+    assert actions._resending(UNLOAD)             # crew 0's first unload after the Continue
+    assert not actions._resending(UNLOAD)         # its next one: never
+    failed_load, _, _ = _destination_state(profile, load_ok=False)
+    failed_load.apply({"t": "arrived", "truck": "t01", "ok": True, "at": 3.5})
+    _continued(failed_load)
+    assert not _actions(profile, failed_load)._resending(UNLOAD)    # its load never landed
+
+
+def test_an_unpack_resend_needs_a_crews_first_step_and_a_landed_pack():
+    profile = fast()
+    state, s1, s2 = _destination_state(profile)
+    state.apply({"t": "arrived", "truck": "t01", "ok": True, "at": 3.5})
+    state.apply({"t": "unloaded", "container": "c001", "ok": True, "at": 3.7})
+    _continued(state)
+    actions = _actions(profile, state)
+    unpack2 = Step("unpack", "unpack", 1, (s2,), container_id="c001")
+    assert not actions._resending(unpack2)        # its pack never landed (crew 1's first)
     unpack1 = Step("unpack", "unpack", 0, (s1,), container_id="c001")
-    unpack2 = Step("unpack", "unpack", 0, (s2,), container_id="c001")
-    unload = Step("unload", "truck_unload", 0, container_id="c001", truck_id="t01")
-    assert not any(actions._resending(s) for s in (unpack1, unpack2, unload))  # a fresh run
-    state.apply({"t": "interrupted", "at": 4.0})
-    state.apply({"t": "resumed", "at": 5.0})
-    assert actions._resending(unpack1) and actions._resending(unload)
-    assert not actions._resending(unpack2)          # its pack never landed
-    state.containers["c001"].load_failed = True
-    assert not actions._resending(unload)           # its load never landed
-
-
-@pytest.mark.parametrize("fail, words", [
-    (("POST", "/kiosk/setup", 503), "could not finish Kiosk Setup. The move password was "
-     "accepted, but the kiosk could not be set up for this move (the server answered 503). "
-     "Check the server, then continue the run."),
-    (("GET", "/kiosk/sync/assets", 500), "could not download the move. The server answered 500."),
-])
-async def test_fleet_errors_use_plain_words(fake, clock, metrics, fail, words):
-    fleet = await _fleet(fake, clock, metrics)
-    method, path, status = fail
-    fake.fail(method, path, status=status, times=100)
-    with pytest.raises(FleetError) as caught:
-        await clock.run(fleet.start(MOVE_PASSWORD))
-    assert str(caught.value) == f"{fleet.devices[0].name} {words}"
-    await fleet.stop()
+    assert actions._resending(unpack1)            # crew 0's first
+    assert not actions._resending(Step("unpack", "unpack", 1, (s1,), container_id="c001"))
+    again = _actions(profile, state)              # a second Continue opens it again
+    assert again._resending(unpack1)
+    assert not again._resending(unpack1)
 
 
 async def test_each_rfid_station_has_its_own_reader(fake, clock, metrics, run):

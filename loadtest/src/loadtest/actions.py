@@ -50,6 +50,14 @@ class Actions:
         self.clock = clock
         self._stages = {s.key: s for s in profile.stages}
         self._pack_key = next((s.key for s in profile.stages if s.kind == "pack"), None)
+        # A continued run (this Actions serves one run segment): the steps that could have
+        # been in flight when the run stopped, read from the journal as it stood then, and
+        # the (stage, crew) pairs that have made their first unpack or unload step since.
+        self._may_resend_unload: set[str] = set()
+        self._may_resend_unpack: set[tuple[str, str]] = set()
+        self._crews_started: set[tuple[str, int]] = set()
+        if state.interruptions:
+            self._find_possible_resends()
 
     async def perform(self, step: Step) -> bool:
         """True when the call landed. Never raises, except CancelledError."""
@@ -122,19 +130,41 @@ class Actions:
                                   note or ("" if ok else NO_KEY if keyless else FAILED)))
         return ok
 
+    def _find_possible_resends(self) -> None:
+        """Unloads and unpacks the journal says were possibly under way when the run
+        stopped: a crate on a truck whose arrival is journaled, its load landed, not yet
+        unloaded; a server in a crate whose unload is journaled, its pack landed, not yet
+        unpacked."""
+        containers = self.state.containers
+        for truck in self.state.trucks.values():
+            if truck.arrived:
+                self._may_resend_unload.update(
+                    cid for cid in truck.container_ids
+                    if containers[cid].truck_id == truck.id and not containers[cid].load_failed
+                    and not containers[cid].unloaded)
+        for container in containers.values():
+            if not container.unloaded or self._pack_key is None:
+                continue
+            for sid in container.server_ids:
+                server = self.state.servers[sid]
+                if (server.container_id == container.id and sid not in container.unpacked
+                        and server.done.get(self._pack_key) is True):
+                    self._may_resend_unpack.add((sid, container.id))
+
     def _resending(self, step: Step) -> bool:
-        """True when this unpack or unload may be the resend of one that landed before an
-        interruption: the run was continued, and the journal shows the step it undoes
-        landed (the server's pack, or the crate's load onto this truck). Then the server's
-        "already done" answer counts as success on the first try."""
-        if not self.state.interruptions:
+        """True when this unpack or unload may be the resend of the one its crew was doing
+        when the run stopped: only a crew's first step of the stage after a Continue, and
+        only a step the journal says could have been in flight then. The server's "already
+        done" answer then counts as success on the first try. A run never continued, and
+        every later step, get no such allowance."""
+        crew = (step.stage, step.crew)
+        if crew in self._crews_started:
             return False
-        if step.kind == "unpack":
-            server = self.state.servers[step.server_ids[0]]
-            return self._pack_key is not None and server.done.get(self._pack_key) is True
+        self._crews_started.add(crew)
         if step.kind == "unload":
-            container = self.state.containers[step.container_id]
-            return container.truck_id == step.truck_id and not container.load_failed
+            return step.container_id in self._may_resend_unload
+        if step.kind == "unpack":
+            return (step.server_ids[0], step.container_id) in self._may_resend_unpack
         return False
 
     async def _server_call(self, step: Step, spec: StageSpec, device: KioskDevice,
