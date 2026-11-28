@@ -294,6 +294,10 @@ The stages, in order:
 | QA | `qa` | 5 people | 15 s per server | 5 handhelds |
 | Complete | `complete` | 5 people | 15 s per server | 5 handhelds |
 
+The RFID enroll is finished for every server before any other stage
+starts. After that the stages overlap: a server moves on as soon as it is
+through a stage.
+
 In a profile, each stage is one `[[stage]]` block. The fields you are most
 likely to change:
 

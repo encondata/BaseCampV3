@@ -151,8 +151,9 @@ def assert_nothing_redone(rec, before):
 async def test_continue_performs_only_what_is_left(tmp_path):
     profile = real_time()
     move = Move(tmp_path, 45, 3, 1, profile)
-    # label starts at about 645 s (first cart through the cage exit at 630); stop inside it
-    first, _ = await move.run(cancel_at=700)
+    # enroll is complete at 135 s, the first carts are through the cage exit 600 s later
+    # (735 s) and label starts at about 750 s; stop inside it
+    first, _ = await move.run(cancel_at=800)
     assert first.of("label") and not first.of("loading_dock")
     second, before = await move.run()
     assert_nothing_redone(second, before)
@@ -372,8 +373,9 @@ async def test_continue_from_any_stop(tmp_path):
     full, _ = await probe.run()
     end = full.steps[-1][0]
     keys = server_stage_keys(profile)
-    # Every 3.7 s from start to end: stops land in every stage, the trip included.
-    cancel_times = [3.7 * k for k in range(1, int(end // 3.7) + 1)]
+    # Every 2.9 s from start to end: stops land in every stage, the trip included (and
+    # in the short moment a closed container waits for its truck).
+    cancel_times = [2.9 * k for k in range(1, int(end // 2.9) + 1)]
     assert len(cancel_times) >= 30
     resent = 0  # server steps cut off mid-call by a cancel and sent again
     kinds_hit: set[str] = set()

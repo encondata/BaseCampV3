@@ -92,12 +92,25 @@ async def test_label_waits_fall_in_15_to_30_seconds():
         remaining[v] -= 1
 
 
-async def test_stages_overlap():
-    # 300 servers: enroll alone takes 900 s, longer than the first cart's 600 s at the cage exit
+async def test_enroll_is_complete_before_anything_else_is_done():
+    """Jimmy, 2026-11-27: the RFID enroll has to be complete before anything else gets
+    done. 300 servers: enroll alone takes 900 s, longer than a cart's 600 s at the cage
+    exit, so a cart would otherwise leave while servers are still being enrolled."""
+    _, rec, _ = await run_pipeline(300, 15, 1)
+    last_enroll = max(t for t, _ in rec.of("enroll"))
+    assert last_enroll == 900.0
+    assert len(rec.of("enroll")) == 300
+    others = [(t, s) for t, s in rec.steps if s.stage != "enroll"]
+    assert others and min(t for t, _ in others) > last_enroll
+    # the first carts leave one cage-exit time after the last server is enrolled
+    assert min(t for t, _ in rec.of("cage_exit")) == last_enroll + 600.0
+
+
+async def test_stages_after_enroll_overlap():
     _, rec, _ = await run_pipeline(300, 15, 1)
     first_label = min(t for t, _ in rec.of("label"))
-    assert first_label < max(t for t, _ in rec.of("enroll"))
     assert first_label < max(t for t, _ in rec.of("cage_exit"))
+    assert min(t for t, _ in rec.of("pack")) < max(t for t, _ in rec.of("label"))
 
 
 async def test_containers_fill_to_twenty_then_short():
@@ -237,3 +250,20 @@ async def test_progress_counts():
     assert progress["truck_load"].done == progress["truck_load"].total == 3
     assert progress["trip"].done == progress["trip"].total == 1
     assert progress["enroll"].label == "RFID enroll"
+
+
+async def test_a_continued_run_finishes_enroll_before_anything_else():
+    """A run stopped under the old rule can hold servers that are past the cage exit
+    while others are not enrolled yet: continuing it enrolls the rest first."""
+    profile = real_time()
+    clock = FakeClock()
+    state = make_state(60, 3, 1, profile, started_at=clock.now())
+    for sid in sorted(state.servers)[:20]:
+        state.servers[sid].done.update({"enroll": True, "cage_exit": True})
+    recorder = Recorder(clock)
+    pipeline = Pipeline(profile, state, recorder, clock, random.Random(7))
+    await clock.run(pipeline.run(), limit=LIMIT)
+    assert len(recorder.of("enroll")) == 40
+    last_enroll = max(t for t, _ in recorder.of("enroll"))
+    assert min(t for t, s in recorder.steps if s.stage != "enroll") > last_enroll
+    assert all("complete" in s.done for s in pipeline.state.servers.values())
