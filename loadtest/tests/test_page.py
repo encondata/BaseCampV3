@@ -12,7 +12,7 @@ from loadtest.web.app import create_app
 STATIC = Path(__file__).resolve().parents[1] / "src" / "loadtest" / "web" / "static"
 ROUTES = ("/api/state", "/api/connect", "/api/check", "/api/start", "/api/stop",
           "/api/continue", "/api/discard", "/api/result", "/api/events", "/api/sites",
-          "/api/setup")
+          "/api/setup", "/api/runs")
 POST_ROUTES = ("/api/connect", "/api/check", "/api/start", "/api/stop", "/api/continue",
                "/api/discard", "/api/setup")
 
@@ -292,6 +292,71 @@ def test_the_container_scan_line_says_what_covers_them():
 def test_no_unused_helpers():
     js = read("simulate.js")
     assert "const percent =" not in js
+
+
+# ── Previous results ───────────────────────────────────────────────────
+
+
+def results_view(page: str) -> str:
+    return page[page.index('<section id="view-results"'):page.index("</main>")]
+
+
+def test_the_start_screen_offers_previous_results():
+    page = read("index.html")
+    start = page[page.index('<section id="view-start">'):page.index('<section id="view-generate"')]
+    assert start.count('class="choice"') == 3
+    assert 'data-go="results"' in start
+    assert '<span class="choice-title">Previous results</span>' in start
+    # #results is the list, #results/<run folder> one result, so Back works
+    assert "h === '#results' || h.startsWith('#results/') ? 'results'" in page
+    assert "document.getElementById('view-results').hidden = v !== 'results';" in page
+
+
+def test_previous_results_has_a_list_and_one_result_and_nothing_else():
+    view = results_view(read("index.html"))
+    assert '<h1 class="page-title" id="prev-title" tabindex="-1">Previous results</h1>' in view
+    assert re.findall(r"<button[^>]*>", view) == [
+        '<button class="back" type="button" data-go="start">',
+        '<button class="btn-ghost" type="button" id="prev-all">']
+    assert not re.search(r"<(input|select|textarea|form)\b", view)
+    assert '<table id="prev-runs"></table>' in view
+    assert "No run has ended yet." in view
+
+
+def test_a_previous_result_is_drawn_by_the_simulate_results_own_code():
+    js = without_comments(read("simulate.js"))
+    draw = js[js.index("function drawPrevious("):js.index("async function showResults(")]
+    assert "drawResult(r);" in draw
+    # the result blocks are moved, never copied: one set of ids, one drawing code
+    place = js[js.index("function placeShared() {"):js.index("const SETUP_FIELDS")]
+    assert "onResults() ? $('prev-result') : $('sim-result')" in place
+    assert "resultDrawn = null;" in place
+    assert "cloneNode" not in js
+    # a snapshot arriving while a previous result shows never draws over it
+    render = js[js.index("function render() {"):js.index("function focusView(")]
+    assert "else if (next === 'result' && !onResults()) renderResult();" in render
+
+
+def test_previous_results_are_read_and_never_changed():
+    js = without_comments(read("simulate.js"))
+    section = js[js.index("function drawRuns("):js.index("$('sim-retry')")]
+    assert "get(id ? '/api/runs/' + encodeURIComponent(id) : '/api/runs')" in section
+    assert "post(" not in section
+    assert "mine !== prevSeq" in section            # an older answer never lands on a newer visit
+    assert "['Started', 'Move', 'Server', 'Servers', 'Speed', 'Duration', 'Result', '']" in section
+    assert "location.hash = `results/${r.id}`" in section
+    assert "`Saved in ${data.runs_dir}`" in section and "`Saved to ${got.run_dir}`" in section
+    # the notices (not answering, refused) show in this view too, and being refused hides it
+    assert "onResults() ? $('prev-notices')" in js
+    assert "$('prev-body').hidden = true;" in js
+    assert "if (prevFailed && onResults()) showResults();" in js
+
+
+def test_the_open_button_never_scrolls_out_of_the_list():
+    css = read("simulate.css")
+    assert ("#prev-runs th:last-child, #prev-runs td:last-child { position: sticky; right: 0;"
+            in css)
+    assert "#view-simulate .table-wrap, #view-results .table-wrap { max-height: none; }" in css
 
 
 # ── Generate: the tool creates the move on the server ─────────────────

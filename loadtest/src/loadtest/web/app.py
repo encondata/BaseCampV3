@@ -46,6 +46,8 @@ FORBIDDEN = {"code": "forbidden", "message": "This request did not come from the
 BAD_REQUEST = {"code": "bad_request", "message": "Check the fields and try again."}
 INTERNAL = {"code": "internal", "message": "Something went wrong in the load test tool."}
 NO_RESULT = {"code": "no_result", "message": "There is no result yet."}
+NO_SUCH_RESULT = {"code": "no_such_result",
+                  "message": "That result is not in the runs folder any more."}
 KEEP_ALIVE = ": keep-alive\n\n"
 
 
@@ -533,6 +535,24 @@ def create_app(runner, *, allowed_hosts: list[str] | None = None,
             return JSONResponse(NO_RESULT, status_code=404, headers=NO_STORE)
         # the samples stay in results.json: the page draws none, and a two-day run's are MBs
         return JSONResponse({k: v for k, v in got.items() if k != "series"}, headers=NO_STORE)
+
+    # Previous results are files on this machine: read off the event loop, so a large
+    # runs folder never holds a run or another request.
+    @app.get("/api/runs")
+    async def runs() -> JSONResponse:
+        lines = await asyncio.to_thread(runner.history.list)
+        return JSONResponse({"runs": lines, "runs_dir": str(runner.history.runs_dir)},
+                            headers=NO_STORE)
+
+    # `:path` so a made-up name with a slash gets the same plain answer as any other
+    @app.get("/api/runs/{run_id:path}")
+    async def one_run(run_id: str) -> JSONResponse:
+        got = await asyncio.to_thread(runner.history.read, run_id)
+        if got is None:
+            return JSONResponse(NO_SUCH_RESULT, status_code=404, headers=NO_STORE)
+        # as /api/result: the samples stay in results.json
+        got["result"] = {k: v for k, v in got["result"].items() if k != "series"}
+        return JSONResponse(got, headers=NO_STORE)
 
     @app.get("/api/events")
     async def events(request: Request) -> StreamingResponse:

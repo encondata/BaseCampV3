@@ -30,6 +30,7 @@ from .connection import (
     sign_in_error,
 )
 from .events import Events, FeedLine
+from .history import History
 from .ids import make_tags
 from .journal import start_entry
 from .metrics import Metrics
@@ -103,6 +104,7 @@ class Runner:
         self._move_password: str | None = None
         self._selected: dict | None = None      # {move_id, speed} of the last check
         self._unfinished = UnfinishedRuns(self.runs_dir, self.clock)
+        self.history = History(self.runs_dir)   # previous results, read from the folder
         self._sizes = _default_sizes()
         self._setup = Setup(self.clock)
         self._driver = RunDriver(clock=self.clock, transport=transport, hub=self._hub,
