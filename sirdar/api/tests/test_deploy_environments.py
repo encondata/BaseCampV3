@@ -183,14 +183,15 @@ async def test_adopted_record_renders_the_same_env(db, target):
         bind_ip=env.bind_ip, ports={r.service: r.port for r in rows},
         keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket, log_level=env.log_level,
         api_mode=envfile.api_mode(env.type), secrets=await _secrets(db, env.id))))
-    # SS_SMTP_PASSWORD (phase 8c), SS_FCM_SERVICE_ACCOUNT_B64 and SS_KIOSK_SIGNING_DIGESTS postdate this
-    # .env: unset, they render empty; so does the devices port (a late
+    # SS_SMTP_PASSWORD (phase 8c), SS_FCM_SERVICE_ACCOUNT_B64, SS_KIOSK_SIGNING_DIGESTS and
+    # SS_GOD_MODE_WORDS postdate this .env: unset, they render empty; so does the devices port (a late
     # service: its default, free on this host); SS_ENV, unset, is staging
     # (ss-stack's default), and a dev environment's mode is staging
     remote = envfile.parse_env(remote_env_text(SS_ANTHROPIC_API_KEY="sk-ant-api03-x",
                                                STACK_API_PORT="8100", SS_SMTP_PASSWORD="",
                                                SS_FCM_SERVICE_ACCOUNT_B64="",
                                                SS_KIOSK_SIGNING_DIGESTS="",
+                                               SS_GOD_MODE_WORDS="",
                                                STACK_DEVICES_PORT="8093", SS_ENV="staging"))
     assert rendered == {k: v for k, v in remote.items() if k in envfile.KNOWN_KEYS}
 
