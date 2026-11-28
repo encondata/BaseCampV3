@@ -200,3 +200,8 @@ def test_render_and_slot_smoke_ask_the_same_question(app):
     assert sorted(asked) == ["render.yml", "slot_smoke.yml"]
     assert len(asked["render.yml"]) == len(asked["slot_smoke.yml"]) == 1, asked
     assert asked["render.yml"] == asked["slot_smoke.yml"]
+
+
+def test_the_api_gets_the_god_mode_words():
+    compose = (STACK / "api" / "compose.yml").read_text()
+    assert re.search(r"^\s+SS_GOD_MODE_WORDS: \$\{SS_GOD_MODE_WORDS:-\}$", compose, re.MULTILINE)

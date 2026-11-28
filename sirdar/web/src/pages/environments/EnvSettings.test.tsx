@@ -36,6 +36,13 @@ function open(env = ENV) {
 const save = () => userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
 const secret = (text: string) => screen.getByText(text).closest('.sirdar-secret') as HTMLElement;
 
+it('a Switchyard environment calls the field Forwarded-for IP', () => {
+  open({ ...ENV, proxy: 'switchyard' });
+  expect(screen.queryByLabelText('Proxy IP')).toBeNull();
+  expect((screen.getByLabelText('Forwarded-for IP') as HTMLInputElement).value).toBe('10.10.48.6');
+  expect(screen.getByText(/The address Switchyard's requests reach this server from/)).toBeTruthy();
+});
+
 it('saves only what changed, a replaced secret included', async () => {
   const { onSaved } = open();
   expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).value).toBe('10.10.48.6');
@@ -465,7 +472,7 @@ it('Apps & mail: Mailpit to SMTP sets the SMTP password in the same save', async
 
 it('says which proxy the environment publishes through, beside the proxy IP', async () => {
   open({ ...ENV, proxy: 'switchyard' });
-  expect(await screen.findByText('Published through Switchyard, chosen when it was created.')).toBeTruthy();
+  expect(await screen.findByText(/^Published through Switchyard, chosen when it was created\. /)).toBeTruthy();
   cleanup();
   open();
   expect(await screen.findByText('Published through Nginx Proxy Manager, chosen when it was created.')).toBeTruthy();
@@ -574,4 +581,19 @@ it('a view-only reader sees whether the Firebase key is set, with no file button
   expect(secret('Firebase push key: set')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Choose JSON file' })).toBeNull();
   expect(screen.queryByTestId(`env-secret-${FCM}-file`)).toBeNull();
+});
+
+it('offers Download .env next to the secrets with deploy:change only', async () => {
+  open();
+  await userEvent.click(screen.getByRole('button', { name: 'Download .env' }));
+  expect(screen.getByRole('dialog', { name: 'Download .env' })).toBeTruthy();
+  cleanup();
+  perms.change = false;
+  open();
+  expect(screen.queryByRole('button', { name: 'Download .env' })).toBeNull();
+});
+
+it("Download .env is off until the environment has deployed", () => {
+  open({ ...ENV, current_sha: null, image_tag: null });
+  expect((screen.getByRole('button', { name: 'Download .env' }) as HTMLButtonElement).disabled).toBe(true);
 });

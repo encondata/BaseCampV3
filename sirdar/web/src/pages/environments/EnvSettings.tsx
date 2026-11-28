@@ -14,12 +14,13 @@ import {
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
 import { FCM_KEY, FCM_REFUSED } from '../../lib/fcmKey';
 import {
-  INTEGRATION_LABEL, deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
+  INTEGRATION_LABEL, deployErrorText, errorDetail, getEnvironmentDefaults, proxyIpField, updateEnvironment,
   type DeployTarget, type Deployment, type Environment, type EnvironmentPatch, type VmDefaults,
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import DoSettingsSection from './DoSettingsSection';
+import EnvFileModal from './EnvFileModal';
 import FirstAdminCard from './FirstAdminCard';
 import {
   deploymentRunning, gbOf, hostLabel, mbOf, onBluegreen, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
@@ -87,6 +88,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const locked = !can('deploy', 'change');
   const deploying = deploymentRunning(env);
   const [deleting, setDeleting] = useState(false);
+  const [envFileOpen, setEnvFileOpen] = useState(false);
   const off = locked || deploying;
   const onVm = onVmHost(env);
   // DigitalOcean: its target, names, proxy and bucket belong to what Sirdar built (the API's do_field_locked).
@@ -149,7 +151,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     put('ref', refProblem(form.ref));
     if (!cloud) {
       put('domain', form.domain.trim() ? '' : 'Enter a base domain.');
-      put('proxy', ipv4Problem(form.proxy, 'proxy IP'));
+      put('proxy', ipv4Problem(form.proxy, env.proxy === 'switchyard' ? 'forwarded-for IP' : 'proxy IP'));
       put('bind', ipv4Problem(form.bind, 'bind IP'));
       put('bucket', BUCKET_RE.test(form.bucket.trim()) ? ''
         : "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).");
@@ -311,8 +313,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
             <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain}
                        disabled={off} hint={'Each service is named <service>.<base domain>.'}
                        onChange={(v) => set('domain', v)} />
-            <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
-                       hint={env.proxy ? `Published through ${INTEGRATION_LABEL[env.proxy]}, chosen when it was created.` : undefined}
+            <TextField id="env-set-proxy" label={proxyIpField(env.proxy).label} value={form.proxy} error={errors.proxy}
+                       disabled={off}
+                       hint={env.proxy ? `Published through ${INTEGRATION_LABEL[env.proxy]}, chosen when it was created.`
+                         + (env.proxy === 'switchyard' ? ` ${proxyIpField(env.proxy).hint}` : '') : undefined}
                        onChange={(v) => set('proxy', v)} />
             <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={off}
                        onChange={(v) => set('bind', v)} />
@@ -418,6 +422,16 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </div>
         ))}
       </div>
+      {/* The whole current .env (the generated secrets too); the API asks for the password again. */}
+      {!locked && (
+        <div className="sirdar-actions">
+          <button type="button" className="btn-ghost" disabled={!env.current_sha}
+                  title={env.current_sha ? undefined : "This environment hasn't deployed yet, so it has no .env."}
+                  onClick={() => setEnvFileOpen(true)}>
+            Download .env
+          </button>
+        </div>
+      )}
 
       {errors.form && <p className="form-error" role="alert">{errors.form}</p>}
       {notice && <p className="page-hint" role="status">{notice}</p>}
@@ -467,6 +481,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </div>
         </div>
       )}
+      {envFileOpen && <EnvFileModal env={env} onClose={() => setEnvFileOpen(false)} />}
       {deleting && onDeleteStarted && (
         <DeleteEnvironmentModal env={env} onClose={() => setDeleting(false)}
                                 onStarted={(dep) => { setDeleting(false); onDeleteStarted(dep); }} />

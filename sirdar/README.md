@@ -310,10 +310,11 @@ asks every public URL through NPM's LAN IP (`proxy_ip`) with the public name
 as SNI and Host. A Switchyard environment's smoke test asks each public name
 as DNS resolves it instead, the way visitors reach it, since Sirdar doesn't
 know Switchyard's LAN address. Inside a Switchyard environment's containers the
-public names go to the Cloudflare public IP (`STACK_HOSTS_IP`), and its proxy
-IP is the address Switchyard's requests reach the server from (the router,
-when Switchyard is on another network): the API trusts forwarded client
-addresses only from it. A **publish** deployment runs only those three.
+public names go to the Cloudflare public IP (`STACK_HOSTS_IP`), and its
+`proxy_ip` (shown as **Forwarded-for IP** in the wizard and Settings, with no
+prefill) is the address Switchyard's requests reach the server from (the
+router, when Switchyard is on another network): the API trusts forwarded
+client addresses only from it. A **publish** deployment runs only those three.
 Every environment that isn't production also answers on its bare base domain
 (`demo.serversherpa.com`): a `home` row (hostname = the base domain, the
 portal's host and port) gets an A record, a proxy host with its own
@@ -1011,6 +1012,11 @@ traffic graph) and whose Snapshots tab lists the snapshots.
   signing certificates (release and Play), one per line; written as
   `SS_KIOSK_SIGNING_DIGESTS`. Kiosk biometric sign-in refuses every enroll
   without them.
+- **God mode words:** Sirdar's `SIRDAR_GOD_MODE_WORDS` (comma-separated, no
+  spaces), written into every environment's `.env` as `SS_GOD_MODE_WORDS` and
+  redacted from step logs. It's set once in Sirdar's own `.env`, not per
+  environment; an environment picks up a change on its next deploy. Blank
+  keeps the portal's developer nav hidden.
 - **Extras › Mail:** Mailpit (the default) or SMTP (host, port, user, password,
   from address, STARTTLS), written into the `.env` as `SS_SMTP_*`; the password
   is write-only. Mailpit off needs SMTP.

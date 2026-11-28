@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     totp_encryption_key: SecretStr = Field(
         validation_alias=AliasChoices("SS_TOTP_ENCRYPTION_KEY", "SIRDAR_TOTP_ENCRYPTION_KEY"))
 
+    # The portal's god mode words (comma-separated), written into every
+    # environment's .env as SS_GOD_MODE_WORDS. Empty: the developer nav stays hidden.
+    god_mode_words: SecretStr = SecretStr("")
+
     # Deploy page (read-only cloud views + SSH connection test). All optional.
     deploy_do_token: SecretStr | None = None
     deploy_do_region: str = ""

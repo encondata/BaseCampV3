@@ -86,9 +86,10 @@ export interface FlowContext {
   recipeLock: string | null;
 }
 
-/** The proxy's host, from its URL in Settings › Integrations (the Proxy IP's prefill). */
+/** NPM's host, from its URL in Settings › Integrations (the Proxy IP's prefill). None for
+ *  Switchyard: its field is the address its requests arrive from, not where it runs. */
 export const proxyHost = (i: Integrations | null, proxy: ProxyKind): string => {
-  const url = i?.[proxy].url;
+  const url = proxy === 'switchyard' ? null : i?.[proxy].url;
   if (!url) return '';
   try { return new URL(url).hostname; } catch { return ''; }
 };
@@ -262,7 +263,7 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
         proxy: s.servers === 'bluegreen' && !proxyReady(ctx, s.proxy)
           ? `Blue/Green switches traffic with the proxy: set up ${INTEGRATION_LABEL[s.proxy]} in Settings › Integrations, or choose the other one.`
           : '',
-        proxyIp: ipv4Problem(s.proxyIp, 'proxy IP'), bindIp: ipv4Problem(s.bindIp, 'bind IP'),
+        proxyIp: ipv4Problem(s.proxyIp, s.proxy === 'switchyard' ? 'forwarded-for IP' : 'proxy IP'), bindIp: ipv4Problem(s.bindIp, 'bind IP'),
         machine: kind === 'esxi' || kind === 'proxmox' ? machineProblem(s, ctx) : '',
       });
     }

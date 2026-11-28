@@ -16,6 +16,7 @@ import {
 
 import CleanupModal from './CleanupModal';
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
+import EnvFileModal from './EnvFileModal';
 import {
   CHANGE_MODES, DEPLOYMENT_STATUS, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, deploymentLabel,
   dumpTakenAt, duration, onBluegreen, onDo, retryNeedsName, shortSha, stoppedStep, when,
@@ -52,6 +53,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   /** The Clean up dialog: keep settings (cleanup) or remove everything (teardown). */
   const [cleaning, setCleaning] = useState<{ keep: boolean } | null>(null);
   const [forcing, setForcing] = useState(false);
+  const [envFileOpen, setEnvFileOpen] = useState(false);
   const retryingRef = useRef(false);
   const [actionError, setActionError] = useState('');
   const finished = useRef(onFinished);
@@ -241,6 +243,16 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
       </dl>
       {dep.error && <p className="form-error">{dep.error}</p>}
       {loadError && <p className="form-error" role="alert">{loadError}</p>}
+      {dep.first_success && can('deploy', 'change') && (
+        <div className="sirdar-rollback">
+          <p className="page-hint">
+            {env.name} is up. Download its .env now to keep a copy of its keys and settings.
+          </p>
+          <div className="sirdar-actions">
+            <button type="button" className="btn-ghost" onClick={() => setEnvFileOpen(true)}>Download .env</button>
+          </div>
+        </div>
+      )}
 
       <ol className="sirdar-steps">
         {dep.steps.map((s) => {
@@ -388,6 +400,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         <CleanupModal env={env} keep={cleaning.keep} onClose={() => setCleaning(null)}
                       onStarted={(started) => { setCleaning(null); onRetried(started); }} />
       )}
+      {envFileOpen && <EnvFileModal env={env} eyebrow="Deployments" onClose={() => setEnvFileOpen(false)} />}
       {forcing && (
         <DeleteEnvironmentModal env={env} force onClose={() => setForcing(false)}
                                 onStarted={(started) => { setForcing(false); onRetried(started); }} />

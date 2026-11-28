@@ -164,6 +164,9 @@ const MESSAGES: Record<string, string> = {
   custom_name_invalid: 'Use lowercase letters, numbers and hyphens, starting with a letter (2–32 characters, no trailing hyphen).',
   custom_name_reserved: 'That name is reserved. Choose a different one.',
   connect_failed: "Couldn't connect.",
+  account_locked: 'Too many attempts — your account is temporarily locked.',
+  env_file_not_deployed: "This environment hasn't deployed yet, so it has no .env.",
+  env_file_unavailable: "Sirdar couldn't build this environment's .env.",
   host_key_changed: "The server's key changed while you were looking. Try again.",
   host_key_unknown: "Sirdar doesn't trust this server yet.",
   host_key_mismatch: "The server's key doesn't match the one Sirdar trusted.",
@@ -582,7 +585,11 @@ export interface DeploymentStep {
   /** Characters stored for the step; `log_tail` is its last `tail` (default 8000). */
   log_size: number; log_tail: string;
 }
-export interface Deployment extends DeploymentSummary { environment: string; steps: DeploymentStep[] }
+export interface Deployment extends DeploymentSummary {
+  environment: string; steps: DeploymentStep[];
+  /** It succeeded and is the environment's first successful deploy (the .env download is offered). Absent from older API answers. */
+  first_success?: boolean;
+}
 export interface Environment {
   id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
   /** 'proxmox' | 'esxi': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
@@ -784,6 +791,15 @@ export const addSlot = (name: string) =>
 /** Fix the first admin before step 19 uses it: a new typed password, or switch to an invite. */
 export const setFirstAdmin = (name: string, body: NewFirstAdmin) =>
   sendJson<Environment>('PUT', `${envPath(name)}/first-admin`, body);
+/** The environment's current app .env (every password and key in it), after the user's Sirdar password.
+ *  403 invalid_current_password; 423 account_locked (the sign-in lockout); 409 env_file_not_deployed. */
+export async function downloadEnvFile(name: string, password: string): Promise<Blob> {
+  const resp = await apiFetch(`${envPath(name)}/env-file`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }),
+  });
+  if (!resp.ok) throw await errorOf(resp);
+  return resp.blob();
+}
 export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);
 export const listVmSnapshots = (name: string) =>
   getJson<{ snapshots: VmSnapshot[] }>(`${envPath(name)}/vm-snapshots`);
@@ -823,6 +839,15 @@ export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
   cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', switchyard: 'Switchyard', proxmox: 'Proxmox', esxi: 'VMware ESXi',
   digitalocean: 'DigitalOcean',
 };
+/** The field behind an environment's proxy_ip. On NPM it is NPM's LAN address; Switchyard
+ *  isn't on the LAN, so there it is only the address its requests arrive from. */
+export function proxyIpField(proxy: ProxyKind | null | undefined): { label: string; hint: string } {
+  return proxy === 'switchyard'
+    ? { label: 'Forwarded-for IP',
+        hint: "The address Switchyard's requests reach this server from. The API trusts visitor addresses only from it." }
+    : { label: 'Proxy IP',
+        hint: `${INTEGRATION_LABEL[proxy ?? 'npm']}'s LAN address. The apps trust forwarded headers from it only.` };
+}
 export interface CloudflareIntegration {
   configured: boolean; zone: string | null; public_ip: string | null; token_set: boolean;
   updated_at: string | null; updated_by_name: string | null;

@@ -75,6 +75,14 @@ it('the LAN proxy IP starts at Nginx Proxy Manager\'s address', async () => {
   expect(screen.queryByLabelText('vCPUs')).toBeNull();
 });
 
+it('Switchyard asks for the forwarded-for IP, not a proxy IP', async () => {
+  await renderStep({ target: 'ssh:lab', proxy: 'switchyard', proxyIp: '' });
+  expect(screen.queryByLabelText('Proxy IP')).toBeNull();
+  expect(screen.getByLabelText('Forwarded-for IP')).toBeTruthy();
+  expect(screen.getByText("The address Switchyard's requests reach this server from. The API trusts visitor "
+    + 'addresses only from it.')).toBeTruthy();
+});
+
 it('DigitalOcean: the account, its region and the sizes; no proxy IP', async () => {
   const { set } = await renderStep({ target: 'digitalocean' });
   expect(screen.queryByLabelText('Proxy IP')).toBeNull();
@@ -131,8 +139,8 @@ it('the LAN asks which proxy: Switchyard preselected, an unset one disabled with
   const { set } = await renderStep({ target: 'esxi' }, both);
   const sy = screen.getByRole('radio', { name: 'Switchyard' });
   expect(sy.getAttribute('aria-checked')).toBe('true');
-  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).value).toBe('10.10.48.8');
-  expect(screen.getByText(/Switchyard's LAN address/)).toBeTruthy();
+  expect((screen.getByLabelText('Forwarded-for IP') as HTMLInputElement).value).toBe('');
+  expect(screen.getByText(/Switchyard's requests reach this server from/)).toBeTruthy();
   await userEvent.click(screen.getByRole('radio', { name: 'Nginx Proxy Manager' }));
   expect(set).toHaveBeenCalledWith({ proxy: 'npm', publish: true, proxyIp: '10.10.48.6' });
   cleanup();

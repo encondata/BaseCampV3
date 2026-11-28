@@ -39,6 +39,23 @@ def rollback_available(dep: Deployment) -> bool:
             and bool(dep.dump_path) and bool(dep.previous_sha))
 
 
+# The modes that put a commit on the host (and write its .env).
+DEPLOYING_MODES = ("update", "reset", "restore_dump", "rollback")
+
+
+async def first_success(db: AsyncSession, dep: Deployment) -> bool:
+    """It succeeded and no earlier deployment of the environment that put a
+    commit on the host did: the environment's first successful deploy (the
+    web app offers the .env download then)."""
+    if dep.status != "succeeded" or dep.mode not in DEPLOYING_MODES:
+        return False
+    earlier = await db.scalar(select(Deployment.id).where(
+        Deployment.environment_id == dep.environment_id, Deployment.id != dep.id,
+        Deployment.status == "succeeded", Deployment.mode.in_(DEPLOYING_MODES),
+        Deployment.created_at < dep.created_at).limit(1))
+    return earlier is None
+
+
 async def deployment_summary(db: AsyncSession, dep: Deployment) -> dict:
     return {"id": str(dep.id), "mode": dep.mode, "git_ref": dep.git_ref, "sha": dep.sha,
             "status": dep.status, "start_step": dep.start_step,
@@ -67,6 +84,7 @@ async def deployment_out(db: AsyncSession, dep: Deployment, *, environment_name:
                              .order_by(DeploymentStep.number)
                              .execution_options(populate_existing=True))
     return {**await deployment_summary(db, dep), "environment": environment_name,
+            "first_success": await first_success(db, dep),
             "steps": [{"number": s.number, "key": s.key, "name": s.name, "status": s.status,
                        "started_at": s.started_at, "finished_at": s.finished_at,
                        "log_size": len(s.log), "log_tail": s.log[-tail:] if tail > 0 else ""}

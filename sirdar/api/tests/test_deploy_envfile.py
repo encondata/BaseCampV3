@@ -377,3 +377,12 @@ def test_valid_secret_keeps_each_keys_rule():
         assert envfile.valid_secret(other, key) is False
         assert envfile.valid_secret(other, "a$b") is False
     assert envfile.valid_secret(FCM, "sk-ant-api03-x_Y") is False
+
+
+def test_the_god_mode_words_follow_the_kiosk_digests():
+    # every environment gets Sirdar's SIRDAR_GOD_MODE_WORDS (apps.env_extra-style extra);
+    # empty keeps the portal's developer nav hidden
+    assert envfile.OPTIONAL_SETTINGS == ("SS_KIOSK_SIGNING_DIGESTS", "SS_GOD_MODE_WORDS")
+    assert envfile.parse_env(envfile.render_env(_cfg()))["SS_GOD_MODE_WORDS"] == ""
+    text = envfile.render_env(_cfg(extra={"SS_GOD_MODE_WORDS": "summit,basecamp"}))
+    assert envfile.parse_env(text)["SS_GOD_MODE_WORDS"] == "summit,basecamp"

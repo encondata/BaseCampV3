@@ -3,7 +3,7 @@
 import { Link } from 'react-router-dom';
 
 import { arrowNav } from '../../../lib/arrowNav';
-import { INTEGRATION_LABEL, PROXY_KINDS } from '../../../lib/sirdarApi';
+import { INTEGRATION_LABEL, PROXY_KINDS, proxyIpField } from '../../../lib/sirdarApi';
 import TargetPanel from '../TargetPanel';
 import { CONNECT_TYPE, proxyReady, targetChoices, targetKind, withProxy } from '../flowState';
 
@@ -152,10 +152,10 @@ export default function TargetStep({ state, set, errors, ctx, onTargetsChanged }
             {errors.proxy && <p className="form-error" role="alert">{errors.proxy}</p>}
           </div>
           <div>
-            <label className="field-label" htmlFor="flow-proxy">Proxy IP</label>
+            <label className="field-label" htmlFor="flow-proxy">{proxyIpField(state.proxy).label}</label>
             <input id="flow-proxy" type="text" value={state.proxyIp} maxLength={45} autoComplete="off" spellCheck={false}
                    aria-invalid={!!errors.proxyIp} onChange={(e) => set({ proxyIp: e.target.value })} />
-            <p className="page-hint">{INTEGRATION_LABEL[state.proxy]}'s LAN address. The apps trust forwarded headers from it only.</p>
+            <p className="page-hint">{proxyIpField(state.proxy).hint}</p>
             {errors.proxyIp && <p className="form-error" role="alert">{errors.proxyIp}</p>}
           </div>
           <div>
