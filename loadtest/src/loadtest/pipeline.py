@@ -6,6 +6,9 @@ state. A later layer turns steps into HTTP calls.
 
 `run()` starts from whatever the state holds, so the same code starts a new run and
 continues an interrupted one.
+
+Stages overlap (a server moves on as soon as it is through a stage), with one
+exception: the RFID enroll finishes for every server before any later stage starts.
 """
 
 from __future__ import annotations
@@ -131,10 +134,17 @@ class Pipeline:
         pools = [self._pool_for(spec) for spec in stages]
         self._seed(pools)
         pools[0].finish()
+        # The RFID enroll has to be complete before anything else gets done (Jimmy,
+        # 2026-11-27): every later stage waits until the enroll stage has finished for
+        # every server. The stages after it still overlap each other.
+        enrolled: list[asyncio.Event] = []
         async with asyncio.TaskGroup() as tg:
             for i, spec in enumerate(stages):
                 outbox = pools[i + 1] if i + 1 < len(stages) else None
-                tg.create_task(self._run_stage(spec, pools[i], outbox))
+                done = asyncio.Event() if spec.action == "enroll" else None
+                tg.create_task(self._run_stage(spec, pools[i], outbox, tuple(enrolled), done))
+                if done is not None:
+                    enrolled.append(done)
 
     def _pool_for(self, spec: StageSpec) -> _Pool:
         """The inbox of a stage: servers, containers or trucks."""
@@ -179,7 +189,13 @@ class Pipeline:
             c.id for c in containers if c.unloaded and set(c.server_ids) - c.unpacked
         )
 
-    async def _run_stage(self, spec: StageSpec, inbox: _Pool, outbox: _Pool | None) -> None:
+    async def _run_stage(self, spec: StageSpec, inbox: _Pool, outbox: _Pool | None,
+                         wait_for: tuple[asyncio.Event, ...] = (),
+                         done: asyncio.Event | None = None) -> None:
+        """`wait_for`: earlier stages that must finish before this one starts; `done` is
+        set when this stage has finished."""
+        for earlier in wait_for:
+            await earlier.wait()
         if spec.kind == "trip":
             await self._trip_stage(inbox, outbox)
         else:
@@ -193,6 +209,8 @@ class Pipeline:
             self._depart_remaining(outbox)
         if outbox is not None:
             outbox.finish()
+        if done is not None:
+            done.set()
 
     # -- server crews -------------------------------------------------------
 
