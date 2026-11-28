@@ -75,6 +75,8 @@ def build_snapshot(*, phase: str, error: str | None, connection: Connection,
         "server": {"waiting": latest.get("waiting"),
                    "waiting_peak": latest.get("waiting_peak", 0),
                    "workers": latest.get("workers"),
+                   # {"calls", "scans_sent", "scans_processed"} per second; None: not yet
+                   "rates": latest.get("rates"),
                    "failed_calls": run.metrics.failed_calls() if run else 0},
         "verdict": result["verdict"] if run and result else None,
         "counters": run.metrics.counters() if run else {},

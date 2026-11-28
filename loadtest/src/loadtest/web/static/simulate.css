@@ -93,6 +93,10 @@
 .sim-bar { min-width: 0; }
 .sim-overall-text, .sim-elapsed { font-family: var(--font-mono); font-size: 12px; color: var(--text-dark); white-space: nowrap; }
 .sim-elapsed { color: var(--text-mute); }
+.sim-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--paper-line); }
+.sim-stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sim-stat-value { font-family: var(--font-mono); font-size: 18px; font-weight: 500; color: var(--text-dark); white-space: nowrap; }
+.sim-stat-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
 .sim-live { margin: 10px 0 0; font-size: 13px; color: var(--text-mute); }
 .sim-live:empty { display: none; }
 .sim-ask[hidden] + .sim-live { margin-top: 10px; }
@@ -191,6 +195,7 @@
   .sim-stop { grid-column: 3; grid-row: 2; }
   .sim-elapsed { grid-column: 1 / -1; grid-row: 3; }
   .sim-run-line .chip { margin-left: 0; }
+  .sim-stats { grid-template-columns: 1fr 1fr; }
   .sim-result-grid { grid-template-columns: 1fr; }
   .sim-feed { font-size: 11px; }
 }

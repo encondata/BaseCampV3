@@ -336,6 +336,7 @@
       `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
   }
   const ms = v => (v == null ? DASH : `${fmtN(Math.round(v))} ms`);
+  const rate = v => Number(v).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   // the feed leaves the time blank on its own lines (the runner's), which have none
   const feedMs = v => (v == null ? '' : ms(v));
   const count = v => (v == null ? DASH : fmtN(v));
@@ -735,6 +736,15 @@
     const retried = (snap.counters || {}).scans_retried;
     if (retried > 0) parts.push(`scans retried ${fmtN(retried)}`);
     setText('sim-server-line', parts.join(' · '));
+
+    // calls and scans per second over about the last sample interval; a dash until then
+    const r = s.rates;
+    const perSecond = v => (r == null || v == null ? DASH : rate(v));
+    setText('sim-stat-calls', perSecond(r && r.calls));
+    setText('sim-stat-sent', perSecond(r && r.scans_sent));
+    setText('sim-stat-processed', perSecond(r && r.scans_processed));
+    setText('sim-stat-waiting', count(s.waiting));
+    setText('sim-stat-peak', s.waiting == null ? '' : `peak ${fmtN(s.waiting_peak || 0)}`);
   }
 
   // A stage bar is full only when the stage is done; until then it shows at most 99.
@@ -989,7 +999,24 @@
     const catchUp = b.catch_up_seconds != null ? clock(b.catch_up_seconds)
       : r.run && r.run.reason === 'completed' ? 'did not catch up' : DASH;
     table('sim-backlog', ['Peak', 'Catch-up time'], [[count(b.peak), catchUp]], [0, 1]);
+    throughputTable(r);
     facts(r);
+  }
+
+  // Per second, averaged over the run and in its busiest sample interval. A result saved
+  // before these were measured has no throughput: every cell is a dash.
+  function throughputTable(r) {
+    const t = r.throughput || {};
+    const perSecond = v => (v == null ? DASH : `${rate(v)} / s`);
+    const rows = [['calls', 'Calls'], ['scans_sent', 'Scans sent'], ['scans_processed', 'Scans processed']]
+      .map(([key, label]) => {
+        const k = t[key] || {};
+        return [label, perSecond(k.average), perSecond(k.peak)];
+      });
+    table('sim-throughput', ['', 'Average', 'Peak'], rows, [1, 2]);
+    const every = r.run && r.run.profile_raw && r.run.profile_raw.sample_seconds;
+    $('sim-throughput-note').textContent = !r.throughput ? 'This run was saved before throughput was measured.'
+      : `Peak is the busiest ${every ? `${every}-second` : 'sample'} stretch. Scans processed are the scans sent less the growth in waiting scans.`;
   }
 
   function renderResult() {

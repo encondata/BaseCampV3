@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import throughput
 from .finalcheck import FinalReport
 from .metrics import FEED_LOST, Metrics
 from .profile import Profile
@@ -102,6 +103,9 @@ def build_results(*, state: RunState, profile: Profile, metrics: Metrics,
         "scans": scans,
         "scan_delay_ms": delay,
         "backlog": {"peak": max(waiting, default=0), "catch_up_seconds": catch_up_seconds},
+        # per second: average over the run (pauses left out) and the busiest interval
+        "throughput": throughput.summary(metrics.points(throughput.SERIES),
+                                         profile.sample_seconds),
         "series": metrics.series(),
         "db_health": db_health,
         # the server's clock minus this machine's; None: not measured, this machine's used

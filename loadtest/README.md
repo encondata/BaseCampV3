@@ -244,8 +244,16 @@ To stop it: `docker compose down`. Add `-v` to delete the results as well.
      allow for it"). At 60 seconds or more it fails: set this machine's
      clock, then check again.
 4. **Start.** The page shows overall progress, each stage, the trucks, the
-   server's waiting scans, and a live feed. You can close the page and
-   open it again; the run keeps going.
+   server's waiting scans, and a live feed. Under the progress bar, four
+   numbers update every sample (10 seconds):
+   - **Calls / s**: every call the run makes, of every kind;
+   - **Scans sent / s**: scans the server took;
+   - **Scans processed / s**: scans sent less the growth in waiting scans;
+   - **Waiting scans** and the peak so far.
+
+   When processed stays below sent, the waiting scans grow and the scan
+   delay with them. You can close the page and open it again; the run keeps
+   going.
 5. **Stop** ends the run early, and it is final: a stopped run cannot be
    continued. It waits for calls already sent, then writes the result.
    Once the move has finished and the tool is waiting for the server to
@@ -387,6 +395,10 @@ The reasons are listed under the verdict, under **Findings**.
 - **Backlog**: the most scans that were waiting at once (peak), and how
   long the server took to finish them after the run's last step
   (catch-up time).
+- **Throughput**: calls, scans sent and scans processed per second, as an
+  average over the run (any time the run was stopped is left out) and the
+  peak (the busiest 10-second sample). A result saved before throughput
+  was measured shows dashes.
 - **Calls**: every kind of call the run made. For each: how many, how many
   were tried again, how many failed for good, and the response times
   (median, 95th percentile, slowest).
