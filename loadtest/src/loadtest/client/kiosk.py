@@ -25,6 +25,7 @@ from ..clock import Clock
 from ..http import CallFailed, TokenExpired, renewing_call, sendable_cookie, timed_call
 from ..metrics import Metrics
 from ..profile import DeviceKind, RetrySpec
+from ..throughput import SCANS_REJECTED, SCANS_SENT
 
 VERSION = "loadtest"
 RAW_INFO = {"loadtest": True}
@@ -384,6 +385,7 @@ class KioskDevice:
             self._note_retry(getattr(exc, "attempts", 0), scan_ids)
             return None
         self._note_retry(attempts, scan_ids)
+        self.metrics.count(SCANS_SENT, len(scan_ids))
         return response
 
     @staticmethod
@@ -414,7 +416,7 @@ class KioskDevice:
             answer = response.json()
             rejected = len(answer.get("rejected") or [])
             if rejected:
-                self.metrics.count("scans_rejected", rejected)
+                self.metrics.count(SCANS_REJECTED, rejected)
             accepted += len(answer.get("accepted") or [])
         return accepted
 

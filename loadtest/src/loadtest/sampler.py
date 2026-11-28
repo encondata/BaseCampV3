@@ -10,6 +10,7 @@ from typing import TypeVar
 
 from .client.portal import PortalClient
 from .clock import Clock
+from . import throughput
 from .metrics import Metrics
 
 T = TypeVar("T")
@@ -37,7 +38,10 @@ class Sampler:
         # and the database-health state its metrics replayed.
         self.latest: dict = {"waiting": None,
                              "waiting_peak": max(metrics.values("waiting"), default=0),
-                             "workers": None, "totals": {}}
+                             "workers": None, "totals": {},
+                             # calls and scans per second over about the last interval
+                             "rates": throughput.current(
+                                 metrics.points(throughput.SERIES), every)}
         self._health: str = metrics.flags().get(
             HEALTH_FLAG, "sampled" if metrics.values("db_health") else "not_sampled")
 
@@ -82,10 +86,20 @@ class Sampler:
         ok, waiting = await _read(self.portal.waiting_scans())
         if not ok:
             return None
-        self.metrics.sample("waiting", self.clock.now(), waiting)
+        now = self.clock.now()
+        self.metrics.sample("waiting", now, waiting)
+        # paired with this reading, so scans processed = sent less the waiting's growth
+        self.metrics.sample(throughput.SERIES, now, {
+            "calls": self.metrics.total_calls(),
+            "scans": throughput.scans_taken(self.metrics.counters()),
+            "waiting": waiting})
+        self.latest["rates"] = throughput.current(self._throughput_points(), self.every)
         self.latest["waiting"] = waiting
         self.latest["waiting_peak"] = max(self.latest["waiting_peak"], waiting)
         return waiting
+
+    def _throughput_points(self) -> list[list]:
+        return self.metrics.points(throughput.SERIES)
 
     async def _tick(self) -> None:
         await self._read_waiting()

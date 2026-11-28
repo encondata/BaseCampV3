@@ -152,6 +152,16 @@ async def test_send_scans_splits_by_route_limit(fake, clock, device):
     assert count(fake, "POST", "/kiosk/station/scans") == 3
 
 
+async def test_scans_sent_counts_every_scan_the_server_answered(fake, clock, device, metrics):
+    d = device("handheld")
+    move_id, site_id = await ready(fake, clock, d, status="qa")
+    good = make_scan(clock, move_id, site_id, "SN1", "qa", "barcode")
+    bad = make_scan(clock, move_id, site_id, "SN2", "no_such_status", "barcode")
+    assert await clock.run(d.send_scans([good, bad])) == 1
+    assert metrics.counters()["scans_sent"] == 2
+    assert metrics.counters()["scans_rejected"] == 1
+
+
 async def test_rejected_row_lowers_count(fake, clock, device, metrics):
     d = device("handheld")
     move_id, site_id = await ready(fake, clock, d, status="qa")
@@ -260,6 +270,7 @@ async def test_failed_call_returns_false_and_notes_retried_scans(fake, clock, de
     assert await clock.run(d.send_scans(scans)) == 0
     assert metrics.calls()["scans"]["failures"] == 1
     assert metrics.counters()["scans_retried"] == 2
+    assert "scans_sent" not in metrics.counters()        # never answered: not sent
 
 
 # ── tokens (Review Focus 3) ───────────────────────────────────────────

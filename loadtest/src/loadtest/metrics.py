@@ -167,6 +167,10 @@ class Metrics:
         """The values of one series, without their times (not copied: read only)."""
         return [v for _, v in self._series.get(series, ())]
 
+    def points(self, series: str) -> list[list]:
+        """One series' [at, value] pairs (not copied: read only)."""
+        return self._series.get(series, [])
+
     def calls(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
         for name in sorted(self._times):
@@ -187,6 +191,10 @@ class Metrics:
 
     def series(self) -> dict[str, list[list]]:
         return {k: [list(p) for p in self._series[k]] for k in sorted(self._series)}
+
+    def total_calls(self) -> int:
+        """Every call recorded so far, of every kind."""
+        return sum(self._counts.values())
 
     def failed_calls(self) -> int:
         return sum(n for name, n in self._failures.items() if name not in self._background)

@@ -513,6 +513,12 @@
               <button class="btn-ghost" type="button" id="sim-stop">Stop</button>
             </div>
           </div>
+          <div class="sim-stats" id="sim-stats">
+            <div class="sim-stat"><span class="sim-row-label">Calls / s</span><span class="sim-stat-value" id="sim-stat-calls"></span></div>
+            <div class="sim-stat"><span class="sim-row-label">Scans sent / s</span><span class="sim-stat-value" id="sim-stat-sent"></span></div>
+            <div class="sim-stat"><span class="sim-row-label">Scans processed / s</span><span class="sim-stat-value" id="sim-stat-processed"></span></div>
+            <div class="sim-stat"><span class="sim-row-label">Waiting scans</span><span class="sim-stat-value" id="sim-stat-waiting"></span><span class="sim-stat-sub" id="sim-stat-peak"></span></div>
+          </div>
           <div class="actions sim-ask" id="sim-stop-ask" hidden>
             <span class="sim-ask-text" id="sim-stop-question"></span>
             <button class="btn-solid" type="button" id="sim-stop-yes"></button>
@@ -574,6 +580,11 @@
               <div class="table-wrap"><table id="sim-backlog"></table></div>
             </section>
           </div>
+          <section class="card">
+            <p class="eyebrow-sm">Throughput</p>
+            <div class="table-wrap"><table id="sim-throughput"></table></div>
+            <p class="help" id="sim-throughput-note"></p>
+          </section>
           <section class="card">
             <p class="eyebrow-sm">Calls</p>
             <div class="table-wrap"><table id="sim-calls"></table></div>

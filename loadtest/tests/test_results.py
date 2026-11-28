@@ -47,7 +47,7 @@ def test_build_results_has_every_section():
     out = build(state)
     assert set(out) == {"run", "verdict", "findings", "calls", "counters", "scans",
                         "scan_delay_ms", "backlog", "series", "db_health", "redactions",
-                        "clock_offset_seconds", "feed_write_errors"}
+                        "clock_offset_seconds", "feed_write_errors", "throughput"}
     assert out["feed_write_errors"] == 0
     assert out["clock_offset_seconds"] is None          # not measured
     run = out["run"]
@@ -74,6 +74,16 @@ def test_build_results_has_every_section():
     assert out["series"]["waiting"][1] == [STARTED + 10, 37]
     assert out["db_health"] == "not_sampled" and out["redactions"] == 0
     assert build(db_health="not_available")["db_health"] == "not_available"
+
+
+def test_results_hold_the_runs_throughput():
+    metrics = Metrics()
+    metrics.sample("throughput", 0, {"calls": 0, "scans": 0, "waiting": 0})
+    metrics.sample("throughput", 10, {"calls": 100, "scans": 50, "waiting": 10})
+    out = build(metrics=metrics)
+    assert out["throughput"] == {"calls": {"average": 10.0, "peak": 10.0},
+                                 "scans_sent": {"average": 5.0, "peak": 5.0},
+                                 "scans_processed": {"average": 4.0, "peak": 4.0}}
 
 
 def test_no_report_is_a_fail_with_the_reason():

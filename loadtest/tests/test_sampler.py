@@ -89,6 +89,42 @@ async def test_latest_follows_the_waiting_count_and_keeps_the_peak(fake, clock, 
     assert series["db_health"][0][1]["connection_groups"][0]["count"] == 10
 
 
+async def test_each_waiting_reading_is_paired_with_calls_and_scans(fake, clock, metrics, setup):
+    sns = serials(fake, setup.move_id)
+
+    async def during():
+        await clock.sleep(1)                              # after the first reading
+        for value in sns[:4]:
+            add_raw(fake, value)
+        metrics.count("scans_sent", 5)
+        metrics.count("scans_rejected", 1)
+        await clock.sleep(10)                             # reading at 10: 4 waiting
+        fake.process_scans()
+        await clock.sleep(10)                             # reading at 20: 0 waiting
+
+    assert setup.sampler.latest["rates"] is None
+    await run_for(clock, setup.sampler, 0, during)
+    points = metrics.series()["throughput"]
+    assert [p[0] - points[0][0] for p in points] == [0, 10, 20]
+    assert [p[1]["scans"] for p in points] == [0, 4, 4]
+    assert [p[1]["waiting"] for p in points] == [0, 4, 0]
+    calls = [p[1]["calls"] for p in points]
+    assert calls[0] < calls[1] < calls[2]                 # the sampler's own reads count
+    rates = setup.sampler.latest["rates"]
+    assert rates["scans_sent"] == 0.0                     # nothing sent from 10 to 20
+    assert rates["scans_processed"] == 0.4                # 4 cleared in 10 s
+    assert rates["calls"] > 0
+    json.dumps(setup.sampler.latest)
+
+
+async def test_a_continued_run_starts_from_its_replayed_rates(fake, clock, metrics, setup):
+    metrics.sample("throughput", 0, {"calls": 0, "scans": 0, "waiting": 0})
+    metrics.sample("throughput", 10, {"calls": 50, "scans": 30, "waiting": 10})
+    again = Sampler(portal=setup.portal, move_id=setup.move_id, metrics=metrics, clock=clock,
+                    every=EVERY)
+    assert again.latest["rates"] == {"calls": 5.0, "scans_sent": 3.0, "scans_processed": 2.0}
+
+
 async def test_one_failed_read_does_not_end_the_loop(fake, clock, metrics, setup):
     fake.fail("GET", r"/scans/raw/page", status=500, times=1)
     fake.fail("GET", r"/initiatives/.*/asset-totals", status=500, times=2)
