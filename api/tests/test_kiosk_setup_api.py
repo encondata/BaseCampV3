@@ -313,20 +313,41 @@ async def test_setup_rejects_cancelled_initiative(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "bad_initiative"
 
 
-async def test_setup_rejects_inactive_scan_status(client, db, seeded_user):
+async def test_setup_accepts_an_inactive_scan_status(client, db, seeded_user):
+    """An inactive status is only left out of the pickers; a kiosk that names it is
+    still set up with it (Jimmy, 2026-11-27)."""
     hdrs = await login(client)
     device = Device(device_type="kiosk", name="Kiosk Setup Bad Status", serial=SERIAL)
     db.add(device)
-    planned, *_ = await _seed_initiatives(db)
+    origin, dest = await _seed_sites(db)
+    planned, *_ = await _seed_initiatives(db, origin_site=origin, dest_site=dest)
     _, inactive, _ = await _seed_scan_types(db)
     await db.commit()
+    device_id, key = device.id, inactive.key
 
     resp = await client.post("/kiosk/setup", headers=hdrs, json={
         "serial": SERIAL, "initiative_id": str(planned.id),
-        "site_id": DUMMY_SITE_ID, "scan_status": inactive.key,
+        "site_id": str(origin.id), "scan_status": key,
     })
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"]["code"] == "bad_scan_status"
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert (await db.get(Device, device_id)).scan_status == key
+
+
+async def test_setup_rejects_an_unknown_scan_status(client, db, seeded_user):
+    hdrs = await login(client)
+    db.add(Device(device_type="kiosk", name="Kiosk Setup Bad Status", serial=SERIAL))
+    planned, *_ = await _seed_initiatives(db)
+    _, _, other_type = await _seed_scan_types(db)
+    await db.commit()
+
+    for key in ("no_such_status", other_type.key):      # not a status, not an asset status
+        resp = await client.post("/kiosk/setup", headers=hdrs, json={
+            "serial": SERIAL, "initiative_id": str(planned.id),
+            "site_id": DUMMY_SITE_ID, "scan_status": key,
+        })
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"]["code"] == "bad_scan_status"
 
 
 async def test_setup_rejects_site_not_on_the_move(client, db, seeded_user):
