@@ -629,8 +629,14 @@ class FakeBaseCamp:
         self.raw_scans.append({"id": next(self._raw_seq), "match_attempted_at": None,
                                "off_move": False, "kiosk_asset_id": None, **row})
 
+    def _refused_status(self, key: str | None) -> bool:
+        """Not an asset status; or an inactive one on a server from before 2026-11-27
+        (enroll, pack, load and kiosk setup refused those; /kiosk/scans never did)."""
+        return key not in ASSET_STATUSES or (
+            self.refuses_inactive_statuses and key in self.inactive_asset_statuses)
+
     def _checkpoint(self, key: str) -> str:
-        if key not in ASSET_STATUSES:
+        if self._refused_status(key):
             raise _err(422, "bad_status")
         return key
 
@@ -745,7 +751,7 @@ class FakeBaseCamp:
                 raise _err(422, "bad_initiative")
             scan_key = (LABEL_STATION_SCAN_STATUS if body.station_type == "label"
                         else body.scan_status)
-            if scan_key not in ASSET_STATUSES:
+            if self._refused_status(scan_key):
                 raise _err(422, "bad_scan_status")
             site_id = _sid(body.site_id)
             if site_id is not None and site_id == move["origin_site_id"]:

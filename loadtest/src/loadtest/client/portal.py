@@ -361,6 +361,9 @@ class PortalClient:
                 if r.get("enabled") and r.get("trigger_match_type") == ASSET_MATCH_TYPE}
 
     async def asset_statuses(self) -> set[str]:
+        """The ACTIVE asset statuses: this listing is the pickers' list and leaves an
+        inactive status out (only a developer account can list those). An inactive
+        status can still be used, so a key missing here is not necessarily unknown."""
         rows = await self._get("/status-values", params={"record_type": "asset"})
         return {r["key"] for r in rows if r.get("is_active", True)}
 

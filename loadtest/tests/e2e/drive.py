@@ -25,7 +25,8 @@ from pathlib import Path
 
 import httpx
 
-TOOL = "http://127.0.0.1:8795"
+# LOADTEST_TOOL_URL: a tool started on another port (when 8795 is in use)
+TOOL = os.environ.get("LOADTEST_TOOL_URL") or "http://127.0.0.1:8795"
 SERVER = "http://127.0.0.1:8010"
 ADMIN_EMAIL = "loadtest-admin@example.com"
 SCRATCH = Path(os.environ.get("LOADTEST_SCRATCH_DIR")

@@ -138,7 +138,8 @@ def profile_checkpoints() -> list[str]:
 
 
 def activate_checkpoints(portal: Portal) -> list[str]:
-    """Every profile checkpoint an active asset status, as the readiness check asks."""
+    """Makes every profile checkpoint an active asset status. Not needed for a run since
+    2026-11-27 (an inactive status is still recorded); kept for servers from before."""
     active = {r["key"] for r in portal.call("GET", "/status-values",
                                             params={"record_type": "asset"})
               if r.get("is_active", True)}

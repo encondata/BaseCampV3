@@ -59,11 +59,15 @@ def repo_root() -> Path:
 
 REPO = repo_root()
 VENV = REPO / "api" / ".venv" / "bin"
+# The server code under test is this checkout's own (a worktree's branch, or the main
+# checkout itself); only the virtualenv, the .env and the starter dump are the main one's.
+CODE = HERE.parents[3]
+API_SRC = CODE / "api" / "src"
 DUMP = REPO / "api" / "backups" / "clean-starter-20NOV26.sql"
 
 PROCESSES = {
     "api": [str(VENV / "python"), "-m", "uvicorn", "--factory",
-            "serversherpa.api.app:create_app", "--app-dir", str(REPO / "api" / "src"),
+            "serversherpa.api.app:create_app", "--app-dir", str(API_SRC),
             "--host", API_HOST, "--port", str(API_PORT), "--no-access-log"],
     "import-worker": [str(VENV / "serversherpa"), "import-worker"],
     "scan-matching-worker": [str(VENV / "serversherpa"), "scan-matching-worker"],
@@ -130,6 +134,10 @@ def process_env() -> dict[str, str]:
     outbound side effect switched off (empty means off in config.py and its callers)."""
     env_file = dotenv()
     env = {k: v for k, v in os.environ.items() if not k.startswith("SS_")}
+    # every dev setting travels in the environment, so a worktree's code (which has no
+    # .env beside it) runs with the same settings; the workers import that code too
+    env.update({k: v for k, v in env_file.items() if k.startswith("SS_")})
+    env["PYTHONPATH"] = str(API_SRC)
     env.update({
         "SS_ENV": "development",           # refresh cookies usable over plain http
         "SS_DATABASE_URL": scratch_database_url(env_file["SS_DATABASE_URL"]),
@@ -208,7 +216,7 @@ def restore_dump() -> None:
 
 
 def migrate(env: dict[str, str]) -> None:
-    done = subprocess.run([str(VENV / "alembic"), "upgrade", "head"], cwd=REPO / "api",
+    done = subprocess.run([str(VENV / "alembic"), "upgrade", "head"], cwd=CODE / "api",
                           env=env, capture_output=True, text=True, timeout=900)
     log = SCRATCH / "migrate.log"
     log.write_text(done.stdout + done.stderr, encoding="utf-8")

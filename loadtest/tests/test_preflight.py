@@ -144,7 +144,7 @@ async def test_labels_are_exact(setup):
         "containers": "Enough empty containers",
         "trucks": "Enough trucks, none departed",
         "route": "Road route between the sites",
-        "checkpoints": "Every checkpoint is an active status",
+        "checkpoints": "The server accepts every checkpoint",
         "server_ready": "Workers running, not read-only",
         "clock": "Clocks agree",
         "rules": "Status rules",
@@ -223,8 +223,11 @@ async def test_kiosk_setup_failure_for_the_first_checkpoint(setup):
     setup.profile = replace(setup.profile, stages=tuple(
         replace(s, checkpoint="no_such_status") if s.key == setup.profile.stages[0].key else s
         for s in setup.profile.stages))
-    detail = by_key(await setup.check())["move_password"].detail
-    assert detail.startswith("The profile's first checkpoint (no_such_status) is not an active")
+    report = await setup.check()
+    # the password is proven with a checkpoint the server lists; the bad one is reported
+    # once, on the checkpoints line
+    assert by_key(report)["move_password"].status == "pass"
+    assert "no_such_status" in only_failure(report, "checkpoints")
 
 
 async def test_password_accepted_but_move_unreadable(setup):
@@ -499,21 +502,73 @@ async def test_bad_router_address_does_not_raise(setup):
     assert by_key(report)["route"].status == "fail" and not report.can_start
 
 
-async def test_inactive_checkpoint(setup):
+async def test_an_inactive_checkpoint_does_not_block_the_run(setup):
+    """An inactive status is only left out of the pickers (Jimmy, 2026-11-27)."""
     setup.fake.inactive_asset_statuses = {"qa"}
     report = await setup.check()
-    detail = only_failure(report, "checkpoints")
-    assert detail == ("1 checkpoint in the profile is not an active asset status on the "
-                      "server: qa. Activate it in the portal's asset statuses, or change "
-                      "the profile.")
-    assert "qa" not in by_key(report)["rules"].detail      # named once, on the checkpoints line
+    line = by_key(report)["checkpoints"]
+    assert line.status == "pass" and report.can_start
+    assert line.detail.startswith("The server accepts all ")
+    assert line.detail.endswith(" checkpoints. 1 is inactive (qa) and still recorded.")
+    assert by_key(report)["move_password"].status == "pass"
 
 
 async def test_inactive_checkpoints_plural(setup):
     setup.fake.inactive_asset_statuses = {"qa", "complete"}
-    detail = only_failure(await setup.check(), "checkpoints")
-    assert detail.startswith("2 checkpoints in the profile are not an active asset status")
-    assert "qa, complete. Activate them" in detail
+    report = await setup.check()
+    assert report.can_start
+    assert by_key(report)["checkpoints"].detail.endswith(
+        "2 are inactive (qa, complete) and still recorded.")
+
+
+async def test_a_checkpoint_that_is_not_a_status_at_all(setup):
+    last = setup.profile.stages[-1].key
+    setup.profile = replace(setup.profile, stages=tuple(
+        replace(s, checkpoint="no_such_status") if s.key == last else s
+        for s in setup.profile.stages))
+    report = await setup.check()
+    detail = only_failure(report, "checkpoints")
+    assert detail == ("The server does not accept 1 checkpoint in the profile: "
+                      "no_such_status. It is either not an asset status, or inactive on a "
+                      "server that still refuses inactive statuses. Add or activate it in "
+                      "the portal's asset statuses, update the server, or change the "
+                      "profile.")
+    assert "no_such_status" not in by_key(report)["rules"].detail   # named once
+
+
+async def test_a_server_that_still_refuses_inactive_statuses(setup):
+    """A server from before 2026-11-27: the kiosk setup with the inactive checkpoint is
+    refused, so the checkpoints line says so and the password is still proven with an
+    active one."""
+    setup.fake.inactive_asset_statuses = {"qa", "complete"}
+    setup.fake.refuses_inactive_statuses = True
+    report = await setup.check()
+    detail = only_failure(report, "checkpoints")
+    assert detail == ("The server does not accept 2 checkpoints in the profile: qa, "
+                      "complete. They are either not an asset status, or inactive on a "
+                      "server that still refuses inactive statuses. Add or activate them "
+                      "in the portal's asset statuses, update the server, or change the "
+                      "profile.")
+    assert by_key(report)["move_password"].status == "pass"
+    assert "qa" not in by_key(report)["rules"].detail
+
+
+async def test_every_checkpoint_inactive_on_a_server_that_refuses_them(setup):
+    setup.fake.inactive_asset_statuses = {s.checkpoint for s in setup.profile.stages}
+    setup.fake.refuses_inactive_statuses = True
+    report = await setup.check()
+    failed = {c.key for c in report.checks if c.status == "fail"}
+    assert failed == {"checkpoints", "move_password"} and not report.can_start
+    assert by_key(report)["move_password"].detail.startswith(
+        "The server does not accept the checkpoint ")
+
+
+async def test_unlisted_checkpoints_cannot_be_tried_without_a_kiosk(setup):
+    setup.fake.inactive_asset_statuses = {"qa"}
+    report = await setup.check(password="not-the-password")
+    line = by_key(report)["checkpoints"]
+    assert line.status == "fail" and "qa" in line.detail
+    assert "could not be tried" in line.detail and "move password line" in line.detail
 
 
 async def test_read_only(setup):

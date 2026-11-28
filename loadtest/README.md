@@ -83,14 +83,16 @@ python3 -m venv .venv && .venv/bin/pip install -e .
    The portal account needs to be an admin that can add moves, containers
    and trucks. Creating a move is only possible while no run is in
    progress or interrupted.
-3. **Check the asset statuses.** Every checkpoint the run uses must be an
-   active asset status. On a fresh server built from the starter data,
-   four are not: `in_container`, `on_truck`, `received` and `un_pack`. The
-   readiness check names them. Turn them on in the portal's asset statuses
-   before the run (changing statuses needs the developer role). Generate
-   does not change them, nor the status rules: checkpoints with no enabled
-   status rule are recorded but change no status, and the readiness check
-   notes them.
+3. **Asset statuses and status rules.** Every checkpoint the run uses must
+   be an asset status on the server. It does not have to be active: an
+   inactive status is only left out of the pickers, and scans with it are
+   still recorded. (A fresh server built from the starter data has four
+   inactive ones: `in_container`, `on_truck`, `received` and `un_pack`.)
+   A server from before 2026-11-27 still refuses an inactive status; the
+   readiness check finds that out and says to update the server or
+   activate the statuses. Generate does not change the status rules:
+   checkpoints with no enabled status rule are recorded but change no
+   status, and the readiness check notes them.
 
 Use the portal account you will run with. It needs to change trucks and
 read scans and the move. If it uses 2FA, keep your authenticator handy.
