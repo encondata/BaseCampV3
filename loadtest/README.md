@@ -398,6 +398,21 @@ The reasons are listed under the verdict, under **Findings**.
 running, each move status count from the server, and database health (only
 when the portal account may read Developer › Database › Health).
 
+### Previous results
+
+**Previous results** on the start screen lists every run that has ended,
+newest first: when it started, the move, the server, the number of servers,
+the speed, how long it took and the verdict. **Open** shows that run's
+result, the same as it was shown when the run ended. A link to an open
+result can be saved or sent; it works for as long as the run's folder is
+in the runs folder.
+
+The list is read from the runs folder each time, so it survives a restart
+of the tool. A run is listed once it has ended; a run that is still going,
+or that was interrupted and not continued, is not. Nothing can be changed
+or deleted from the page. To remove a result, delete its folder from the
+runs folder.
+
 ### What "processed twice" means
 
 When an answer from the server is lost (a timeout, a dropped connection),
@@ -523,6 +538,10 @@ in a browser against the fake server, after any change to the page:
   same step.
 - A refused move password, then Create again with a new password, ends
   with one move, not two.
+- Previous results lists the saved runs; Open shows one; All results goes
+  back; reloading on an open result shows it again.
+- With a previous result open, going to Simulate and back still shows each
+  view's own result.
 
 ### A real scratch server
 

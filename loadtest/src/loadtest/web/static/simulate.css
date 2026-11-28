@@ -3,18 +3,20 @@
 
 /* spacing between the blocks of each step */
 #view-simulate .sim-run-grid > .card,
-#view-simulate .sim-result-grid > .card { margin-top: 0; }
+#view-simulate .sim-result-grid > .card,
+#view-results .sim-result-grid > .card { margin-top: 0; }
 #view-simulate #sim-body > :not([hidden]) ~ :not([hidden]),
 #view-simulate #sim-setup > * + *,
 #view-simulate #sim-run > * + *,
 #view-simulate #sim-result > * + *,
 #view-simulate #sim-result-body > :not([hidden]) ~ :not([hidden]),
+#view-results #sim-result-body > :not([hidden]) ~ :not([hidden]),
 #gen-body > * + * { margin-top: 16px; }
 #sim-unf-fields { margin-top: 14px; }
 #gen-blocked { margin-bottom: 14px; }
 /* the tool's notices show in whichever view holds them (simulate.js moves them) */
 .sim-notice { margin-top: 18px; margin-bottom: 16px; }
-#sim-body, #gen-body { margin-top: 22px; }
+#sim-body, #gen-body, #prev-body { margin-top: 22px; }
 
 /* ── form pieces beyond the page's own ── */
 .sim-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -137,13 +139,20 @@
   color: var(--accent); text-align: left; padding: 14px 12px 6px; border-bottom: 1px solid var(--paper-line); background: var(--surface);
 }
 .sim-result-grid > .card { min-width: 0; }
-#view-simulate .table-wrap { max-height: none; }
+#view-simulate .table-wrap, #view-results .table-wrap { max-height: none; }
 .sim-facts th[scope='row'] {
   font-family: var(--font-mono); font-size: 10px; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--text-mute); text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--paper-line); white-space: nowrap; width: 1%;
 }
 .sim-facts tr:last-child th { border-bottom: 0; }
 .sim-facts td { white-space: normal; overflow-wrap: anywhere; }
+
+/* ── previous results ── */
+#prev-one .results-head .btn-ghost { margin-left: auto; }
+/* the Open button stays on screen when a narrow window scrolls the list sideways */
+#prev-runs th:last-child, #prev-runs td:last-child { position: sticky; right: 0; width: 1%; text-align: right; }
+#prev-runs td:last-child { background: var(--surface); }
+#prev-runs td .chip { height: 22px; }
 
 .sim-offline { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
@@ -185,4 +194,7 @@
   .sim-result-grid { grid-template-columns: 1fr; }
   .sim-feed { font-size: 11px; }
 }
-#view-simulate #sim-error { margin-top: 0; }
+#view-simulate #sim-error, #view-results #prev-err { margin-top: 0; }
+@media (max-width: 760px) {
+  #prev-one .results-head .btn-ghost { margin-left: 0; }
+}

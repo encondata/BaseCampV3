@@ -1,4 +1,4 @@
-/* Simulate and Generate: the page is a function of the tool's state. It reads /api/state
+/* Simulate, Generate and Previous results: the page is a function of the tool's state. It reads /api/state
    on load and on every reconnect, then follows the event stream; it never trusts its own
    memory of what was happening. Passwords and 2FA codes live only in their fields (and a
    move password Generate made, in memory until Simulate's field takes it) and are never
@@ -15,6 +15,7 @@
   const FEED_MAX = 500;
   const RETRY_MS = 5000;
   const DASH = '–';
+  const RESULTS = '#results';      // the Previous results view; one result is #results/<run folder>
   const OFFLINE = 'The load test tool is not answering. Is it still running?';
   const INTERNAL = 'Something went wrong in the load test tool.';
 
@@ -125,6 +126,7 @@
     $('sim-offline').hidden = true;
     $('sim-body').hidden = true;
     $('gen-body').hidden = true;
+    $('prev-body').hidden = true;
     clearInterval(retryTimer);
     retryTimer = null;
     if (events) { events.close(); events = null; }
@@ -230,6 +232,7 @@
     }
     const first = snap === null;
     snap = state;
+    if (prevFailed && onResults()) showResults();    // the tool answers again
     if (first && ACTIVE.includes(state.phase) && !location.hash) location.hash = 'simulate';
     if (first && state.setup && state.setup.state === 'working' && !location.hash) {
       location.hash = 'generate';
@@ -266,7 +269,8 @@
     renderGenerate();
     if (next === 'ready') renderReady();
     else if (next === 'run') renderRun();
-    else if (next === 'result') renderResult();
+    // while a previous result shows, the result blocks are in its view and hold it
+    else if (next === 'result' && !onResults()) renderResult();
     if (changed && next === 'run') {
       feedAtBottom = true;
       feed.scrollTop = feed.scrollHeight;
@@ -1020,13 +1024,23 @@
   function placeShared() {
     const notices = [$('sim-forbidden'), $('sim-offline')];
     if (onGenerate()) {
-      if ($('sim-connect').parentElement !== $('gen-signin')) {
-        $('gen-signin').append($('sim-connect'));
-        $('gen-notices').append(...notices);
-      }
+      if ($('sim-connect').parentElement !== $('gen-signin')) $('gen-signin').append($('sim-connect'));
     } else if ($('sim-connect').parentElement !== $('sim-setup')) {
       $('sim-setup').prepend($('sim-connect'));
+    }
+    const home = onGenerate() ? $('gen-notices') : onResults() ? $('prev-notices') : null;
+    if (home) {
+      if (notices[0].parentElement !== home) home.append(...notices);
+    } else if (notices[0].parentElement !== $('view-simulate')) {
       $('sim-body').before(...notices);
+    }
+    // the result blocks: in Previous results while that view is open, else in Simulate
+    const blocks = $('sim-result-body');
+    const holder = onResults() ? $('prev-result') : $('sim-result');
+    if (blocks.parentElement !== holder) {
+      holder.append(blocks);
+      blocks.hidden = true;
+      resultDrawn = null;     // whichever view shows a result next draws it again
     }
   }
 
@@ -1254,10 +1268,104 @@
   $('gen-move-password').value = newMovePassword();
   placeShared();
 
+  /* ───────────── previous results ───────────── */
+  // The runs that have ended, read from the tool's runs folder: a list, and one result at
+  // a time (#results/<run folder>), drawn by the same code as the Simulate result.
+  function onResults() { return location.hash === RESULTS || location.hash.startsWith(RESULTS + '/'); }
+  const previousId = () => (location.hash.startsWith(RESULTS + '/') ? location.hash.slice(RESULTS.length + 1) : '');
+  let prevSeq = 0;          // a newer visit sets an older answer aside
+  let prevFailed = false;   // the last read found the tool not answering: read again when it does
+
+  function drawRuns(data) {
+    const runs = data.runs || [];
+    $('prev-none').hidden = runs.length > 0;
+    $('prev-runs-wrap').hidden = !runs.length;
+    $('prev-folder').hidden = !data.runs_dir;
+    setText('prev-folder', data.runs_dir ? `Saved in ${data.runs_dir}` : '');
+    const head = el('thead');
+    const tr = el('tr');
+    ['Started', 'Move', 'Server', 'Servers', 'Speed', 'Duration', 'Result', '']
+      .forEach((h, i) => tr.append(el('th', i === 3 || i === 5 ? 'num' : null, h)));
+    head.append(tr);
+    const body = el('tbody');
+    runs.forEach(r => {
+      const row = el('tr');
+      const verdict = el('td');
+      verdict.append(el('span', `chip ${VERDICTS[r.verdict] || ''}`, r.verdict || DASH));
+      const open = el('td');
+      const button = el('button', 'btn-ghost', 'Open');
+      button.type = 'button';
+      button.setAttribute('aria-label', `Open the result of ${r.move_name || 'the run'}, started ${when(r.started_at)}`);
+      button.addEventListener('click', () => { location.hash = `results/${r.id}`; });
+      open.append(button);
+      row.append(
+        el('td', 'mono', when(r.started_at)), el('td', null, r.move_name || DASH),
+        el('td', 'mono', r.server_url || DASH), el('td', 'num mono', count(r.servers)),
+        el('td', null, speedName(r.profile) || DASH),
+        el('td', 'num mono', clock((Date.parse(r.ended_at) - Date.parse(r.started_at)) / 1000)),
+        verdict, open);
+      body.append(row);
+    });
+    $('prev-runs').replaceChildren(head, body);
+  }
+
+  function drawPrevious(got) {
+    const r = got.result;
+    $('prev-verdict').hidden = !r.verdict;
+    $('prev-verdict').className = `chip sim-verdict ${VERDICTS[r.verdict] || ''}`;
+    setText('prev-verdict', r.verdict || '');
+    setText('prev-move', (r.run && r.run.move_name) || '');
+    $('prev-saved').hidden = !got.run_dir;
+    setText('prev-saved', got.run_dir ? `Saved to ${got.run_dir}` : '');
+    drawResult(r);
+    $('sim-result-body').hidden = false;
+  }
+
+  // A read that failed for this one result (it is gone from the folder). Not an action's
+  // error: no render touches it, so it needs no keeping.
+  function previousNote(message) {
+    $('prev-err').textContent = message || '';
+    $('prev-err').hidden = !message;
+  }
+
+  async function showResults() {
+    const mine = ++prevSeq;
+    if (!onResults() || blocked) return;
+    const id = previousId();
+    $('prev-list').hidden = !!id;
+    $('prev-hint').hidden = !!id;       // it describes the list
+    $('prev-one').hidden = !id;
+    previousNote('');
+    if (id) {
+      $('prev-verdict').hidden = true;
+      $('prev-saved').hidden = true;
+      setText('prev-move', '');
+      $('sim-result-body').hidden = true;
+    }
+    let got;
+    try {
+      got = await get(id ? '/api/runs/' + encodeURIComponent(id) : '/api/runs');
+    } catch (err) {
+      if (mine !== prevSeq) return;
+      prevFailed = err.code === 'offline';
+      // not answering and refused show in the notices; anything else is about this result
+      if (id && err.code !== 'offline' && err.code !== 'forbidden') previousNote(err.message);
+      return;
+    }
+    if (mine !== prevSeq) return;
+    prevFailed = false;
+    if (id) drawPrevious(got);
+    else drawRuns(got);
+  }
+
+  $('prev-all').addEventListener('click', () => { location.hash = 'results'; });
+
   /* ───────────── start ───────────── */
-  $('sim-retry').addEventListener('click', refresh);
+  $('sim-retry').addEventListener('click', () => { refresh(); showResults(); });
   window.addEventListener('hashchange', () => {
     placeShared();
+    showResults();
+    if (onResults()) $(previousId() ? 'prev-all' : 'prev-title').focus({ preventScroll: true });
     if (!view) return;
     if (onGenerate()) sitesFor = '';     // the server's sites are read again on each visit
     render();
@@ -1265,4 +1373,5 @@
     else if (location.hash === '#simulate') focusView(view);
   });
   refresh();
+  showResults();
 })();

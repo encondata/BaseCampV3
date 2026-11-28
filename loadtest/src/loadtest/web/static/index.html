@@ -258,7 +258,7 @@
   <section id="view-start">
     <div class="eyebrow">Start</div>
     <h1 class="page-title">What do you want to do?</h1>
-    <p class="page-hint">Generate creates a move on a BaseCamp server. Simulate runs a move against a BaseCamp server.</p>
+    <p class="page-hint">Generate creates a move on a BaseCamp server. Simulate runs a move against a BaseCamp server. Previous results opens the result of a run that has ended.</p>
     <div class="choices">
       <button class="choice" type="button" data-go="generate">
         <span class="choice-icon">
@@ -273,6 +273,13 @@
         </span>
         <span class="choice-title">Simulate</span>
         <span class="choice-text">Run a whole move against a BaseCamp server and watch it live: every scan, container and truck.</span>
+      </button>
+      <button class="choice" type="button" data-go="results">
+        <span class="choice-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>
+        </span>
+        <span class="choice-title">Previous results</span>
+        <span class="choice-text">Open the result of a run that has ended: its verdict, findings, scans and calls.</span>
       </button>
     </div>
   </section>
@@ -579,6 +586,42 @@
       </section>
     </div>
   </section>
+
+  <!-- ── previous results (driven by simulate.js; one result is drawn into the same blocks
+       the Simulate result uses, which are moved here while it shows) ── -->
+  <section id="view-results" hidden>
+    <button class="back" type="button" data-go="start">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      Start
+    </button>
+    <div class="eyebrow">Previous results</div>
+    <h1 class="page-title" id="prev-title" tabindex="-1">Previous results</h1>
+    <p class="page-hint" id="prev-hint">The result of every run that has ended, newest first.</p>
+
+    <div id="prev-notices"></div>
+
+    <div id="prev-body">
+      <section class="card" id="prev-list">
+        <p class="sim-text" id="prev-none" hidden>No run has ended yet. A run is listed here when it ends.</p>
+        <div class="table-wrap" id="prev-runs-wrap" hidden><table id="prev-runs"></table></div>
+        <p class="help" id="prev-folder" hidden></p>
+      </section>
+      <section id="prev-one" hidden>
+        <div class="sim-top">
+          <div class="card sim-result-head">
+            <div class="results-head">
+              <span class="chip sim-verdict" id="prev-verdict" hidden></span>
+              <span class="sim-heading" id="prev-move"></span>
+              <button class="btn-ghost" type="button" id="prev-all">All results</button>
+            </div>
+            <p class="help" id="prev-saved" hidden></p>
+          </div>
+        </div>
+        <div class="banner-err sim-notice" id="prev-err" hidden></div>
+        <div id="prev-result"></div>
+      </section>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -602,10 +645,13 @@ applyTheme(readTheme());
 
 /* ───────────── views (hash routed so Back works) ───────────── */
 function showView() {
-  const v = location.hash === '#generate' ? 'generate' : location.hash === '#simulate' ? 'simulate' : 'start';
+  const h = location.hash;
+  const v = h === '#generate' ? 'generate' : h === '#simulate' ? 'simulate'
+    : h === '#results' || h.startsWith('#results/') ? 'results' : 'start';
   document.getElementById('view-start').hidden = v !== 'start';
   document.getElementById('view-generate').hidden = v !== 'generate';
   document.getElementById('view-simulate').hidden = v !== 'simulate';
+  document.getElementById('view-results').hidden = v !== 'results';
 }
 document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => {
   location.hash = b.dataset.go === 'start' ? '' : b.dataset.go;
