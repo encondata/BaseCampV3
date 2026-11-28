@@ -402,28 +402,39 @@ async def test_unknown_asset_and_unknown_serial_are_404(client, db, seeded_user)
     assert resp.json()["detail"]["code"] == "device_not_found"
 
 
-async def test_unknown_or_inactive_checkpoint_is_422(client, db, seeded_user):
+async def test_unknown_checkpoint_is_422(client, db, seeded_user):
     hdrs = await login(client)
     *_, crate, _other, asset = await _seed(db)
-    db.add(StatusValue(record_type="asset", key="pack_test_retired",
-                       label="Retired", color="#654321", sort_order=9,
-                       is_active=False))
     await db.commit()
-    crate_id, asset_id = crate.id, asset.id
 
-    resp = await _post(client, hdrs, crate_id, asset_id,
+    resp = await _post(client, hdrs, crate.id, asset.id,
                        scan_status="no_such_checkpoint")
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"]["code"] == "bad_status"
-
-    resp = await _post(client, hdrs, crate_id, asset_id,
-                       scan_status="pack_test_retired")
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["code"] == "bad_status"
 
     db.expire_all()
     assert (await db.scalars(select(RawScan))).all() == []
     assert (await db.scalars(select(ContainerAsset))).all() == []
+
+
+async def test_an_inactive_checkpoint_is_still_used(client, db, seeded_user):
+    """An inactive status is only left out of the pickers; a pack that names one is
+    recorded with it (Jimmy, 2026-11-27)."""
+    hdrs = await login(client)
+    *_, crate, _other, asset = await _seed(db)
+    db.add(StatusValue(record_type="asset", key="pack_test_retired",
+                       label="Retired", color="#654321", sort_order=9,
+                       is_active=False))
+    await db.commit()
+
+    resp = await _post(client, hdrs, crate.id, asset.id,
+                       scan_status="pack_test_retired")
+    assert resp.status_code < 300, resp.text
+
+    db.expire_all()
+    scans = (await db.scalars(select(RawScan))).all()
+    assert [s.scan_status for s in scans] == ["pack_test_retired"]
+    assert len((await db.scalars(select(ContainerAsset))).all()) == 1
 
 
 async def test_a_bad_scan_type_is_422(client, db, seeded_user):

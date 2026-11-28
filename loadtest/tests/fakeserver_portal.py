@@ -132,6 +132,7 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
     # ── portal state (tests change these directly) ──
     fake.status_rules = _default_rules(ASSET_STATUSES)
     fake.inactive_asset_statuses = set()
+    fake.refuses_inactive_statuses = False   # True: a server from before 2026-11-27
     fake.truck_updates = []                  # rows of POST /trucks/{id}/updates
     fake.read_only = False
     fake.background = {"state": "running", "running": 2, "total": 2}  # None = no workers
@@ -421,6 +422,7 @@ def register_portal_routes(fake: FakeBaseCamp) -> None:
                  "color": "#51606f", "sort_order": i, "is_active": True,
                  "progress_weight": None, "usage_count": None}
                 for i, (key, label) in enumerate(ASSET_STATUSES.items())
+                # the real per-type listing is the pickers' list: active ones only
                 if key not in fake.inactive_asset_statuses]
 
     @app.get("/system/status")

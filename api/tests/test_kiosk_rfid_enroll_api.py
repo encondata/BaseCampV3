@@ -305,11 +305,9 @@ async def test_unknown_checkpoint_is_422(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "bad_status"
 
 
-async def test_inactive_checkpoint_is_422(client, db, seeded_user):
-    """Unlike /kiosk/scans (which accepts a checkpoint someone
-    deactivated mid-move rather than dropping a scan), enrollment is
-    configured up front on the Admin tab — a checkpoint that is no
-    longer offered must be corrected there, not silently used."""
+async def test_an_inactive_checkpoint_is_still_used(client, db, seeded_user):
+    """An inactive status is only left out of the pickers; like /kiosk/scans, an
+    enrollment that names one is recorded with it (Jimmy, 2026-11-27)."""
     hdrs = await login(client)
     *_, asset = await _seed(db)
     db.add(StatusValue(record_type="asset", key="enroll_test_retired",
@@ -318,11 +316,11 @@ async def test_inactive_checkpoint_is_422(client, db, seeded_user):
     await db.commit()
 
     resp = await _post(client, hdrs, asset.id, scan_status="enroll_test_retired")
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"]["code"] == "bad_status"
+    assert resp.status_code < 300, resp.text
 
     db.expire_all()
-    assert (await db.scalars(select(RawScan))).all() == []
+    scans = (await db.scalars(select(RawScan))).all()
+    assert [s.scan_status for s in scans] == ["enroll_test_retired"]
 
 
 async def test_a_worker_can_enroll(client, db, seeded_user):

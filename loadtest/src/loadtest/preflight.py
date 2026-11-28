@@ -166,9 +166,9 @@ def setup_failure(exc: Exception, move: MoveInfo, checkpoint: str,
     if exc.code == "move_locked":
         return f"That password signs in to a different move. Enter the password for {move.name}."
     if exc.code == "bad_scan_status":
-        return (f"The profile's first checkpoint ({checkpoint}) is not an active asset status, "
-                "so the kiosk could not be set up. The checkpoints line below lists what to "
-                "fix.")
+        return (f"The server does not accept the checkpoint {checkpoint} for a kiosk, so the "
+                "kiosk could not be set up. The checkpoints line of the readiness check says "
+                "what to fix.")
     if exc.code == "bad_initiative":
         return "The server will not set up a kiosk for this move (it is completed or cancelled)."
     if exc.code == "bad_site":
@@ -218,6 +218,16 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
     # The move is read first: the kiosk setup after the sign-in proves the password is
     # for this move, and needs the move's name and origin site.
     move, move_error = await _read(portal.move(move_id))
+    # The server lists only its ACTIVE asset statuses. A checkpoint it does not list is
+    # either inactive (fine: an inactive status is only left out of the pickers) or not
+    # a status at all, and the server alone can say which: the throwaway kiosk below is
+    # set up with each unlisted checkpoint. A server from before 2026-11-27 refuses an
+    # inactive one there, as it would during the run.
+    statuses, statuses_error = await _read(portal.asset_statuses())
+    listed = [c for c in checkpoints if statuses is None or c in statuses]
+    unlisted = [c for c in checkpoints if c not in listed]
+    refused: list[str] = []        # unlisted checkpoints the server would not take
+    unchecked = list(unlisted)     # unlisted checkpoints the kiosk never got to try
     label = "Move password signs a kiosk in"
     device = KioskDevice(
         base_url=base_url, serial=CHECK_SERIAL, name=CHECK_NAME, kind="handheld",
@@ -247,14 +257,29 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
             elif not checkpoints:
                 password_detail = ("pass", f"The move password signed a kiosk in to {move.name}.")
             else:
-                try:
-                    await device.setup(initiative_id=move.id, site_id=move.origin.id,
-                                       scan_status=checkpoints[0])
-                except BAD_ANSWER as exc:
-                    password_detail = ("fail", setup_failure(exc, move, checkpoints[0]))
-                else:
-                    password_detail = (
-                        "pass", f"The move password signed a kiosk in to {move.name}.")
+                proven = False
+                password_detail = ("fail", "")
+                for checkpoint in listed[:1] + unlisted:
+                    try:
+                        await device.setup(initiative_id=move.id, site_id=move.origin.id,
+                                           scan_status=checkpoint)
+                    except BAD_ANSWER as exc:
+                        if (checkpoint in unlisted and isinstance(exc, CallFailed)
+                                and exc.code == "bad_scan_status"):
+                            unchecked.remove(checkpoint)
+                            refused.append(checkpoint)
+                            if not proven:      # shown only if no set-up ever succeeds
+                                password_detail = (
+                                    "fail", setup_failure(exc, move, checkpoint))
+                            continue
+                        password_detail = ("fail", setup_failure(exc, move, checkpoint))
+                        break
+                    else:
+                        proven = True
+                        if checkpoint in unlisted:
+                            unchecked.remove(checkpoint)
+                        password_detail = (
+                            "pass", f"The move password signed a kiosk in to {move.name}.")
     finally:
         await device.close()
     add("move_password", label, *password_detail)
@@ -430,28 +455,40 @@ async def run_checks(*, portal: PortalClient, profile: Profile, base_url: str, m
                     f"{move.destination.name} (asked {host}).")
 
     # ── checkpoints ──
-    label = "Every checkpoint is an active status"
-    active, exc = await _read(portal.asset_statuses())
+    # An inactive status is fine: it is only left out of the pickers. A checkpoint
+    # fails only when the server refused it in the kiosk set-up above.
+    label = "The server accepts every checkpoint"
     unknown: set[str] = set()      # checkpoints the checkpoints line already reports
-    if exc is not None:
-        add("checkpoints", label, "fail", _unreadable("the asset statuses", exc))
+    inactive = [c for c in unlisted if c not in refused and c not in unchecked]
+    if statuses_error is not None:
+        add("checkpoints", label, "fail", _unreadable("the asset statuses", statuses_error))
+    elif refused:
+        one = len(refused) == 1
+        unknown = set(refused) | set(unchecked)
+        add("checkpoints", label, "fail",
+            f"The server does not accept {_n(len(refused), 'checkpoint')} in the profile: "
+            f"{', '.join(refused)}. {'It is' if one else 'They are'} either not an asset "
+            "status, or inactive on a server that still refuses inactive statuses. Add or "
+            f"activate {'it' if one else 'them'} in the portal's asset statuses, update "
+            "the server, or change the profile.")
+    elif unchecked:
+        one = len(unchecked) == 1
+        unknown = set(unchecked)
+        add("checkpoints", label, "fail",
+            f"{_n(len(unchecked), 'checkpoint')} in the profile "
+            f"{'is' if one else 'are'} not in the server's list of active asset statuses "
+            f"({', '.join(unchecked)}) and could not be tried, because the kiosk was not "
+            "set up (see the move password line). Fix that, then check again.")
+    elif not checkpoints:
+        add("checkpoints", label, "pass", "The profile has no checkpoints to check.")
     else:
-        missing = [c for c in checkpoints if c not in active]
-        unknown = set(missing)
-        if missing:
-            one = len(missing) == 1
-            add("checkpoints", label, "fail",
-                f"{_n(len(missing), 'checkpoint')} in the profile "
-                f"{'is' if one else 'are'} not an active asset status on the server: "
-                f"{', '.join(missing)}. Activate {'it' if one else 'them'} in the portal's "
-                "asset statuses, or change the profile.")
-        elif not checkpoints:
-            add("checkpoints", label, "pass", "The profile has no checkpoints to check.")
-        else:
-            add("checkpoints", label, "pass",
-                "The profile's one checkpoint is an active asset status."
-                if len(checkpoints) == 1 else
-                f"All {len(checkpoints):,} checkpoints are active asset statuses.")
+        detail = ("The server accepts the profile's one checkpoint."
+                  if len(checkpoints) == 1 else
+                  f"The server accepts all {len(checkpoints):,} checkpoints.")
+        if inactive:
+            detail += (f" {len(inactive):,} {'is' if len(inactive) == 1 else 'are'} "
+                       f"inactive ({', '.join(inactive)}) and still recorded.")
+        add("checkpoints", label, "pass", detail)
 
     # ── server_ready ──
     label = "Workers running, not read-only"

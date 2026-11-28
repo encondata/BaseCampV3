@@ -842,7 +842,9 @@ async def kiosk_setup(
                     else body.scan_status)
         scan_type = (await db.get(StatusValue, ("asset", scan_key))
                      if scan_key is not None else None)
-        if scan_type is None or not scan_type.is_active:
+        # An inactive status is only left out of the pickers (_active_scan_types);
+        # a kiosk that names one is still set up with it (Jimmy, 2026-11-27).
+        if scan_type is None:
             raise _err(422, "bad_scan_status")
     site = None
     site_role = None
@@ -1858,11 +1860,11 @@ async def enroll_rfid(
     `device_id`), fresh for the scan-matching worker, and idempotent on
     the kiosk's `client_scan_id` — a retried save records one scan.
 
-    Unlike /kiosk/scans, the checkpoint must still be ACTIVE: it is
-    configured once on Settings › Admin rather than sent per scan, so a
-    retired checkpoint is a misconfiguration to fix there (422
-    `bad_status`), not a scan to keep. Not read-only exempt — this
-    writes real data the kiosk can retry."""
+    The checkpoint must be an asset status (422 `bad_status`), active or
+    not: like /kiosk/scans, an inactive status is only left out of the
+    pickers and is still recorded when a kiosk names it (Jimmy,
+    2026-11-27). Not read-only exempt — this writes real data the kiosk
+    can retry."""
     tag = normalize_rfid(body.rfid_tag)
     device = await _kiosk_device(db, body.serial)
     _require_move(actor, body.initiative_id or device.current_initiative_id)
@@ -1871,7 +1873,7 @@ async def enroll_rfid(
         raise _err(404, "asset_not_found")
     await _require_move_asset(db, actor, asset.id)
     checkpoint = await db.get(StatusValue, ("asset", body.scan_status))
-    if checkpoint is None or not checkpoint.is_active:
+    if checkpoint is None:
         raise _err(422, "bad_status")
 
     # The kiosk sends its own setup's site and move; a stale kiosk can
@@ -2154,10 +2156,9 @@ async def pack_container_asset(
     `source='kiosk'`, the Device's name as `device_id`), fresh for the
     scan-matching worker and idempotent on `client_scan_id`.
 
-    Like RFID Enroll and unlike /kiosk/scans, the checkpoint must still
-    be ACTIVE: it is configured once on Settings › Admin rather than sent
-    per scan, so a retired checkpoint is a misconfiguration to fix there
-    (422 `bad_status`). Not read-only exempt — this writes."""
+    Like RFID Enroll and /kiosk/scans, the checkpoint must be an asset
+    status (422 `bad_status`), active or not: an inactive status is only
+    left out of the pickers. Not read-only exempt — this writes."""
     device = await _kiosk_device(db, body.serial)
     _require_move(actor, body.initiative_id or device.current_initiative_id)
     container = await db.get(Container, container_id)
@@ -2169,7 +2170,7 @@ async def pack_container_asset(
         raise _err(404, "asset_not_found")
     await _require_move_asset(db, actor, asset.id)
     checkpoint = await db.get(StatusValue, ("asset", body.scan_status))
-    if checkpoint is None or not checkpoint.is_active:
+    if checkpoint is None:
         raise _err(422, "bad_status")
 
     # A stale kiosk can still name a site or move that has since gone —
@@ -2458,9 +2459,9 @@ async def load_truck_container(
     `source='kiosk'`, the Device's name as `device_id`), fresh for the
     scan-matching worker and idempotent on `client_scan_id`.
 
-    Like the Containers endpoint, the checkpoint must still be ACTIVE (422
-    `bad_status`): it is configured once on Settings › Admin rather than
-    sent per scan, so a retired one is a misconfiguration to fix there.
+    Like the Containers endpoint, the checkpoint must be an asset status
+    (422 `bad_status`), active or not: an inactive status is only left
+    out of the pickers.
     `scan_type` is the scan vocabulary itself (422 `bad_scan_type`). Not
     read-only exempt — this writes."""
     device = await _kiosk_device(db, body.serial)
@@ -2474,7 +2475,7 @@ async def load_truck_container(
         raise _err(404, "container_not_found")
     _require_move(actor, container.initiative_id)
     checkpoint = await db.get(StatusValue, ("asset", body.scan_status))
-    if checkpoint is None or not checkpoint.is_active:
+    if checkpoint is None:
         raise _err(422, "bad_status")
     scan_type = await db.get(StatusValue, ("scan", body.scan_type))
     if scan_type is None or not scan_type.is_active:
